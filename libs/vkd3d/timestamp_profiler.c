@@ -267,6 +267,21 @@ static bool vkd3d_timestamp_profiler_resolve_timestamp(struct vkd3d_timestamp_pr
     return true;
 }
 
+static bool vkd3d_timestamp_profile_path(char path[VKD3D_PATH_MAX])
+{
+    char app[VKD3D_PATH_MAX];
+
+    if (vkd3d_get_env_var("VKD3D_TIMESTAMP_PROFILE", path, VKD3D_PATH_MAX))
+        return true;
+
+    /* Container-local diagnostic: no environment change is needed for the rerun. */
+    if (!vkd3d_get_program_name(app) || strcmp(app, "007FirstLight.exe"))
+        return false;
+
+    strcpy(path, "C:\\windows\\temp\\gamenative-007-gpu.csv");
+    return true;
+}
+
 static void vkd3d_timestamp_profiler_flush(struct vkd3d_timestamp_profiler *profiler)
 {
     struct vkd3d_timestamp_profiler_pso_state *state;
@@ -274,11 +289,14 @@ static void vkd3d_timestamp_profiler_flush(struct vkd3d_timestamp_profiler *prof
     char final_path[VKD3D_PATH_MAX];
     char env[VKD3D_PATH_MAX];
     VKD3D_UNUSED size_t n;
+    uint64_t max_ticks = 0;
+    size_t slowest = SIZE_MAX;
+    uint32_t frames;
     unsigned int j;
     FILE *file;
     size_t i;
 
-    if (!vkd3d_get_env_var("VKD3D_TIMESTAMP_PROFILE", env, sizeof(env)))
+    if (!vkd3d_timestamp_profile_path(env))
         return;
 
     INFO("Flushing timestamp profile to \"%s\"\n", env);
@@ -310,8 +328,17 @@ static void vkd3d_timestamp_profiler_flush(struct vkd3d_timestamp_profiler *prof
     /* Flush out the data to file. */
 
     fprintf(file, "PSO Type,PSO Hash,Shader Hashes,Total Time (s),Non-PS invocations,PS invocations,Commands,RS Hash\n");
-    fprintf(file, "INTERNAL,SWAPCHAIN,0,0,0,0,%u,0\n",
-            vkd3d_atomic_uint32_exchange_explicit(&profiler->frame_count, 0, vkd3d_memory_order_relaxed));
+    frames = vkd3d_atomic_uint32_exchange_explicit(&profiler->frame_count, 0, vkd3d_memory_order_relaxed);
+    fprintf(file, "INTERNAL,SWAPCHAIN,0,0,0,0,%u,0\n", frames);
+
+    for (i = 0; i < profiler->pso_states_count; i++)
+    {
+        if (profiler->pso_states[i].dispatch_count && profiler->pso_states[i].total_ticks > max_ticks)
+        {
+            max_ticks = profiler->pso_states[i].total_ticks;
+            slowest = i;
+        }
+    }
 
     for (i = 0; i < profiler->pso_states_count; i++)
     {
@@ -372,6 +399,11 @@ static void vkd3d_timestamp_profiler_flush(struct vkd3d_timestamp_profiler *prof
         total_time = 1e-9 * (double)state->total_ticks *
                 profiler->device->device_info.properties2.properties.limits.timestampPeriod;
         TS_TRACE("  Total time: %.6f s\n", total_time);
+
+        /* One bounded line per flush survives in the app's normal debug report. */
+        if (i == slowest)
+            INFO("GPU profile: frames=%u slowest=%s PSO=%016"PRIx64" shaders=%s time=%.6f s commands=%"PRIu64"\n",
+                    frames, type, state->pso_hash, hash_list, total_time, state->dispatch_count);
 
         fprintf(file, "%s,%016"PRIx64",%s,%.9f,%"PRIu64",%"PRIu64",%"PRIu64",%016"PRIx64"\n",
                 type, state->pso_hash, hash_list, total_time,
@@ -760,7 +792,7 @@ struct vkd3d_timestamp_profiler *vkd3d_timestamp_profiler_init(struct d3d12_devi
     char env[VKD3D_PATH_MAX];
     unsigned int i;
 
-    if (!vkd3d_get_env_var("VKD3D_TIMESTAMP_PROFILE", env, sizeof(env)))
+    if (!vkd3d_timestamp_profile_path(env))
         return NULL;
 
     INFO("Writing timestamp profile to \"%s\".\n", env);
