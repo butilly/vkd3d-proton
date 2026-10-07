@@ -580,7 +580,9 @@ static const struct vkd3d_shader_quirk_hash first_light_hashes[] = {
 };
 
 static const struct vkd3d_shader_quirk_info first_light_quirks = {
-    first_light_hashes, ARRAY_SIZE(first_light_hashes), 0,
+    /* Also cover variants whose entry point does not match the known mesh shaders.
+     * The WaveSize exception remains restricted to 32x1x1 thread groups. */
+    first_light_hashes, ARRAY_SIZE(first_light_hashes), VKD3D_SHADER_QUIRK_CLAMP_WAVE_SIZE_TO_THREAD_GROUP32,
 };
 
 static const struct vkd3d_shader_quirk_hash plague_tale_resonance_hashes[] = {
