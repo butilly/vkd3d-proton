@@ -1310,7 +1310,7 @@ HRESULT vkd3d_get_image_allocation_info(struct d3d12_device *device,
      * Query an unbound image with the same create info so the application can
      * size its placed-resource heaps correctly. Do not substitute committed
      * resources here, since that would break heap aliasing and data inheritance. */
-    if (d3d12_device_verify_bc_image_requirements(device) &&
+    if (vkd3d_application_verify_bc_image_requirements() &&
             create_info.image_info.format >= VK_FORMAT_BC1_RGB_UNORM_BLOCK &&
             create_info.image_info.format <= VK_FORMAT_BC7_SRGB_BLOCK)
     {
@@ -1326,6 +1326,12 @@ HRESULT vkd3d_get_image_allocation_info(struct d3d12_device *device,
 
         VK_CALL(vkGetImageMemoryRequirements(device->vk_device, image, &image_requirements));
         VK_CALL(vkDestroyImage(device->vk_device, image, NULL));
+
+        VKD3D_DBG_LOG_ONCE(INFO, TRACE)("BC image allocation verification active: vendor %#x, driver %u, "
+                "device size %"PRIu64", image size %"PRIu64".\n",
+                device->device_info.properties2.properties.vendorID,
+                (unsigned int)device->device_info.vulkan_1_2_properties.driverID,
+                allocation_info->SizeInBytes, image_requirements.size);
 
         if (image_requirements.size > allocation_info->SizeInBytes ||
                 image_requirements.alignment > allocation_info->Alignment)

@@ -1199,11 +1199,12 @@ bool vkd3d_application_requires_min16_denorms(void)
     return (vkd3d_application_feature_override & VKD3D_APPLICATION_FEATURE_REQUIRES_MIN16_DENORMS) != 0;
 }
 
-bool d3d12_device_verify_bc_image_requirements(const struct d3d12_device *device)
+bool vkd3d_application_verify_bc_image_requirements(void)
 {
-    return (vkd3d_application_feature_override & VKD3D_APPLICATION_FEATURE_VERIFY_BC_IMAGE_REQUIREMENTS) &&
-            (device->device_info.properties2.properties.vendorID == VKD3D_VENDOR_ID_QUALCOMM ||
-                    device->device_info.vulkan_1_2_properties.driverID == VK_DRIVER_ID_MESA_TURNIP);
+    /* Compatibility layers can expose AMD/RADV identities on Qualcomm/Turnip.
+     * Keep this opt-in per application, but do not gate a spec-valid memory
+     * requirements query on the reported identity of the underlying driver. */
+    return (vkd3d_application_feature_override & VKD3D_APPLICATION_FEATURE_VERIFY_BC_IMAGE_REQUIREMENTS) != 0;
 }
 
 VKD3D_DEBUG_CONTROL_BEHAVIOR_FLAGS vkd3d_debug_control_get_behavior_flags(void);
