@@ -34,7 +34,8 @@ enum vkd3d_application_feature_override
     VKD3D_APPLICATION_FEATURE_RDNA1_COMPATIBILITY = 1 << 5,
     VKD3D_APPLICATION_FEATURE_ASSUMES_STRICT_BYTE_ADDRESS_WRAP = 1 << 6,
     VKD3D_APPLICATION_FEATURE_BROKEN_WAVE128_REQUESTS = 1 << 7,
-    VKD3D_APPLICATION_FEATURE_REQUIRES_MIN16_DENORMS = 1 << 8
+    VKD3D_APPLICATION_FEATURE_REQUIRES_MIN16_DENORMS = 1 << 8,
+    VKD3D_APPLICATION_FEATURE_VERIFY_BC_IMAGE_REQUIREMENTS = 1 << 9
 };
 
 static enum vkd3d_application_feature_override vkd3d_application_feature_override;
@@ -51,6 +52,9 @@ struct vkd3d_instance_application_meta
     vkd3d_application_feature_override_flags override;
 };
 static const struct vkd3d_instance_application_meta application_override[] = {
+    /* BC emulation can require more memory than the device-only image query reports. */
+    { VKD3D_STRING_COMPARE_EXACT, "007FirstLight.exe", VKD3D_CONFIG_FLAGS_NONE, VKD3D_CONFIG_FLAGS_NONE,
+            VKD3D_APPLICATION_FEATURE_VERIFY_BC_IMAGE_REQUIREMENTS },
     /* MSVC fails to compile empty array. */
     { VKD3D_STRING_COMPARE_EXACT, "GravityMark.exe", VKD3D_CONFIG_FLAG_STATIC(FORCE_MINIMUM_SUBGROUP_SIZE) },
     /* Halo Infinite (1240440).
@@ -580,7 +584,7 @@ static const struct vkd3d_shader_quirk_hash first_light_hashes[] = {
 };
 
 static const struct vkd3d_shader_quirk_info first_light_quirks = {
-    first_light_hashes, ARRAY_SIZE(first_light_hashes), 0,
+    first_light_hashes, ARRAY_SIZE(first_light_hashes), VKD3D_SHADER_QUIRK_CLAMP_WAVE_SIZE_TO_THREAD_GROUP32,
 };
 
 static const struct vkd3d_shader_quirk_hash plague_tale_resonance_hashes[] = {
@@ -1193,6 +1197,14 @@ bool vkd3d_application_has_broken_wave128(void)
 bool vkd3d_application_requires_min16_denorms(void)
 {
     return (vkd3d_application_feature_override & VKD3D_APPLICATION_FEATURE_REQUIRES_MIN16_DENORMS) != 0;
+}
+
+bool vkd3d_application_verify_bc_image_requirements(void)
+{
+    /* Compatibility layers can expose AMD/RADV identities on Qualcomm/Turnip.
+     * Keep this opt-in per application, but do not gate a spec-valid memory
+     * requirements query on the reported identity of the underlying driver. */
+    return (vkd3d_application_feature_override & VKD3D_APPLICATION_FEATURE_VERIFY_BC_IMAGE_REQUIREMENTS) != 0;
 }
 
 VKD3D_DEBUG_CONTROL_BEHAVIOR_FLAGS vkd3d_debug_control_get_behavior_flags(void);

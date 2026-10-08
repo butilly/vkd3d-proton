@@ -1305,6 +1305,48 @@ HRESULT vkd3d_get_image_allocation_info(struct d3d12_device *device,
         allocation_info->SizeInBytes = max(requirements.memoryRequirements.size, allocation_info->SizeInBytes);
     }
 
+    /* A BC emulation layer may expand the backing image at vkCreateImage time,
+     * while the maintenance4 query still reports the compressed footprint.
+     * Query an unbound image with the same create info so the application can
+     * size its placed-resource heaps correctly. Do not substitute committed
+     * resources here, since that would break heap aliasing and data inheritance. */
+    if (vkd3d_application_verify_bc_image_requirements() &&
+            create_info.image_info.format >= VK_FORMAT_BC1_RGB_UNORM_BLOCK &&
+            create_info.image_info.format <= VK_FORMAT_BC7_SRGB_BLOCK)
+    {
+        VkMemoryRequirements image_requirements;
+        VkImage image;
+        VkResult vr;
+
+        if ((vr = VK_CALL(vkCreateImage(device->vk_device, &create_info.image_info, NULL, &image))) < 0)
+        {
+            WARN("Failed to create BC allocation query image, vr %d.\n", vr);
+            return hresult_from_vk_result(vr);
+        }
+
+        VK_CALL(vkGetImageMemoryRequirements(device->vk_device, image, &image_requirements));
+        VK_CALL(vkDestroyImage(device->vk_device, image, NULL));
+
+        VKD3D_DBG_LOG_ONCE(INFO, TRACE)("BC image allocation verification active: vendor %#x, driver %u, "
+                "device size %"PRIu64", image size %"PRIu64".\n",
+                device->device_info.properties2.properties.vendorID,
+                (unsigned int)device->device_info.vulkan_1_2_properties.driverID,
+                allocation_info->SizeInBytes, image_requirements.size);
+
+        if (image_requirements.size > allocation_info->SizeInBytes ||
+                image_requirements.alignment > allocation_info->Alignment)
+        {
+            WARN("BC image allocation query corrected: size %"PRIu64" -> %"PRIu64", alignment %"PRIu64" -> %"PRIu64
+                    " (fmt %#x, %u x %u x %u, levels %u).\n",
+                    allocation_info->SizeInBytes, image_requirements.size,
+                    allocation_info->Alignment, image_requirements.alignment, desc->Format,
+                    (unsigned int)desc->Width, desc->Height, desc->DepthOrArraySize, desc->MipLevels);
+        }
+
+        allocation_info->SizeInBytes = max(allocation_info->SizeInBytes, image_requirements.size);
+        allocation_info->Alignment = max(allocation_info->Alignment, image_requirements.alignment);
+    }
+
     /* Do not report alignments greater than DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT
      * since that might confuse apps. Instead, pad the allocation so that we can
      * align the image ourselves. */
