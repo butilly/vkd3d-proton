@@ -1229,13 +1229,53 @@ static HRESULT vkd3d_create_image(struct d3d12_device *device,
 static size_t vkd3d_compute_resource_layouts_from_desc(struct d3d12_device *device,
         const D3D12_RESOURCE_DESC1 *desc, struct vkd3d_subresource_layout *layouts);
 
+static HRESULT vkd3d_get_verified_image_memory_requirements(struct d3d12_device *device,
+        const VkDeviceImageMemoryRequirementsKHR *info, VkMemoryRequirements2 *requirements)
+{
+    const struct vkd3d_vk_device_procs *vk_procs = &device->vk_procs;
+    VkMemoryRequirements actual;
+    VkImage image;
+    VkResult vr;
+
+    VK_CALL(vkGetDeviceImageMemoryRequirements(device->vk_device, info, requirements));
+
+    if (!VKD3D_CONFIG_FLAG_IS_SET(VERIFY_BC_IMAGE_REQUIREMENTS) ||
+            info->pCreateInfo->format < VK_FORMAT_BC1_RGB_UNORM_BLOCK ||
+            info->pCreateInfo->format > VK_FORMAT_BC7_SRGB_BLOCK)
+        return S_OK;
+
+    /* Query an unbound image with the identical create info. Some BC emulation
+     * paths need more storage than the requirements-only query reports. Keep
+     * normal placed-resource binding and aliasing; do not substitute a private
+     * committed allocation or relax the bounds check at placement time. */
+    vkd3d_address_binding_tracker_mark_user_thread();
+    if ((vr = VK_CALL(vkCreateImage(device->vk_device, info->pCreateInfo, NULL, &image))) < 0)
+    {
+        WARN("Failed to verify BC image memory requirements, vr %d.\n", vr);
+        return hresult_from_vk_result(vr);
+    }
+
+    VK_CALL(vkGetImageMemoryRequirements(device->vk_device, image, &actual));
+    VK_CALL(vkDestroyImage(device->vk_device, image, NULL));
+
+    if (actual.size > requirements->memoryRequirements.size ||
+            actual.alignment > requirements->memoryRequirements.alignment)
+        WARN("BC image requirements corrected: query size %"PRIu64", alignment %"PRIu64
+                ", actual size %"PRIu64", alignment %"PRIu64".\n",
+                requirements->memoryRequirements.size, requirements->memoryRequirements.alignment,
+                actual.size, actual.alignment);
+
+    requirements->memoryRequirements.size = max(requirements->memoryRequirements.size, actual.size);
+    requirements->memoryRequirements.alignment = max(requirements->memoryRequirements.alignment, actual.alignment);
+    return S_OK;
+}
+
 HRESULT vkd3d_get_image_allocation_info(struct d3d12_device *device,
         const D3D12_RESOURCE_DESC1 *desc,
         UINT num_castable_formats, const DXGI_FORMAT *castable_formats,
         D3D12_RESOURCE_ALLOCATION_INFO *allocation_info)
 {
     static const D3D12_HEAP_PROPERTIES heap_properties = {D3D12_HEAP_TYPE_DEFAULT};
-    const struct vkd3d_vk_device_procs *vk_procs = &device->vk_procs;
     VkDeviceImageMemoryRequirementsKHR requirement_info;
     struct vkd3d_image_create_info create_info;
     D3D12_RESOURCE_DESC1 validated_desc;
@@ -1267,7 +1307,8 @@ HRESULT vkd3d_get_image_allocation_info(struct d3d12_device *device,
     requirements.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
     requirements.pNext = NULL;
 
-    VK_CALL(vkGetDeviceImageMemoryRequirements(device->vk_device, &requirement_info, &requirements));
+    if (FAILED(hr = vkd3d_get_verified_image_memory_requirements(device, &requirement_info, &requirements)))
+        return hr;
 
     allocation_info->SizeInBytes = requirements.memoryRequirements.size;
     allocation_info->Alignment = requirements.memoryRequirements.alignment;
@@ -1285,7 +1326,8 @@ HRESULT vkd3d_get_image_allocation_info(struct d3d12_device *device,
     if (create_info.image_info.usage & VK_IMAGE_USAGE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR)
     {
         create_info.image_info.usage &= ~VK_IMAGE_USAGE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR;
-        VK_CALL(vkGetDeviceImageMemoryRequirements(device->vk_device, &requirement_info, &requirements));
+        if (FAILED(hr = vkd3d_get_verified_image_memory_requirements(device, &requirement_info, &requirements)))
+            return hr;
         allocation_info->SizeInBytes = max(requirements.memoryRequirements.size, allocation_info->SizeInBytes);
         allocation_info->Alignment = max(requirements.memoryRequirements.alignment, allocation_info->Alignment);
     }
@@ -1301,7 +1343,8 @@ HRESULT vkd3d_get_image_allocation_info(struct d3d12_device *device,
     {
         /* 0 is effectively an ignore. */
         create_info.image_alignment_control.maximumRequestedAlignment = 0;
-        VK_CALL(vkGetDeviceImageMemoryRequirements(device->vk_device, &requirement_info, &requirements));
+        if (FAILED(hr = vkd3d_get_verified_image_memory_requirements(device, &requirement_info, &requirements)))
+            return hr;
         allocation_info->SizeInBytes = max(requirements.memoryRequirements.size, allocation_info->SizeInBytes);
     }
 
