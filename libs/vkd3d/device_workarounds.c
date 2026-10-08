@@ -51,6 +51,8 @@ struct vkd3d_instance_application_meta
     vkd3d_application_feature_override_flags override;
 };
 static const struct vkd3d_instance_application_meta application_override[] = {
+    /* The requirements-only query can omit backing storage for emulated BC images. */
+    { VKD3D_STRING_COMPARE_EXACT, "007FirstLight.exe", VKD3D_CONFIG_FLAG_STATIC(VERIFY_BC_IMAGE_REQUIREMENTS) },
     /* MSVC fails to compile empty array. */
     { VKD3D_STRING_COMPARE_EXACT, "GravityMark.exe", VKD3D_CONFIG_FLAG_STATIC(FORCE_MINIMUM_SUBGROUP_SIZE) },
     /* Halo Infinite (1240440).
@@ -573,6 +575,10 @@ static const struct vkd3d_shader_quirk_info empire_of_the_ants_quirks = {
 };
 
 static const struct vkd3d_shader_quirk_hash first_light_hashes[] = {
+    /* Unnamed variants confirmed to use exactly one 32x1x1 thread group. */
+    { NULL, 0xc198b8bb01473029, VKD3D_SHADER_QUIRK_CLAMP_WAVE_SIZE_TO_THREAD_GROUP32 },
+    { NULL, 0x48afefcc04720215, VKD3D_SHADER_QUIRK_CLAMP_WAVE_SIZE_TO_THREAD_GROUP32 },
+    { NULL, 0x7c3d1c7e9aabece4, VKD3D_SHADER_QUIRK_CLAMP_WAVE_SIZE_TO_THREAD_GROUP32 },
     { "MeshCalcDest_CS", 0, VKD3D_SHADER_QUIRK_CLAMP_WAVE_SIZE_TO_THREAD_GROUP32 },
     { "MeshBinning_CS", 0, VKD3D_SHADER_QUIRK_CLAMP_WAVE_SIZE_TO_THREAD_GROUP32 },
     { "MeshCount_CS", 0, VKD3D_SHADER_QUIRK_CLAMP_WAVE_SIZE_TO_THREAD_GROUP32 },
