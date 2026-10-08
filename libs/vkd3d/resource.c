@@ -4731,11 +4731,22 @@ HRESULT d3d12_resource_create_placed(struct d3d12_device *device, const D3D12_RE
 
         if (heap_offset + memory_requirements.size > heap->allocation.resource.size)
         {
+            D3D12_RESOURCE_ALLOCATION_INFO queried_info = {0};
+            HRESULT query_hr;
+
             ERR("Heap too small for the texture (heap=%"PRIu64", offset=%"PRIu64", size=%"PRIu64", align=%"PRIu64").\n",
                 heap->allocation.resource.size, heap_offset, memory_requirements.size, memory_requirements.alignment);
             ERR("  Desc: %u x %u x %u, levels %u, samples %u, dim %u, fmt #%x, align %"PRIu64", flags #%x.\n",
                     (unsigned int)desc->Width, desc->Height, desc->DepthOrArraySize, desc->MipLevels, desc->SampleDesc.Count,
                     desc->Dimension, desc->Format, desc->Alignment, desc->Flags);
+            /* Compare the requirements-only path with the actual image without
+             * changing allocation or aliasing semantics on this failure path. */
+            query_hr = vkd3d_get_image_allocation_info(device, desc,
+                    num_castable_formats, castable_formats, &queried_info);
+            ERR("Placed texture diagnostic: query hr %#x, size %"PRIu64", alignment %"PRIu64
+                    ", heap desc size %"PRIu64", heap flags %#x, heap type %u.\n",
+                    (unsigned int)query_hr, queried_info.SizeInBytes, queried_info.Alignment,
+                    heap->desc.SizeInBytes, heap->desc.Flags, heap->desc.Properties.Type);
             hr = E_INVALIDARG;
             goto fail;
         }

@@ -10841,6 +10841,9 @@ bool d3d12_device_validate_shader_meta(struct d3d12_device *device, const struct
                         meta->cs_wave_size_min, meta->cs_wave_size_max,
                         device->d3d12_caps.options1.WaveLaneCountMin,
                         device->d3d12_caps.options1.WaveLaneCountMax);
+                ERR("WaveSize diagnostic: shader %016"PRIx64", workgroup [%u, %u, %u], meta flags %#x.\n",
+                        meta->hash, meta->cs_workgroup_size[0], meta->cs_workgroup_size[1],
+                        meta->cs_workgroup_size[2], meta->flags);
                 return false;
             }
         }
