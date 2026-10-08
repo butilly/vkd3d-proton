@@ -269,17 +269,7 @@ static bool vkd3d_timestamp_profiler_resolve_timestamp(struct vkd3d_timestamp_pr
 
 static bool vkd3d_timestamp_profile_path(char path[VKD3D_PATH_MAX])
 {
-    char app[VKD3D_PATH_MAX];
-
-    if (vkd3d_get_env_var("VKD3D_TIMESTAMP_PROFILE", path, VKD3D_PATH_MAX))
-        return true;
-
-    /* Container-local diagnostic: no environment change is needed for the rerun. */
-    if (!vkd3d_get_program_name(app) || strcmp(app, "007FirstLight.exe"))
-        return false;
-
-    strcpy(path, "C:\\windows\\temp\\gamenative-007-gpu.csv");
-    return true;
+    return vkd3d_get_env_var("VKD3D_TIMESTAMP_PROFILE", path, VKD3D_PATH_MAX);
 }
 
 static void vkd3d_timestamp_profiler_flush(struct vkd3d_timestamp_profiler *profiler)
