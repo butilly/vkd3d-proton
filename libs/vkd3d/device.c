@@ -10837,10 +10837,13 @@ bool d3d12_device_validate_shader_meta(struct d3d12_device *device, const struct
 
             if (!allowed_edge_case)
             {
-                ERR("Required WaveSize range [%u, %u], but supported range is [%u, %u].\n",
+                ERR("Required WaveSize range [%u, %u], but supported range is [%u, %u]. "
+                        "Shader %016"PRIx64", workgroup [%u, %u, %u].\n",
                         meta->cs_wave_size_min, meta->cs_wave_size_max,
                         device->d3d12_caps.options1.WaveLaneCountMin,
-                        device->d3d12_caps.options1.WaveLaneCountMax);
+                        device->d3d12_caps.options1.WaveLaneCountMax,
+                        meta->hash, meta->cs_workgroup_size[0],
+                        meta->cs_workgroup_size[1], meta->cs_workgroup_size[2]);
                 return false;
             }
         }
