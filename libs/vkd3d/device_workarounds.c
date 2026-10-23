@@ -99,8 +99,6 @@ static const struct vkd3d_instance_application_meta application_override[] = {
     /* PARANOID (946920). Similar concern with DXR. Add default UE configs. Also requires non-native FP16 somehow. */
     { VKD3D_STRING_COMPARE_EXACT, "Paranoid-Win64-Shipping.exe", VKD3D_CONFIG_FLAG_INIT_STATIC(.SMALL_VRAM_REBAR = 1, .NO_STAGGERED_SUBMIT = 1), VKD3D_CONFIG_FLAGS_NONE,
             VKD3D_APPLICATION_FEATURE_NO_DEFAULT_DXR_ON_DECK_AND_FRAME },
-    /*Tracing Decay (1973370). Similar concern with DXR as PARANOID. */
-    { VKD3D_STRING_COMPARE_EXACT, "TracingDecay-Win64-Shipping.exe", VKD3D_CONFIG_FLAGS_NONE, VKD3D_CONFIG_FLAGS_NONE, VKD3D_APPLICATION_FEATURE_NO_DEFAULT_DXR_ON_DECK_AND_FRAME },
     /* Lost Judgment (2058190) */
     { VKD3D_STRING_COMPARE_EXACT, "LostJudgment.exe", VKD3D_CONFIG_FLAG_STATIC(FORCE_INITIAL_TRANSITION) },
     /* Marvel's Spider-Man Remastered (1817070). DCC stores causes glitches when RT is enabled with RADV. */
@@ -221,8 +219,6 @@ static const struct vkd3d_instance_application_meta application_override[] = {
      * template makes those ExecuteIndirect draws disappear, and the game handles a failed
      * CreateCommandSignature by issuing the draws from the CPU instead. */
     { VKD3D_STRING_COMPARE_EXACT, "teardown.exe", VKD3D_CONFIG_FLAG_INIT_STATIC(.FAIL_UNSUPPORTED_STATE_TEMPLATE = 1) },
-    /* NBA 2K27 (4356430) */
-    { VKD3D_STRING_COMPARE_EXACT, "NBA2K27.exe", VKD3D_CONFIG_FLAG_INIT_STATIC(.DESCRIPTOR_HEAP = 1) },
     { VKD3D_STRING_COMPARE_NEVER, NULL },
 };
 
@@ -606,14 +602,6 @@ static const struct vkd3d_shader_quirk_info half_sword_quirks = {
     NULL, 0, VKD3D_SHADER_QUIRK_CLAMP_WAVE_SIZE_TO_THREAD_GROUP32,
 };
 
-static const struct vkd3d_shader_quirk_hash ac8_hashes[] = {
-    { "SkyTraceCS", 0, VKD3D_SHADER_QUIRK_FORCE_DENORM_LEGACY_FP16_CONVERSIONS },
-};
-
-static const struct vkd3d_shader_quirk_info ac8_quirks = {
-    ac8_hashes, ARRAY_SIZE(ac8_hashes), 0,
-};
-
 static const struct vkd3d_shader_quirk_meta application_shader_quirks[] = {
     /* F1 2020 (1080110) */
     { VKD3D_STRING_COMPARE_EXACT, "F1_2020_dx12.exe", &f1_2019_2020_quirks },
@@ -722,8 +710,6 @@ static const struct vkd3d_shader_quirk_meta application_shader_quirks[] = {
     { VKD3D_STRING_COMPARE_APPID, "1245620", &elden_ring_quirks },
     /* Half Sword (2397300) */
     { VKD3D_STRING_COMPARE_EXACT, "HalfSwordUE5-Win64-Shipping.exe", &half_sword_quirks },
-    /* ACE COMBAT 8 (2288340) */
-    { VKD3D_STRING_COMPARE_APPID, "2288340", &ac8_quirks },
     /* Unreal Engine 4 */
     { VKD3D_STRING_COMPARE_ENDS_WITH, "-Shipping.exe", &ue4_quirks },
     { VKD3D_STRING_COMPARE_NEVER, NULL, NULL },
@@ -1061,9 +1047,7 @@ void vkd3d_physical_device_info_apply_workarounds(struct vkd3d_physical_device_i
      * The 16 byte offset is a lie, as that is only actually required when we
      * use vectorized load-stores. When we emit vectorized load-store ops,
      * the storage buffer must be aligned properly, so this is fine in practice
-     * and is a nice speed boost.
-     * See vkd3d_init_shader_extensions. Need to add VKD3D_SHADER_TARGET_EXTENSION_SHADER_IMPLIED_SSBO_ALIGNMENT.
-     */
+     * and is a nice speed boost. */
     if (info->vulkan_1_2_properties.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY)
         info->properties2.properties.limits.minStorageBufferOffsetAlignment = 4;
 
@@ -1117,9 +1101,10 @@ void vkd3d_physical_device_info_apply_workarounds(struct vkd3d_physical_device_i
             device->device_info.present_timing_features.presentAtRelativeTime = VK_FALSE;
         }
 
-        if (info->vulkan_1_2_properties.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY)
+        if (!vkd3d_debug_control_is_test_suite() &&
+            info->vulkan_1_2_properties.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY)
         {
-            /* Float controls2 is broken where we need it to work. Keep using slow quantize path
+            /* Float controls2 is broken where we need it to work. Keep using bad QuantizeToFP16 path
              * until driver works. */
             WARN("Disabling shader_float_controls2 on NV drivers due to buggy implementation.\n");
             device->device_info.float_controls2_features.shaderFloatControls2 = VK_FALSE;
