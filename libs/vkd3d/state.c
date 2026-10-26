@@ -2683,12 +2683,10 @@ static void d3d12_pipeline_state_init_compile_arguments(struct d3d12_pipeline_st
     compile_arguments->promote_wave_size_heuristics =
             d3d12_device_supports_required_subgroup_size_for_stage(device, stage);
     compile_arguments->quirks = &vkd3d_shader_quirk_info;
+    compile_arguments->driver_id = device->device_info.vulkan_1_2_properties.driverID;
 
     if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_DRIVER_VERSION_SENSITIVE_SHADERS)
-    {
-        compile_arguments->driver_id = device->device_info.vulkan_1_2_properties.driverID;
         compile_arguments->driver_version = device->device_info.properties2.properties.driverVersion;
-    }
 
     if (stage == VK_SHADER_STAGE_FRAGMENT_BIT)
     {

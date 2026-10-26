@@ -1216,6 +1216,8 @@ int vkd3d_shader_compile_dxil(const struct vkd3d_shader_code *dxbc,
         spirv->meta.flags |= VKD3D_SHADER_META_FLAG_FORCE_GRAPHICS_BARRIER_BEFORE_RENDER_PASS;
 
     dxil_spv_begin_thread_allocator_context();
+    dxil_spv_set_thread_dxbc_nv_unsigned_itof_workaround(!compiler_args ||
+            compiler_args->driver_id == VK_DRIVER_ID_NVIDIA_PROPRIETARY);
 
     vkd3d_shader_dump_shader(hash, dxbc, is_dxil ? "dxil" : "dxbc");
 
