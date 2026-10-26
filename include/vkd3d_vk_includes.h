@@ -41,7 +41,6 @@ typedef enum VkImageLayout VkImageLayout;
 
 typedef enum D3D12_VK_EXTENSION
 {
-    D3D12_VK_EXT_OPACITY_MICROMAP   = 0x0,
     D3D12_VK_NVX_BINARY_IMPORT      = 0x1,
     D3D12_VK_NVX_IMAGE_VIEW_HANDLE  = 0x2,
     D3D12_VK_NV_LOW_LATENCY_2       = 0x3,
@@ -50,8 +49,8 @@ typedef enum D3D12_VK_EXTENSION
 
 typedef enum D3D12_OUT_OF_BAND_CQ_TYPE
 {
-    D3D12_OUT_OF_BAND_CQ_TYPE_RENDER  = 0,
-    D3D12_OUT_OF_BAND_CQ_TYPE_PRESENT = 1
+    OUT_OF_BAND_RENDER  = 0,
+    OUT_OF_BAND_PRESENT = 1
 } D3D12_OUT_OF_BAND_CQ_TYPE;
 
 typedef struct D3D12_CUBIN_DATA_HANDLE
@@ -98,70 +97,6 @@ typedef struct D3D12_LATENCY_RESULTS
     D3D12_FRAME_REPORT frame_reports[64];
     UINT8 rsvd[32];
 } D3D12_LATENCY_RESULTS;
-
-typedef struct D3D12_CREATE_CUBIN_SHADER_PARAMS
-{
-    void *pNext;
-    const void *pCubin;
-    UINT32 size;
-    UINT32 blockX;
-    UINT32 blockY;
-    UINT32 blockZ;
-    UINT32 dynSharedMemBytes;
-    const char *pShaderName;
-    UINT32 flags;
-    D3D12_CUBIN_DATA_HANDLE *hShader;
-} D3D12_CREATE_CUBIN_SHADER_PARAMS;
-
-typedef struct D3D12_GET_CUDA_MERGED_TEXTURE_SAMPLER_OBJECT_PARAMS
-{
-    void *pNext;
-    SIZE_T texDesc;
-    SIZE_T smpDesc;
-    UINT64 textureHandle;
-} D3D12_GET_CUDA_MERGED_TEXTURE_SAMPLER_OBJECT_PARAMS;
-
-typedef enum D3D12_GET_CUDA_INDEPENDENT_DESCRIPTOR_OBJECT_TYPE
-{
-    D3D12_GET_CUDA_INDEPENDENT_DESCRIPTOR_OBJECT_SURFACE = 0,
-    D3D12_GET_CUDA_INDEPENDENT_DESCRIPTOR_OBJECT_TEXTURE = 1,
-    D3D12_GET_CUDA_INDEPENDENT_DESCRIPTOR_OBJECT_SAMPLER = 2,
-} D3D12_GET_CUDA_INDEPENDENT_DESCRIPTOR_OBJECT_TYPE;
-
-typedef struct D3D12_GET_CUDA_INDEPENDENT_DESCRIPTOR_OBJECT_PARAMS
-{
-    void *pNext;
-    D3D12_GET_CUDA_INDEPENDENT_DESCRIPTOR_OBJECT_TYPE type;
-    SIZE_T desc;
-    UINT64 handle;
-} D3D12_GET_CUDA_INDEPENDENT_DESCRIPTOR_OBJECT_PARAMS;
-
-typedef enum D3D12_AGS_EXTENSION
-{
-	/* As defined by ags headers. */
-    D3D12_AGS_EXTENSION_INTRINSICS_16 = 0,
-    D3D12_AGS_EXTENSION_INTRINSICS_17,
-    D3D12_AGS_EXTENSION_USER_MARKERS,
-    D3D12_AGS_EXTENSION_APP_REGISTRATION,
-    D3D12_AGS_EXTENSION_UAV_BIND_SLOT,
-    D3D12_AGS_EXTENSION_INTRINSICS_19,
-    D3D12_AGS_EXTENSION_BASE_VERTEX,
-    D3D12_AGS_EXTENSION_BASE_INSTANCE,
-    D3D12_AGS_EXTENSION_GET_WAVE_SIZE,
-    D3D12_AGS_EXTENSION_FLOAT_CONVERSION,
-    D3D12_AGS_EXTENSION_READ_LANE_AT,
-    D3D12_AGS_EXTENSION_RAY_HIT_TOKEN,
-    D3D12_AGS_EXTENSION_SHADER_TOKEN,
-
-    /* Not part of the existing header, but useful regardless.
-     * May include emulation path if enabled in build.
-	 * Shift this out of range to make sure we don't trample of any reserved bits
-	 * since it's convenient to keep the bitfield ordering for simple ABI compat. */
-    D3D12_AGS_EXTENSION_WMMA_FP8 = 100,
-
-    /* Supported only if FP8 is supported natively by hardware. */
-    D3D12_AGS_EXTENSION_WMMA_FP8_NATIVE
-} D3D12_AGS_EXTENSION;
 
 #endif  // __VKD3D_VK_INCLUDES_H
 

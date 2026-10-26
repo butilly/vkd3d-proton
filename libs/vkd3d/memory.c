@@ -302,7 +302,7 @@ static HRESULT vkd3d_memory_transfer_queue_flush_locked(struct vkd3d_memory_tran
      * rather than rewriting the command buffer or dispatching the clear */
     vk_cmd_buffer = queue->vk_command_buffers[queue->command_buffer_index];
 
-    if (VKD3D_CONFIG_FLAG_IS_SET(LOG_MEMORY_BUDGET))
+    if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_LOG_MEMORY_BUDGET)
     {
         INFO("Submitting clear command list.\n");
         for (i = 0; i < queue->transfer_count; i++)
@@ -458,7 +458,7 @@ static HRESULT vkd3d_memory_transfer_queue_flush_locked(struct vkd3d_memory_tran
     vr = VK_CALL(vkQueueSubmit2(vk_queue, 1, &submit_info, VK_NULL_HANDLE));
     vkd3d_queue_release(queue->vkd3d_queue);
 
-    VKD3D_DEVICE_REPORT_FAULT_AND_BREADCRUMB_IF(queue->device, vr == VK_ERROR_DEVICE_LOST, vr);
+    VKD3D_DEVICE_REPORT_FAULT_AND_BREADCRUMB_IF(queue->device, vr == VK_ERROR_DEVICE_LOST);
 
     if (vr < 0)
     {
@@ -588,37 +588,6 @@ HRESULT vkd3d_memory_transfer_queue_build_empty_rtas(struct vkd3d_memory_transfe
     return S_OK;
 }
 
-bool vkd3d_memory_transfer_queue_poll_allocation_idle(struct vkd3d_memory_transfer_queue *queue,
-        const struct vkd3d_memory_allocation *allocation)
-{
-    bool ret;
-    assert(allocation->clear_semaphore_value);
-    pthread_mutex_lock(&queue->mutex);
-    /* If we haven't performed any ExecuteCommandLists calls since resource was created,
-     * we can prove that the resource cannot possibly be used in a current submit.
-     * The only case where that could happen is a case of use-before-alloc scenarios which is a very theoretical hole,
-     * but our idea of doing clear submits breaks down in that world anyway. */
-    ret = allocation->clear_semaphore_value == queue->next_signal_value;
-    pthread_mutex_unlock(&queue->mutex);
-    return ret;
-}
-
-bool vkd3d_memory_transfer_queue_clear_in_flight(struct vkd3d_memory_transfer_queue *queue,
-        const struct vkd3d_memory_allocation *allocation)
-{
-    bool ret;
-    assert(allocation->clear_semaphore_value);
-    pthread_mutex_lock(&queue->mutex);
-    /* We might be able to prove that the resource is in use by our internal clear queue.
-     * In this case, it would be a stall to free the resource, which is unfortunate.
-     * We can use this as a hint to ask the resource to be released in a deferred way. */
-    ret = allocation->clear_semaphore_value < queue->next_signal_value;
-    pthread_mutex_unlock(&queue->mutex);
-    if (ret)
-        ret = !vkd3d_memory_transfer_queue_wait_semaphore(queue, allocation->clear_semaphore_value, 0);
-    return ret;
-}
-
 static void vkd3d_memory_transfer_queue_wait_allocation(struct vkd3d_memory_transfer_queue *queue,
         const struct vkd3d_memory_allocation *allocation)
 {
@@ -745,7 +714,7 @@ static HRESULT vkd3d_select_memory_flags(struct d3d12_device *device, const D3D1
             if (vkd3d_atomic_uint32_load_explicit(&device->memory_info.has_used_gpu_upload_heap, vkd3d_memory_order_relaxed) == 1)
             {
                 *type_flags &= ~VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-                if (VKD3D_CONFIG_FLAG_IS_SET(LOG_MEMORY_BUDGET))
+                if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_LOG_MEMORY_BUDGET)
                 {
                     INFO("UPLOAD_HEAP memory will not use ReBar memory because the game has allocated memory from the GPU_UPLOAD_HEAP in the past.\n");
                 }
@@ -772,7 +741,7 @@ static HRESULT vkd3d_select_memory_flags(struct d3d12_device *device, const D3D1
                 case D3D12_CPU_PAGE_PROPERTY_WRITE_COMBINE:
                     *type_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 
-                    if (VKD3D_CONFIG_FLAG_IS_SET(FORCE_HOST_CACHED))
+                    if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_FORCE_HOST_CACHED)
                         *type_flags |= VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
                     else if (heap_properties->MemoryPoolPreference == D3D12_MEMORY_POOL_L1)
                         *type_flags |= VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
@@ -860,7 +829,7 @@ void vkd3d_free_device_memory(struct d3d12_device *device, const struct vkd3d_de
     VK_CALL(vkFreeMemory(device->vk_device, allocation->vk_memory, NULL));
     rebar_budget = !!(device->memory_info.rebar_budget_mask & (1u << allocation->vk_memory_type));
 
-    if (rebar_budget || VKD3D_CONFIG_FLAG_IS_SET(LOG_MEMORY_BUDGET))
+    if (rebar_budget || (vkd3d_config_flags & VKD3D_CONFIG_FLAG_LOG_MEMORY_BUDGET))
     {
         type_current = &device->memory_info.type_current[allocation->vk_memory_type];
         pthread_mutex_lock(&device->memory_info.budget_lock);
@@ -873,7 +842,7 @@ void vkd3d_free_device_memory(struct d3d12_device *device, const struct vkd3d_de
             device->memory_info.rebar_current -= allocation->size;
         }
 
-        if (VKD3D_CONFIG_FLAG_IS_SET(LOG_MEMORY_BUDGET))
+        if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_LOG_MEMORY_BUDGET)
         {
             INFO("Freeing memory of type %u, new total allocated size %"PRIu64" MiB.\n",
                     allocation->vk_memory_type, *type_current / (1024 * 1024));
@@ -888,7 +857,7 @@ void vkd3d_free_device_memory(struct d3d12_device *device, const struct vkd3d_de
         pthread_mutex_unlock(&device->memory_info.budget_lock);
     }
 
-    if (VKD3D_CONFIG_FLAG_IS_SET(LOG_MEMORY_BUDGET))
+    if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_LOG_MEMORY_BUDGET)
         vkd3d_report_memory_budget(device);
 }
 
@@ -983,7 +952,7 @@ static HRESULT vkd3d_try_allocate_device_memory(struct d3d12_device *device,
             pthread_mutex_lock(&memory_info->budget_lock);
             if (memory_info->rebar_current + size > memory_info->rebar_budget)
             {
-                if (VKD3D_CONFIG_FLAG_IS_SET(LOG_MEMORY_BUDGET))
+                if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_LOG_MEMORY_BUDGET)
                 {
                     INFO("Attempting to allocate from memory type %u, but exceeding fixed ReBAR budget: %"PRIu64" + %"PRIu64" > %"PRIu64".\n",
                             allocate_info.memoryTypeIndex, memory_info->rebar_current, size, memory_info->rebar_budget);
@@ -1038,7 +1007,7 @@ static HRESULT vkd3d_try_allocate_device_memory(struct d3d12_device *device,
                 VK_OBJECT_TYPE_DEVICE_MEMORY, (uint64_t)allocation->vk_memory, &info);
     }
 
-    if (rebar_budget || VKD3D_CONFIG_FLAG_IS_SET(LOG_MEMORY_BUDGET))
+    if (rebar_budget || (vkd3d_config_flags & VKD3D_CONFIG_FLAG_LOG_MEMORY_BUDGET))
     {
         type_current = &memory_info->type_current[allocate_info.memoryTypeIndex];
 
@@ -1051,7 +1020,7 @@ static HRESULT vkd3d_try_allocate_device_memory(struct d3d12_device *device,
             if (rebar_budget)
                 memory_info->rebar_current += size;
 
-            if (VKD3D_CONFIG_FLAG_IS_SET(LOG_MEMORY_BUDGET))
+            if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_LOG_MEMORY_BUDGET)
             {
                 INFO("Allocated %"PRIu64" KiB of %s memory of type %u, new total allocated size %"PRIu64" MiB.\n",
                         allocate_info.allocationSize / 1024,
@@ -1062,7 +1031,7 @@ static HRESULT vkd3d_try_allocate_device_memory(struct d3d12_device *device,
                     INFO("Current ReBAR usage: %"PRIu64" MiB.\n", memory_info->rebar_current / (1024 * 1024));
             }
         }
-        else if (VKD3D_CONFIG_FLAG_IS_SET(LOG_MEMORY_BUDGET))
+        else if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_LOG_MEMORY_BUDGET)
         {
             INFO("Failed to allocate %"PRIu64" KiB of type #%u, currently %"PRIu64" MiB is allocated with this type.\n",
                     allocate_info.allocationSize / 1024, allocate_info.memoryTypeIndex,
@@ -1072,7 +1041,7 @@ static HRESULT vkd3d_try_allocate_device_memory(struct d3d12_device *device,
         pthread_mutex_unlock(&memory_info->budget_lock);
     }
 
-    if (VKD3D_CONFIG_FLAG_IS_SET(LOG_MEMORY_BUDGET))
+    if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_LOG_MEMORY_BUDGET)
         vkd3d_report_memory_budget(device);
 
     if (vr != VK_SUCCESS)
@@ -1156,12 +1125,12 @@ static HRESULT vkd3d_import_host_memory(struct d3d12_device *device, void *host_
     import_info.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT;
     import_info.pHostPointer = host_address;
 
-    if (VKD3D_CONFIG_FLAG_IS_SET(USE_HOST_IMPORT_FALLBACK) ||
+    if ((vkd3d_config_flags & VKD3D_CONFIG_FLAG_USE_HOST_IMPORT_FALLBACK) ||
         FAILED(hr = vkd3d_try_allocate_device_memory(device, size,
             type_flags, type_mask, &import_info, true, allocation)))
     {
         if (FAILED(hr))
-            WARN("Failed to import host memory, hr %#x.\n", (int)hr);
+            WARN("Failed to import host memory, hr %#x.\n", hr);
         /* If we failed, fall back to a host-visible allocation. Generally
          * the app will access the memory thorugh the main host pointer,
          * so it's fine. */
@@ -1235,7 +1204,7 @@ static void *vkd3d_allocate_write_watch_pointer(const D3D12_HEAP_PROPERTIES *pro
 
     if (!(ptr = VirtualAlloc(NULL, (SIZE_T)size, MEM_COMMIT | MEM_RESERVE | MEM_WRITE_WATCH, protect)))
     {
-        ERR("Failed to allocate write watch pointer %#x.\n", (int)GetLastError());
+        ERR("Failed to allocate write watch pointer %#x.\n", GetLastError());
         return NULL;
     }
 
@@ -1253,7 +1222,7 @@ static void vkd3d_free_write_watch_pointer(void *pointer)
 {
 #ifdef _WIN32
     if (!VirtualFree(pointer, 0, MEM_RELEASE))
-        ERR("Failed to free write watch pointer %#x.\n", (int)GetLastError());
+        ERR("Failed to free write watch pointer %#x.\n", GetLastError());
 #else
     /* Not supported on other platforms. */
     (void)pointer;
@@ -1307,19 +1276,10 @@ static bool vkd3d_is_imported_allocation(const struct vkd3d_allocate_memory_info
     return false;
 }
 
-static bool d3d12_device_aligns_bda_64k(struct d3d12_device *device)
-{
-    /* Only seems to affect Turnip for now at least.
-     * TODO: We really should just have an extension for this.
-     */
-    return device->device_info.vulkan_1_2_properties.driverID != VK_DRIVER_ID_MESA_TURNIP;
-}
-
 static HRESULT vkd3d_memory_allocation_init(struct vkd3d_memory_allocation *allocation, struct d3d12_device *device,
         struct vkd3d_memory_allocator *allocator, const struct vkd3d_allocate_memory_info *info)
 {
     const struct vkd3d_vk_device_procs *vk_procs = &device->vk_procs;
-    VkBufferDeviceAddressAlignmentAllocateInfoVALVE alignment_info;
     VkMemoryPriorityAllocateInfoEXT priority_info;
     VkMemoryRequirements memory_requirements;
     VkMemoryAllocateFlagsInfo flags_info;
@@ -1329,7 +1289,6 @@ static HRESULT vkd3d_memory_allocation_init(struct vkd3d_memory_allocation *allo
     void *dummy_mapping;
     uint32_t type_mask;
     bool request_bda;
-    bool padded_bda;
     VkResult vr;
     HRESULT hr;
 
@@ -1351,43 +1310,8 @@ static HRESULT vkd3d_memory_allocation_init(struct vkd3d_memory_allocation *allo
      * only HOST_VISIBLE types and we use NO_FALLBACK allocation mode. */
     type_flags &= ~info->optional_memory_properties;
 
-    padded_bda = false;
-
     if (allocation->flags & VKD3D_ALLOCATION_FLAG_GLOBAL_BUFFER)
     {
-        VkDeviceSize padded_memory_requirement_size = info->memory_requirements.size;
-
-        /* UE5 relies on GPUVAs to be aligned to the heap alignment.
-         * Generally, applications are able to rely on GPUVAs being aligned,
-         * but there is no way to express this requirement in Vulkan.
-         * vkAllocateMemory() returns with whatever alignment is enough to satisfy any
-         * possible memory bind operation on it, which may very well be below 64k.
-         * To combat this, overallocate with a small 64k region, and shift any bind offset as needed.
-         * Don't do this for image-only allocations since VAs cannot be observed anyway.
-         * For host pointers, we cannot arbitrarily expand the size.
-         * For external resources, it seems like we don't support buffers in the implementation.
-         * Any dedicated or external memory shenanigans will go through pNext chain. Ignore
-         * alignment for those cases.
-         * For sparse, Turnip reports 64k alignment, but it's actually 4k, so our hacky workarounds
-         * will anger VVL, but should just work in reality. Other vendors might not like that though ...
-         */
-        if (!device->device_info.buffer_device_address_allocation_alignment_features.bufferDeviceAddressAllocationAlignment)
-        {
-            if ((!info->explicit_global_buffer_usage ||
-                    (info->explicit_global_buffer_usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT)) &&
-                !(info->flags & VKD3D_ALLOCATION_FLAG_INTERNAL_SCRATCH) &&
-                (info->flags & VKD3D_ALLOCATION_FLAG_REQUIRE_ALIGNED_GPU_ADDRESS) &&
-                !d3d12_device_aligns_bda_64k(device) && !host_ptr && !info->pNext &&
-                info->memory_requirements.alignment >= D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT)
-            {
-                /* D3D12 implementations do not honor 4 MiB alignment here.
-                 * NV and AMD both seem to target the maximum alignment they need for MSAA,
-                 * which is max 256k it seems. */
-                padded_memory_requirement_size += D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
-                padded_bda = true;
-            }
-        }
-
         if (info->explicit_global_buffer_usage)
         {
             /* If we only need specific buffer usages (used purely to clear memory for example),
@@ -1395,7 +1319,7 @@ static HRESULT vkd3d_memory_allocation_init(struct vkd3d_memory_allocation *allo
              * to prove if a VkBuffer has ever been used. With BDA and bindless, not so much ... */
             if (FAILED(hr = vkd3d_create_buffer_explicit_usage(device,
                     info->explicit_global_buffer_usage,
-                    padded_memory_requirement_size,
+                    info->memory_requirements.size,
                     "explicit-usage-global-buffer",
                     &allocation->resource.vk_buffer)))
                 return hr;
@@ -1408,7 +1332,7 @@ static HRESULT vkd3d_memory_allocation_init(struct vkd3d_memory_allocation *allo
             /* If requested, create a buffer covering the entire allocation
              * and derive the exact memory requirements from that. Any buffer
              * resources are just going to use this buffer with an offset. */
-            if (FAILED(hr = vkd3d_create_global_buffer(device, padded_memory_requirement_size,
+            if (FAILED(hr = vkd3d_create_global_buffer(device, info->memory_requirements.size,
                     &info->heap_properties, info->heap_flags, &allocation->resource.vk_buffer)))
                 return hr;
         }
@@ -1463,15 +1387,6 @@ static HRESULT vkd3d_memory_allocation_init(struct vkd3d_memory_allocation *allo
     {
         allocation->flags |= VKD3D_ALLOCATION_FLAG_GPU_ADDRESS;
         flags_info.flags |= VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
-
-        if (device->device_info.buffer_device_address_allocation_alignment_features.bufferDeviceAddressAllocationAlignment)
-        {
-            alignment_info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_ALIGNMENT_ALLOCATE_INFO_VALVE;
-            alignment_info.pNext = NULL;
-            /* There is no evidence in the wild of drivers returning more than 64k alignment. */
-            alignment_info.alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
-            vk_prepend_struct(&flags_info, &alignment_info);
-        }
     }
 
     allocation->resource.size = info->memory_requirements.size;
@@ -1502,7 +1417,7 @@ static HRESULT vkd3d_memory_allocation_init(struct vkd3d_memory_allocation *allo
 
         if (!(info->flags & VKD3D_ALLOCATION_FLAG_INTERNAL_SCRATCH) &&
             vkd3d_atomic_uint32_exchange_explicit(&device->memory_info.has_used_gpu_upload_heap, 1, vkd3d_memory_order_relaxed) != 1 &&
-            VKD3D_CONFIG_FLAG_IS_SET(LOG_MEMORY_BUDGET))
+            (vkd3d_config_flags & VKD3D_CONFIG_FLAG_LOG_MEMORY_BUDGET))
         {
             INFO("Allocated memory on GPU_UPLOAD_HEAP, disabling automatic UPLOAD to ReBar promotion.\n");
         }
@@ -1589,10 +1504,6 @@ static HRESULT vkd3d_memory_allocation_init(struct vkd3d_memory_allocation *allo
         /* Assign GPU address as necessary. */
         if (allocation->flags & VKD3D_ALLOCATION_FLAG_GPU_ADDRESS)
         {
-            /* D3D12 does not guarantee BDA alignment beyond 64k, even for 4M MSAA heaps. */
-            VkDeviceSize required_alignment =
-                min(D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT, info->memory_requirements.alignment);
-
             assert(allocation->flags & VKD3D_ALLOCATION_FLAG_GLOBAL_BUFFER);
             assert(request_bda);
 
@@ -1601,30 +1512,12 @@ static HRESULT vkd3d_memory_allocation_init(struct vkd3d_memory_allocation *allo
                 vkd3d_memory_allocation_free(allocation, device, allocator);
                 return hresult_from_vk_result(vr);
             }
-
-            if (padded_bda)
-            {
-                VkDeviceSize padding_offset = -allocation->resource.va & (D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT - 1);
-                allocation->realignment_offset = padding_offset;
-
-                if (padding_offset)
-                    TRACE("Padded BDA allocation with #%"PRIx64".\n", padding_offset);
-            }
-
-            if (info->memory_requirements.alignment &&
-                (allocation->resource.va + allocation->realignment_offset) & (required_alignment - 1))
-            {
-                FIXME_ONCE("Requested alignment of %"PRIx64", but got GPU VA of %"PRIx64" for intended start of heap, "
-                     "which is not aligned as expected. "
-                     "If application relies on this alignment, weird things might happen.\n",
-                     required_alignment, allocation->resource.va + allocation->realignment_offset);
-            }
         }
     }
 
     allocation->resource.cookie = vkd3d_allocate_cookie();
 
-    if (allocation->resource.vk_buffer && VKD3D_CONFIG_FLAG_IS_SET(DEBUG_UTILS))
+    if (allocation->resource.vk_buffer && (vkd3d_config_flags & VKD3D_CONFIG_FLAG_DEBUG_UTILS))
     {
         char name_buffer[1024];
         snprintf(name_buffer, sizeof(name_buffer), "GlobalBuffer (cookie %u)",
@@ -1636,7 +1529,7 @@ static HRESULT vkd3d_memory_allocation_init(struct vkd3d_memory_allocation *allo
     vkd3d_descriptor_debug_register_allocation_cookie(device->descriptor_qa_global_info,
             allocation->resource.cookie, info);
 
-    if (VKD3D_CONFIG_FLAG_IS_SET(DAMAGE_NOT_ZEROED_ALLOCATIONS) &&
+    if ((vkd3d_config_flags & VKD3D_CONFIG_FLAG_DAMAGE_NOT_ZEROED_ALLOCATIONS) &&
             (allocation->flags & VKD3D_ALLOCATION_FLAG_GLOBAL_BUFFER) &&
             (info->heap_flags & D3D12_HEAP_FLAG_CREATE_NOT_ZEROED))
     {
@@ -1841,7 +1734,7 @@ static HRESULT vkd3d_memory_chunk_create(struct d3d12_device *device, struct vkd
         return hr;
     }
 
-    if (VKD3D_CONFIG_FLAG_IS_SET(DEBUG_UTILS))
+    if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_DEBUG_UTILS)
     {
         char name_buffer[1024];
         snprintf(name_buffer, sizeof(name_buffer), "Chunk (cookie %u)",
@@ -1949,10 +1842,6 @@ static HRESULT vkd3d_memory_allocator_try_add_chunk(struct vkd3d_memory_allocato
         alloc_info.flags |= VKD3D_ALLOCATION_FLAG_GLOBAL_BUFFER;
         alloc_info.explicit_global_buffer_usage = explicit_global_buffer_usage;
     }
-
-    /* Should normally request aligned GPU address for chunks, but it creates
-     * too much of a mess in implementation of the chunk allocator, so skip it.
-     * It's not needed in any known content. */
 
     if (!vkd3d_array_reserve((void**)&allocator->chunks, &allocator->chunks_size,
             allocator->chunks_count + 1, sizeof(*allocator->chunks)))
@@ -2109,7 +1998,7 @@ static inline bool vkd3d_driver_can_zero_clear_alloc(struct d3d12_device *device
 bool vkd3d_allocate_image_memory_prefers_dedicated(struct d3d12_device *device,
         D3D12_HEAP_FLAGS heap_flags, const VkMemoryRequirements *requirements)
 {
-    if (VKD3D_CONFIG_FLAG_IS_SET(FORCE_DEDICATED_IMAGE_ALLOCATION))
+    if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_FORCE_DEDICATED_IMAGE_ALLOCATION)
         return true;
 
     /* If TIER_2 is not supported, we must never suballocate images, since we have no
@@ -2125,7 +2014,7 @@ bool vkd3d_allocate_image_memory_prefers_dedicated(struct d3d12_device *device,
     return requirements->size >= VKD3D_VA_BLOCK_SIZE &&
             (vkd3d_driver_can_zero_clear_alloc(device, true) ||
                     ((heap_flags & D3D12_HEAP_FLAG_CREATE_NOT_ZEROED) &&
-                    !VKD3D_CONFIG_FLAG_IS_SET(DAMAGE_NOT_ZEROED_ALLOCATIONS)));
+                    !(vkd3d_config_flags & VKD3D_CONFIG_FLAG_DAMAGE_NOT_ZEROED_ALLOCATIONS)));
 }
 
 static bool vkd3d_memory_info_allow_suballocate(struct d3d12_device *device,
@@ -2151,6 +2040,12 @@ static bool vkd3d_memory_info_allow_suballocate(struct d3d12_device *device,
     /* A suballocated image heap will have to support buffer + image placements. */
     if (device->d3d12_caps.options.ResourceHeapTier < D3D12_RESOURCE_HEAP_TIER_2)
         return false;
+
+    /* For image-only heaps where heaps are small, it's possible the application wants to use fine-grained memory priorities.
+     * Nixxes ports tend to do that for example. */
+
+    /* We may or may not want to disable this workaround if EXT_pageable is supported,
+     * but it's good to not have two different allocation paths on NVIDIA and RADV for now. */
 
     if (is_cpu_accessible_system_memory_heap(&info->heap_properties) ||
             !(info->flags & VKD3D_ALLOCATION_FLAG_ALLOW_IMAGE_SUBALLOCATION))
@@ -2181,7 +2076,7 @@ HRESULT vkd3d_allocate_memory(struct d3d12_device *device, struct vkd3d_memory_a
 
     needs_command_clear = !implementation_can_zero_clear_alloc &&
             !(info->heap_flags & D3D12_HEAP_FLAG_CREATE_NOT_ZEROED) &&
-            !VKD3D_CONFIG_FLAG_IS_SET(MEMORY_ALLOCATOR_SKIP_CLEAR);
+            !(vkd3d_config_flags & VKD3D_CONFIG_FLAG_MEMORY_ALLOCATOR_SKIP_CLEAR);
 
     if (!suballocate &&
             !needs_command_clear &&
@@ -2212,7 +2107,7 @@ HRESULT vkd3d_allocate_memory(struct d3d12_device *device, struct vkd3d_memory_a
                     VKD3D_QUEUE_TIMELINE_TRACE_STATE_TYPE_CLEAR_ALLOCATION, info->memory_requirements.size);
             vkd3d_memory_transfer_queue_fill_allocation(&device->memory_transfers, allocation, 0);
         }
-        else if (suballocate && VKD3D_CONFIG_FLAG_IS_SET(DAMAGE_NOT_ZEROED_ALLOCATIONS) &&
+        else if (suballocate && (vkd3d_config_flags & VKD3D_CONFIG_FLAG_DAMAGE_NOT_ZEROED_ALLOCATIONS) &&
                 (allocation->flags & VKD3D_ALLOCATION_FLAG_GLOBAL_BUFFER) &&
                 (info->heap_flags & D3D12_HEAP_FLAG_CREATE_NOT_ZEROED))
         {
@@ -2298,7 +2193,7 @@ HRESULT vkd3d_allocate_heap_memory(struct d3d12_device *device, struct vkd3d_mem
 
     hr = vkd3d_allocate_memory(device, allocator, &alloc_info, allocation);
 
-    if (SUCCEEDED(hr) && VKD3D_CONFIG_FLAG_IS_SET(DEBUG_UTILS) && !allocation->chunk)
+    if (SUCCEEDED(hr) && (vkd3d_config_flags & VKD3D_CONFIG_FLAG_DEBUG_UTILS) && !allocation->chunk)
     {
         char name_buffer[1024];
         snprintf(name_buffer, sizeof(name_buffer), "Heap %s (cookie %u)",
@@ -2321,7 +2216,7 @@ HRESULT vkd3d_allocate_heap_memory(struct d3d12_device *device, struct vkd3d_mem
 }
 
 HRESULT vkd3d_allocate_internal_buffer_memory(struct d3d12_device *device, VkBuffer vk_buffer,
-        VkMemoryPropertyFlags type_flags, VkMemoryAllocateFlags allocate_flags,
+        VkMemoryPropertyFlags type_flags,
         struct vkd3d_device_memory_allocation *allocation)
 {
     const struct vkd3d_vk_device_procs *vk_procs = &device->vk_procs;
@@ -2333,7 +2228,7 @@ HRESULT vkd3d_allocate_internal_buffer_memory(struct d3d12_device *device, VkBuf
 
     flags_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
     flags_info.pNext = NULL;
-    flags_info.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT | allocate_flags;
+    flags_info.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
 
     VK_CALL(vkGetBufferMemoryRequirements(device->vk_device, vk_buffer, &memory_requirements));
 

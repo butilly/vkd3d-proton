@@ -23,7 +23,6 @@ static const uint WaveMatrixElementExtract    = 0x30;
 static const uint WaveMatrixLength            = 0x31;
 static const uint WaveMatrixCopy              = 0x32;
 static const uint WaveMatrixFill              = 0x33;
-static const uint MatrixElementWise           = 0x35;
 static const uint Float8Conversion            = 0x36;
 
 enum WaveMatrixOpDataFormat
@@ -149,19 +148,6 @@ static const uint WaveMatrixModifier_MatrixTileMask      = 0x1;
 static const uint WaveMatrixModifier_IndexMemTypeShift   = 14;
 static const uint WaveMatrixModifier_IndexMemTypeMask    = 0x3;
 
-enum Float8CvtOp
-{
-	Float8CvtOp_FP8_2_F32 = 0x0,
-	Float8CvtOp_BF8_2_F32 = 0x1,
-	Float8CvtOp_F32_2_FP8 = 0x2,
-	Float8CvtOp_F32_2_BF8 = 0x3,
-};
-
-static const int Float8Conversion_CvtOpShift = 0;
-static const int Float8Conversion_CvtOpMask  = 0xff;
-static const int Float8Conversion_SatShift   = 8;
-static const int Float8Conversion_SatMask    = 0x1;
-
 // For wave32 and FP32, we need up to 8 values to store a 16x16 matrix.
 struct WMMA_Matrix
 {
@@ -193,48 +179,6 @@ uint MatrixIO(uint channel, uint reg, uint type)
 	return (channel << WaveMatrixInOut_ChannelShift) |
 		(reg << WaveMatrixInOut_SecondRegFlagShift) |
 		(type << WaveMatrixInOut_MatRegTypeFlagShift);
-}
-
-uint Float32ToFloat8(float v)
-{
-	return AGSMagic(Code(Float8Conversion, 0, Float8CvtOp_F32_2_FP8), asuint(v), 0);
-}
-
-uint Float32ToFloat8Sat(float v)
-{
-	return AGSMagic(Code(Float8Conversion, 0, Float8CvtOp_F32_2_FP8 | (1u << Float8Conversion_SatShift)), asuint(v), 0);
-}
-
-uint Float32ToBFloat8(float v)
-{
-	return AGSMagic(Code(Float8Conversion, 0, Float8CvtOp_F32_2_BF8), asuint(v), 0);
-}
-
-uint Float32ToBFloat8Sat(float v)
-{
-	return AGSMagic(Code(Float8Conversion, 0, Float8CvtOp_F32_2_BF8 | (1u << Float8Conversion_SatShift)), asuint(v), 0);
-}
-
-float Float8ToFloat32(uint v)
-{
-	return asfloat(AGSMagic(Code(Float8Conversion, 0, Float8CvtOp_FP8_2_F32), v, 0));
-}
-
-// Makes no sense, but for testing purposes.
-float Float8ToFloat32Sat(uint v)
-{
-	return asfloat(AGSMagic(Code(Float8Conversion, 0, Float8CvtOp_FP8_2_F32 | (1u << Float8Conversion_SatShift)), v, 0));
-}
-
-float BFloat8ToFloat32(uint v)
-{
-	return asfloat(AGSMagic(Code(Float8Conversion, 0, Float8CvtOp_BF8_2_F32), v, 0));
-}
-
-// Makes no sense, but for testing purposes.
-float BFloat8ToFloat32Sat(uint v)
-{
-	return asfloat(AGSMagic(Code(Float8Conversion, 0, Float8CvtOp_BF8_2_F32 | (1u << Float8Conversion_SatShift)), v, 0));
 }
 
 WMMA_Matrix WMMA_MatMulAcc(WaveMatrixOpcode op, WMMA_Matrix A, WMMA_Matrix B, WMMA_Matrix C)
@@ -449,36 +393,5 @@ WMMA_Matrix WMMA_MatrixFill(WMMA_Type type, uint value)
 	ret.v[6] = AGSMagic(WaveMatrixFill, 1, MatrixIO(2, 1, WaveMatrixRegType_RetVal_Reg), 0, 0);
 	ret.v[7] = AGSMagic(WaveMatrixFill, 1, MatrixIO(3, 1, WaveMatrixRegType_RetVal_Reg), 0, 0);
 	return ret;
-}
-
-WMMA_Matrix WMMA_ElementWiseOp(WMMA_Type type, WMMA_Matrix A, WMMA_Matrix B, MatrixElementWiseOp op)
-{
-	// A matrix
-	AGSMagic(MatrixElementWise, 0, MatrixIO(0, 0, WaveMatrixRegType_A_TempReg), A.v[0], A.v[1]);
-	AGSMagic(MatrixElementWise, 0, MatrixIO(1, 0, WaveMatrixRegType_A_TempReg), A.v[2], A.v[3]);
-	AGSMagic(MatrixElementWise, 0, MatrixIO(0, 1, WaveMatrixRegType_A_TempReg), A.v[4], A.v[5]);
-	AGSMagic(MatrixElementWise, 0, MatrixIO(1, 1, WaveMatrixRegType_A_TempReg), A.v[6], A.v[7]);
-
-	// B matrix
-	AGSMagic(MatrixElementWise, 0, MatrixIO(0, 0, WaveMatrixRegType_B_TempReg), B.v[0], B.v[1]);
-	AGSMagic(MatrixElementWise, 0, MatrixIO(1, 0, WaveMatrixRegType_B_TempReg), B.v[2], B.v[3]);
-	AGSMagic(MatrixElementWise, 0, MatrixIO(0, 1, WaveMatrixRegType_B_TempReg), B.v[4], B.v[5]);
-	AGSMagic(MatrixElementWise, 0, MatrixIO(1, 1, WaveMatrixRegType_B_TempReg), B.v[6], B.v[7]);
-
-	// Configure type
-	AGSMagic(MatrixElementWise, 1, type.code, op, 0);
-
-	// Read output
-	WMMA_Matrix ret;
-	ret.v[0] = AGSMagic(MatrixElementWise, 2, MatrixIO(0, 0, WaveMatrixRegType_RetVal_Reg), 0, 0);
-	ret.v[1] = AGSMagic(MatrixElementWise, 2, MatrixIO(1, 0, WaveMatrixRegType_RetVal_Reg), 0, 0);
-	ret.v[2] = AGSMagic(MatrixElementWise, 2, MatrixIO(2, 0, WaveMatrixRegType_RetVal_Reg), 0, 0);
-	ret.v[3] = AGSMagic(MatrixElementWise, 2, MatrixIO(3, 0, WaveMatrixRegType_RetVal_Reg), 0, 0);
-	ret.v[4] = AGSMagic(MatrixElementWise, 2, MatrixIO(0, 1, WaveMatrixRegType_RetVal_Reg), 0, 0);
-	ret.v[5] = AGSMagic(MatrixElementWise, 2, MatrixIO(1, 1, WaveMatrixRegType_RetVal_Reg), 0, 0);
-	ret.v[6] = AGSMagic(MatrixElementWise, 2, MatrixIO(2, 1, WaveMatrixRegType_RetVal_Reg), 0, 0);
-	ret.v[7] = AGSMagic(MatrixElementWise, 2, MatrixIO(3, 1, WaveMatrixRegType_RetVal_Reg), 0, 0);
-	return ret;
-
 }
 

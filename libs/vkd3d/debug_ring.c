@@ -24,22 +24,18 @@
 #include "vkd3d_platform.h"
 #include <stdio.h>
 
-#ifdef VKD3D_ENABLE_DESCRIPTOR_QA
-#include "vkd3d_descriptor_debug.h"
-#endif
-
 void vkd3d_shader_debug_ring_init_spec_constant(struct d3d12_device *device,
-        struct vkd3d_shader_spec_info *info, vkd3d_shader_hash_t hash)
+        struct vkd3d_shader_debug_ring_spec_info *info, vkd3d_shader_hash_t hash)
 {
-    info->spec_info.pData = &info->debug_ring_constants;
-    info->spec_info.dataSize = sizeof(info->debug_ring_constants);
+    info->spec_info.pData = &info->constants;
+    info->spec_info.dataSize = sizeof(info->constants);
     info->spec_info.pMapEntries = info->map_entries;
     info->spec_info.mapEntryCount = 4;
 
-    info->debug_ring_constants.hash = hash;
-    info->debug_ring_constants.host_bda = device->debug_ring.ring_device_address;
-    info->debug_ring_constants.atomic_bda = device->debug_ring.atomic_device_address;
-    info->debug_ring_constants.ring_words = device->debug_ring.ring_size / sizeof(uint32_t);
+    info->constants.hash = hash;
+    info->constants.host_bda = device->debug_ring.ring_device_address;
+    info->constants.atomic_bda = device->debug_ring.atomic_device_address;
+    info->constants.ring_words = device->debug_ring.ring_size / sizeof(uint32_t);
 
     info->map_entries[0].constantID = 0;
     info->map_entries[0].offset = offsetof(struct vkd3d_shader_debug_ring_spec_constants, hash);
@@ -409,7 +405,7 @@ HRESULT vkd3d_shader_debug_ring_init(struct vkd3d_shader_debug_ring *ring,
 #endif
 
     if (FAILED(vkd3d_allocate_internal_buffer_memory(device, ring->host_buffer,
-            memory_props, 0, &ring->host_buffer_memory)))
+            memory_props, &ring->host_buffer_memory)))
         goto err_free_buffers;
 
     resource_desc.Width = ring->control_block_size;
@@ -429,7 +425,7 @@ HRESULT vkd3d_shader_debug_ring_init(struct vkd3d_shader_debug_ring *ring,
 #endif
 
     if (FAILED(vkd3d_allocate_internal_buffer_memory(device, ring->device_atomic_buffer,
-            memory_props, 0, &ring->device_atomic_buffer_memory)))
+            memory_props, &ring->device_atomic_buffer_memory)))
         goto err_free_buffers;
 
     if (VK_CALL(vkMapMemory(device->vk_device, ring->host_buffer_memory.vk_memory,
@@ -512,105 +508,5 @@ void vkd3d_shader_debug_ring_kick(struct vkd3d_shader_debug_ring *ring, struct d
     else
     {
         pthread_cond_signal(&ring->ring_cond);
-    }
-}
-
-static void vkd3d_shader_abort_print_message(const char *msg, size_t length)
-{
-    const char *term = memchr(msg, '\0', length);
-    ERR("Got message length of %zu\n", length);
-
-    if (term && term != msg)
-    {
-#ifdef VKD3D_ENABLE_DESCRIPTOR_QA
-        if (strcmp(msg, "ABRTMSG") == 0 && length == 8 + sizeof(struct vkd3d_abort_msg_payload))
-        {
-            struct vkd3d_abort_msg_payload payload;
-            const char *tag;
-
-            memcpy(&payload, msg + 8, sizeof(payload));
-            tag = vkd3d_expect_assume_qa_value_to_tag(payload.code);
-            ERR("QA: expect-assume error %s || shader %016"PRIx64", inst %u.\n",
-                 tag, payload.hash, payload.inst_index);
-        }
-        else
-#endif
-        {
-            /* ConstantDataKHR is packed in terms of u32 words. sizeof(str) including nul-terminator is rounded up.
-             * From there we get scalar alignment for arguments following the string payload. */
-            size_t argument_offset = align(term + 1 - msg, sizeof(uint32_t));
-            size_t format_length = term - msg;
-            size_t format_offset = 0;
-            size_t buflen = 0;
-            char buf[1024];
-
-            /* Very basic formatting support. Enough to report what we care about. */
-            while (format_offset < format_length && buflen < ARRAY_SIZE(buf) - 64)
-            {
-                if (format_offset + 2 <= format_length && strncmp(msg + format_offset, "%%", 2) == 0)
-                {
-                    buf[buflen++] = '%';
-                    format_offset += 2;
-                }
-
-#define CHECK_FORMAT_STRING(str, host_str, type) \
-            if (format_offset + strlen(str) <= format_length && strncmp(msg + format_offset, str, strlen(str)) == 0) \
-            { \
-                type arg = 0; \
-                argument_offset = align(argument_offset, sizeof(type)); \
-                if (argument_offset + sizeof(type) <= length) \
-                    memcpy(&arg, msg + argument_offset, sizeof(type)); \
-                argument_offset += sizeof(type); \
-                buflen += snprintf(buf + buflen, ARRAY_SIZE(buf) - buflen, host_str, arg); \
-                format_offset += strlen(str); \
-                continue; \
-            }
-
-                CHECK_FORMAT_STRING("%u", "%u", uint32_t);
-                CHECK_FORMAT_STRING("%x", "%x", uint32_t);
-                CHECK_FORMAT_STRING("%d", "%d", int32_t);
-                CHECK_FORMAT_STRING("%lu", "%"PRIu64, uint64_t);
-                CHECK_FORMAT_STRING("%ld", "%"PRId64, int64_t);
-                CHECK_FORMAT_STRING("%lx", "%"PRIx64, uint64_t);
-                CHECK_FORMAT_STRING("%f", "%f", float);
-                CHECK_FORMAT_STRING("%g", "%g", float);
-
-                if (format_offset < format_length)
-                    buf[buflen++] = msg[format_offset++];
-            }
-
-            buf[buflen] = '\0';
-            ERR("ShaderAbort payload: %s\n", buf);
-        }
-    }
-    else
-    {
-        ERR("Message does not look like a printf.\n");
-    }
-}
-
-void vkd3d_shader_abort_print_message_sequence(const uint64_t *tokens, size_t length)
-{
-    /* The buffer is laid out as raw length + payload pairs. Pairs are aligned to 64-bit. */
-    while (length >= sizeof(uint64_t))
-    {
-        uint64_t msg_length = tokens[0];
-        uint64_t aligned_msg_length;
-        length -= sizeof(uint64_t);
-        tokens++;
-
-        if (msg_length > length)
-        {
-            ERR("Invalid message length.\n");
-            return;
-        }
-
-        aligned_msg_length = align64(msg_length, sizeof(*tokens));
-
-        vkd3d_shader_abort_print_message((const char *)tokens, msg_length);
-        tokens += aligned_msg_length / sizeof(*tokens);
-
-        /* The total length of buffer doesn't have to be aligned to 8 bytes. */
-        length -= min(aligned_msg_length, length);
     }
 }

@@ -25,7 +25,6 @@
 #ifdef _WIN32
 #include <stdio.h>
 #include "vkd3d_win32.h"
-#include "dxcore_interface.h"
 #endif
 #include "vkd3d_sonames.h"
 #include "vkd3d.h"
@@ -43,8 +42,6 @@
 #else
 #define DLLEXPORT
 #endif
-
-#include <inttypes.h>
 
 typedef IVKD3DCoreInterface d3d12core_interface;
 HRESULT WINAPI DLLEXPORT D3D12GetInterface(REFCLSID rcslid, REFIID iid, void** debug);
@@ -73,12 +70,12 @@ static BOOL wait_vr_key(HKEY vr_key)
     size = sizeof(value);
     if ((status = RegQueryValueExA(vr_key, "state", NULL, &type, (BYTE *)&value, &size)))
     {
-        ERR("OpenVR: could not query value, status %d.\n", (int)status);
+        ERR("OpenVR: could not query value, status %d.\n", status);
         return false;
     }
     if (type != REG_DWORD)
     {
-        ERR("OpenVR: unexpected value type %d.\n", (int)type);
+        ERR("OpenVR: unexpected value type %d.\n", type);
         return false;
     }
 
@@ -102,7 +99,7 @@ static BOOL wait_vr_key(HKEY vr_key)
         size = sizeof(value);
         if ((status = RegQueryValueExA(vr_key, "state", NULL, &type, (BYTE *)&value, &size)))
         {
-            ERR("OpenVR: could not query value, status %d.\n", (int)status);
+            ERR("OpenVR: could not query value, status %d.\n", status);
             break;
         }
         if (value)
@@ -111,13 +108,13 @@ static BOOL wait_vr_key(HKEY vr_key)
 
         while ((wait_status = WaitForSingleObject(event, 1000)) == WAIT_TIMEOUT && max_retry)
         {
-            WARN("VR state wait timeout (retries left %u).\n", (int)max_retry);
+            WARN("VR state wait timeout (retries left %u).\n", max_retry);
             max_retry--;
         }
 
         if (wait_status != WAIT_OBJECT_0 && wait_status != WAIT_TIMEOUT)
         {
-            ERR("Got unexpected wait status %u.\n", (int)wait_status);
+            ERR("Got unexpected wait status %u.\n", wait_status);
             break;
         }
     }
@@ -136,7 +133,7 @@ static char *openvr_instance_extensions()
 
     if (status != ERROR_SUCCESS)
     {
-        WARN("Failed to open VR registry key, status %d.\n", (int)status);
+        WARN("Failed to open VR registry key, status %d.\n", status);
         return NULL;
     }
     if (!wait_vr_key(vr_key))
@@ -149,13 +146,13 @@ static char *openvr_instance_extensions()
     status = RegQueryValueExA(vr_key, "openvr_vulkan_instance_extensions", NULL, &type, NULL, &len);
     if (status != ERROR_SUCCESS)
     {
-        WARN("Failed to query VR instance extensions, status %d.\n", (int)status);
+        WARN("Failed to query VR instance extensions, status %d.\n", status);
         RegCloseKey(vr_key);
         return NULL;
     }
     if (type != REG_SZ)
     {
-        WARN("Unexpected VR instance extensions type %d.\n", (int)type);
+        WARN("Unexpected VR instance extensions type %d.\n", type);
         RegCloseKey(vr_key);
         return NULL;
     }
@@ -163,7 +160,7 @@ static char *openvr_instance_extensions()
     status = RegQueryValueExA(vr_key, "openvr_vulkan_instance_extensions", NULL, &type, (BYTE *)openvr_instance_extensions, &len);
     if (status != ERROR_SUCCESS)
     {
-        WARN("Failed to query VR instance extensions, status %d.\n", (int)status);
+        WARN("Failed to query VR instance extensions, status %d.\n", status);
         vkd3d_free(openvr_instance_extensions);
         openvr_instance_extensions = NULL;
     }
@@ -182,7 +179,7 @@ static char *openvr_device_extensions(DXGI_ADAPTER_DESC *desc)
 
     if (status != ERROR_SUCCESS)
     {
-        WARN("Failed to open VR registry key, status %d.\n", (int)status);
+        WARN("Failed to open VR registry key, status %d.\n", status);
         return NULL;
     }
     if (!wait_vr_key(vr_key))
@@ -197,13 +194,13 @@ static char *openvr_device_extensions(DXGI_ADAPTER_DESC *desc)
     status = RegQueryValueExA(vr_key, key_name, NULL, &type, NULL, &len);
     if (status != ERROR_SUCCESS)
     {
-        WARN("Failed to query VR instance extensions, status %d.\n", (int)status);
+        WARN("Failed to query VR instance extensions, status %d.\n", status);
         RegCloseKey(vr_key);
         return NULL;
     }
     if (type != REG_SZ)
     {
-        WARN("Unexpected VR instance extensions type %d.\n", (int)type);
+        WARN("Unexpected VR instance extensions type %d.\n", type);
         RegCloseKey(vr_key);
         return NULL;
     }
@@ -211,7 +208,7 @@ static char *openvr_device_extensions(DXGI_ADAPTER_DESC *desc)
     status = RegQueryValueExA(vr_key, key_name, NULL, &type, (BYTE *)openvr_device_extensions, &len);
     if (status != ERROR_SUCCESS)
     {
-        WARN("Failed to query VR instance extensions, status %d.\n", (int)status);
+        WARN("Failed to query VR instance extensions, status %d.\n", status);
         vkd3d_free(openvr_device_extensions);
         openvr_device_extensions = NULL;
     }
@@ -374,7 +371,6 @@ static bool load_modules(void)
 /* TODO: We need to attempt to dlopen() native DXVK DXGI. */
 static HRESULT d3d12_get_adapter(IDXGIAdapter **dxgi_adapter, IUnknown *adapter)
 {
-    IDXCoreAdapter *dxcore_adapter = NULL;
     IDXGIFactory4 *factory = NULL;
     HRESULT hr;
 
@@ -382,54 +378,21 @@ static HRESULT d3d12_get_adapter(IDXGIAdapter **dxgi_adapter, IUnknown *adapter)
     {
         if (FAILED(hr = CreateDXGIFactory1(&IID_IDXGIFactory4, (void **)&factory)))
         {
-            WARN("Failed to create DXGI factory, hr %#x.\n", (int)hr);
+            WARN("Failed to create DXGI factory, hr %#x.\n", hr);
             goto done;
         }
 
         if (FAILED(hr = IDXGIFactory4_EnumAdapters(factory, 0, dxgi_adapter)))
         {
-            WARN("Failed to enumerate primary adapter, hr %#x.\n", (int)hr);
+            WARN("Failed to enumerate primary adapter, hr %#x.\n", hr);
             goto done;
         }
-    }
-    else if (SUCCEEDED(hr = IUnknown_QueryInterface(adapter, &IID_IDXCoreAdapter, (void **)&dxcore_adapter)))
-    {
-        DXGI_ADAPTER_DESC desc;
-        unsigned int i;
-        LUID luid;
-
-        if (FAILED(hr = IDXCoreAdapter_GetProperty(dxcore_adapter, InstanceLuid, sizeof(luid), &luid)))
-        {
-            WARN("Failed to get InstanceLuid property from dxcore adapter, hr %#x.\n", (int)hr);
-            goto done;
-        }
-        if (FAILED(hr = CreateDXGIFactory1(&IID_IDXGIFactory4, (void **)&factory)))
-        {
-            WARN("Failed to create DXGI factory, hr %#x.\n", (int)hr);
-            goto done;
-        }
-        for (i = 0; SUCCEEDED(IDXGIFactory4_EnumAdapters(factory, i, dxgi_adapter)); ++i)
-        {
-            if (FAILED(hr = IDXGIAdapter_GetDesc(*dxgi_adapter, &desc)))
-            {
-                IDXGIAdapter_Release(*dxgi_adapter);
-                *dxgi_adapter = NULL;
-                goto done;
-            }
-            if (!memcmp(&luid, &desc.AdapterLuid, sizeof(luid)))
-                goto done;
-            IDXGIAdapter_Release(*dxgi_adapter);
-        }
-        ERR("Adapter with luid %#lx:%#lx not found.\n", luid.HighPart, luid.LowPart);
-        hr = E_FAIL;
-        *dxgi_adapter = NULL;
-        goto done;
     }
     else
     {
         if (FAILED(hr = IUnknown_QueryInterface(adapter, &IID_IDXGIAdapter, (void **)dxgi_adapter)))
         {
-            WARN("Invalid adapter %p, hr %#x.\n", adapter, (int)hr);
+            WARN("Invalid adapter %p, hr %#x.\n", adapter, hr);
             goto done;
         }
     }
@@ -437,8 +400,6 @@ static HRESULT d3d12_get_adapter(IDXGIAdapter **dxgi_adapter, IUnknown *adapter)
 done:
     if (factory)
         IDXGIFactory4_Release(factory);
-    if (dxcore_adapter)
-        IDXCoreAdapter_Release(dxcore_adapter);
 
     return hr;
 }
@@ -509,8 +470,7 @@ static VkPhysicalDevice d3d12_find_physical_device(struct vkd3d_instance *instan
 
             if (vk_physical_device)
             {
-                WARN("Multiple adapters found with LUID %#x%x.\n",
-                        (int)adapter_desc->AdapterLuid.HighPart, (int)adapter_desc->AdapterLuid.LowPart);
+                WARN("Multiple adapters found with LUID %#x%x.\n", adapter_desc->AdapterLuid.HighPart, adapter_desc->AdapterLuid.LowPart);
 
                 match = properties2.properties.deviceID == adapter_desc->DeviceId &&
                         properties2.properties.vendorID == adapter_desc->VendorId;
@@ -581,7 +541,6 @@ static HRESULT vkd3d_create_instance_global(struct vkd3d_instance **out_instance
 
     static const char * const optional_instance_extensions[] =
     {
-        VK_KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME,
         VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME,
         VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME,
 #ifndef _WIN32
@@ -628,7 +587,7 @@ static HRESULT vkd3d_create_instance_global(struct vkd3d_instance **out_instance
 #endif
 
     if (FAILED(hr = vkd3d_create_instance(&instance_create_info, out_instance)))
-        WARN("Failed to create vkd3d instance, hr %#x.\n", (int)hr);
+        WARN("Failed to create vkd3d instance, hr %#x.\n", hr);
 
 #ifdef _WIN32
     if (instance_create_info.instance_extensions != instance_extensions)
@@ -640,10 +599,8 @@ static HRESULT vkd3d_create_instance_global(struct vkd3d_instance **out_instance
     return hr;
 }
 
-static HRESULT STDMETHODCALLTYPE d3d12core_CreateDeviceFromFactory(
-        IUnknown *adapter, D3D_FEATURE_LEVEL minimum_feature_level,
-        ID3D12DeviceFactory *factory,
-        REFIID iid, void **device)
+static HRESULT STDMETHODCALLTYPE d3d12core_CreateDevice(d3d12core_interface *core,
+        IUnknown *adapter, D3D_FEATURE_LEVEL minimum_feature_level, REFIID iid, void **device)
 {
     struct vkd3d_device_create_info device_create_info;
     struct vkd3d_instance *instance;
@@ -663,7 +620,6 @@ static HRESULT STDMETHODCALLTYPE d3d12core_CreateDeviceFromFactory(
 
     static const char * const optional_device_extensions[] =
     {
-        VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME,
         VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME,
     };
 
@@ -676,7 +632,7 @@ static HRESULT STDMETHODCALLTYPE d3d12core_CreateDeviceFromFactory(
 
     if (FAILED(hr = IDXGIAdapter_GetDesc(dxgi_adapter, &adapter_desc)))
     {
-        WARN("Failed to get adapter desc, hr %#x.\n", (int)hr);
+        WARN("Failed to get adapter desc, hr %#x.\n", hr);
         goto out_release_adapter;
     }
 
@@ -698,9 +654,6 @@ static HRESULT STDMETHODCALLTYPE d3d12core_CreateDeviceFromFactory(
     device_create_info.device_extension_count = ARRAY_SIZE(device_extensions);
     device_create_info.optional_device_extensions = optional_device_extensions;
     device_create_info.optional_device_extension_count = ARRAY_SIZE(optional_device_extensions);
-    device_create_info.independent = factory != NULL;
-    if (factory)
-        device_create_info.device_factory_flags = ID3D12DeviceFactory_GetFlags(factory);
 
 #ifdef _WIN32
     device_create_info.vk_physical_device = d3d12_find_physical_device(instance, vulkan_vkGetInstanceProcAddr, &adapter_desc);
@@ -739,16 +692,10 @@ out_release_adapter:
     return hr;
 }
 
-static HRESULT STDMETHODCALLTYPE d3d12core_CreateDevice(d3d12core_interface *core,
-        IUnknown *adapter, D3D_FEATURE_LEVEL minimum_feature_level, REFIID iid, void **device)
-{
-    return d3d12core_CreateDeviceFromFactory(adapter, minimum_feature_level, NULL, iid, device);
-}
-
 HRESULT STDMETHODCALLTYPE d3d12core_CreateRootSignatureDeserializer(d3d12core_interface *core,
         const void *data, SIZE_T data_size, REFIID iid, void **deserializer)
 {
-    TRACE("data %p, data_size %zu, iid %s, deserializer %p.\n",
+    TRACE("data %p, data_size %lu, iid %s, deserializer %p.\n",
             data, data_size, debugstr_guid(iid), deserializer);
 
     return vkd3d_create_root_signature_deserializer(data, data_size, iid, deserializer);
@@ -766,7 +713,7 @@ HRESULT STDMETHODCALLTYPE d3d12core_SerializeRootSignature(d3d12core_interface *
 HRESULT STDMETHODCALLTYPE d3d12core_CreateVersionedRootSignatureDeserializer(d3d12core_interface *core,
         const void *data, SIZE_T data_size, REFIID iid, void **deserializer)
 {
-    TRACE("data %p, data_size %zu, iid %s, deserializer %p.\n",
+    TRACE("data %p, data_size %lu, iid %s, deserializer %p.\n",
             data, data_size, debugstr_guid(iid), deserializer);
 
     return vkd3d_create_versioned_root_signature_deserializer(data, data_size, iid, deserializer);
@@ -788,12 +735,10 @@ HRESULT STDMETHODCALLTYPE d3d12core_GetDebugInterface(d3d12core_interface *core,
 
     TRACE("iid %s, debug %p.\n", debugstr_guid(iid), debug);
 
-    /* FIXME: Unsure what to do about S_FALSE returns here since there is no clsid. */
-
     if (debug)
         *debug = NULL;
 
-    if (IsEqualGUID(iid, &IID_ID3D12DeviceRemovedExtendedDataSettings))
+    if (!memcmp(iid, &IID_ID3D12DeviceRemovedExtendedDataSettings, sizeof(*iid)))
     {
         hr = d3d12_dred_settings_create(&dred_settings);
         *debug = dred_settings;
@@ -842,7 +787,6 @@ static uint32_t vkd3d_debug_control_is_running_under_test;
 static uint32_t vkd3d_debug_control_explode_on_error;
 static uint32_t vkd3d_debug_control_out_of_spec_behavior[VKD3D_DEBUG_CONTROL_OUT_OF_SPEC_BEHAVIOR_COUNT];
 static uint32_t vkd3d_debug_control_mute_validation_global_counter;
-static uint32_t vkd3d_debug_control_behavior_flags;
 
 static struct vkd3d_debug_control_muted_vuid
 {
@@ -866,11 +810,6 @@ bool vkd3d_debug_control_has_out_of_spec_test_behavior(VKD3D_DEBUG_CONTROL_OUT_O
     if (behavior >= VKD3D_DEBUG_CONTROL_OUT_OF_SPEC_BEHAVIOR_COUNT)
         return false;
     return vkd3d_atomic_uint32_load_explicit(&vkd3d_debug_control_out_of_spec_behavior[behavior], vkd3d_memory_order_relaxed) != 0;
-}
-
-VKD3D_DEBUG_CONTROL_BEHAVIOR_FLAGS vkd3d_debug_control_get_behavior_flags(void)
-{
-    return vkd3d_atomic_uint32_load_explicit(&vkd3d_debug_control_behavior_flags, vkd3d_memory_order_relaxed);
 }
 
 bool vkd3d_debug_control_mute_message_id(const char *vuid)
@@ -1018,14 +957,6 @@ static HRESULT STDMETHODCALLTYPE vkd3d_debug_control_SetOutOfSpecTestBehavior(
     }
 }
 
-static HRESULT STDMETHODCALLTYPE vkd3d_debug_control_SetBehaviorFlags(
-        IVKD3DDebugControlInterface *iface, VKD3D_DEBUG_CONTROL_BEHAVIOR_FLAGS behavior)
-{
-    (void)iface;
-    vkd3d_atomic_uint32_store_explicit(&vkd3d_debug_control_behavior_flags, behavior, vkd3d_memory_order_relaxed);
-    return S_OK;
-}
-
 static CONST_VTBL struct IVKD3DDebugControlInterfaceVtbl vkd3d_debug_control_vtbl =
 {
     vkd3d_debug_control_SetRunningUnderTest,
@@ -1035,7 +966,6 @@ static CONST_VTBL struct IVKD3DDebugControlInterfaceVtbl vkd3d_debug_control_vtb
     vkd3d_debug_control_MuteValidationMessageID,
     vkd3d_debug_control_UnmuteValidationMessageID,
     vkd3d_debug_control_SetOutOfSpecTestBehavior,
-    vkd3d_debug_control_SetBehaviorFlags,
 };
 
 static const struct IVKD3DDebugControlInterface vkd3d_debug_control_instance =
@@ -1048,281 +978,12 @@ static const d3d12core_interface d3d12core_interface_instance =
     .lpVtbl = &d3d12core_interface_vtbl,
 };
 
-struct d3d12_device_factory
-{
-    ID3D12DeviceFactory ID3D12DeviceFactory_iface;
-    ID3D12DeviceConfiguration1 ID3D12DeviceConfiguration1_iface;
-    LONG refcount;
-    D3D12_DEVICE_FACTORY_FLAGS flags;
-};
-
-static struct d3d12_device_factory *impl_from_ID3D12DeviceFactory(ID3D12DeviceFactory *iface)
-{
-    if (!iface)
-        return NULL;
-    return CONTAINING_RECORD(iface, struct d3d12_device_factory, ID3D12DeviceFactory_iface);
-}
-
-static struct d3d12_device_factory *impl_from_ID3D12DeviceConfiguration1(ID3D12DeviceConfiguration1 *iface)
-{
-    if (!iface)
-        return NULL;
-    return CONTAINING_RECORD(iface, struct d3d12_device_factory, ID3D12DeviceConfiguration1_iface);
-}
-
-static ULONG STDMETHODCALLTYPE d3d12_device_factory_AddRef(ID3D12DeviceFactory *iface)
-{
-    struct d3d12_device_factory *factory = impl_from_ID3D12DeviceFactory(iface);
-    TRACE("iface %p\n", iface);
-    return InterlockedIncrement(&factory->refcount);
-}
-
-static ULONG STDMETHODCALLTYPE d3d12_device_factory_Release(ID3D12DeviceFactory *iface)
-{
-    struct d3d12_device_factory *factory = impl_from_ID3D12DeviceFactory(iface);
-    ULONG refcount;
-    TRACE("iface %p\n", iface);
-    refcount = InterlockedDecrement(&factory->refcount);
-    if (refcount == 0)
-        vkd3d_free(factory);
-    return refcount;
-}
-
-static HRESULT STDMETHODCALLTYPE d3d12_device_factory_QueryInterface(ID3D12DeviceFactory *iface,
-        REFIID iid, void **object)
-{
-    TRACE("iface %p, riid %s, object %p.\n", iface, debugstr_guid(iid), object);
-
-    if (!object)
-        return E_POINTER;
-
-    if (IsEqualGUID(iid, &IID_IUnknown) ||
-        IsEqualGUID(iid, &IID_ID3D12DeviceFactory))
-    {
-        d3d12_device_factory_AddRef(iface);
-        *object = iface;
-        return S_OK;
-    }
-
-    if (IsEqualGUID(iid, &IID_ID3D12DeviceConfiguration) ||
-        IsEqualGUID(iid, &IID_ID3D12DeviceConfiguration1))
-    {
-        /* DeviceConfiguration shares the refcount with the base interface. */
-        struct d3d12_device_factory *factory = impl_from_ID3D12DeviceFactory(iface);
-        d3d12_device_factory_AddRef(iface);
-        *object = &factory->ID3D12DeviceConfiguration1_iface;
-        return S_OK;
-    }
-
-    return E_NOINTERFACE;
-}
-
-static HRESULT STDMETHODCALLTYPE d3d12_device_factory_InitializeFromGlobalState(ID3D12DeviceFactory *iface)
-{
-    FIXME("iface %p stub!\n", iface);
-    /* This is rather murky since flags don't apply, only things like debug options and stuff
-     * which we don't support anyway. */
-    return S_OK;
-}
-
-static HRESULT STDMETHODCALLTYPE d3d12_device_factory_ApplyToGlobalState(ID3D12DeviceFactory *iface)
-{
-    FIXME("iface %p stub!\n", iface);
-    /* This is rather murky since flags don't apply, only things like debug options and stuff
-     * which we don't support anyway. */
-    return S_OK;
-}
-
-static HRESULT STDMETHODCALLTYPE d3d12_device_factory_SetFlags(ID3D12DeviceFactory *iface, D3D12_DEVICE_FACTORY_FLAGS flags)
-{
-    struct d3d12_device_factory *factory = impl_from_ID3D12DeviceFactory(iface);
-    TRACE("iface %p, flags #%x\n", iface, flags);
-    factory->flags = flags;
-    return S_OK;
-}
-
-static D3D12_DEVICE_FACTORY_FLAGS STDMETHODCALLTYPE d3d12_device_factory_GetFlags(ID3D12DeviceFactory *iface)
-{
-    struct d3d12_device_factory *factory = impl_from_ID3D12DeviceFactory(iface);
-    TRACE("iface %p\n", iface);
-    return factory->flags;
-}
-
-static HRESULT STDMETHODCALLTYPE d3d12_device_factory_GetConfigurationInterface(ID3D12DeviceFactory *iface,
-        REFCLSID clsid, REFIID iid, void **ppv)
-{
-    HRESULT hr;
-    TRACE("iface %p, clsid %s, iid %s, ppv %p!\n", iface, debugstr_guid(clsid), debugstr_guid(iid), ppv);
-
-    /* GetConfigurationInterface says only these classes are exposed by this particular interface.
-     * It's supposed to be equivalent to D3D12GetInterface more or less. */
-    if (IsEqualGUID(clsid, &CLSID_D3D12Debug) ||
-        IsEqualGUID(clsid, &CLSID_D3D12DeviceRemovedExtendedData) ||
-        IsEqualGUID(clsid, &CLSID_D3D12Tools))
-    {
-        /* GetDebugInterface and S_FALSE behavior is murky since there is no clsid we can key off of.
-         * Anything we expose via GetInterface would work without hackery.
-         * DRED is a stubbed out special case for now. */
-        if (!ppv && IsEqualGUID(clsid, &CLSID_D3D12DeviceRemovedExtendedData))
-            return S_FALSE;
-
-        /* If one of the global interfaces understand the interface, go with that. */
-        if (SUCCEEDED(hr = d3d12core_GetInterface(NULL, clsid, iid, ppv)))
-            return hr;
-        if (SUCCEEDED(hr = d3d12core_GetDebugInterface(NULL, iid, ppv)))
-            return hr;
-    }
-
-    return E_NOINTERFACE;
-}
-
-static HRESULT STDMETHODCALLTYPE d3d12_device_factory_EnableExperimentalFeatures(ID3D12DeviceFactory *iface,
-        UINT NumFeatures, const IID *pIIDs, void *pConfigurationStructs, UINT *pConfigurationStructSizes)
-{
-    TRACE("iface %p\n", iface);
-    return d3d12core_EnableExperimentalFeatures(NULL, NumFeatures, pIIDs, pConfigurationStructs, pConfigurationStructSizes);
-}
-
-static HRESULT STDMETHODCALLTYPE d3d12_device_factory_CreateDevice(ID3D12DeviceFactory *iface,
-        IUnknown *adapter, D3D_FEATURE_LEVEL FeatureLevel, REFIID iid, void **ppvDevice)
-{
-    TRACE("iface %p, adapter %p, FeatureLevel %u, iid %s, ppvDevice %p\n", iface,
-        adapter, FeatureLevel, debugstr_guid(iid), ppvDevice);
-    return d3d12core_CreateDeviceFromFactory(adapter, FeatureLevel, iface, iid, ppvDevice);
-}
-
-static CONST_VTBL ID3D12DeviceFactoryVtbl d3d12_device_factory_vtbl =
-{
-    /* IUnknown methods */
-    d3d12_device_factory_QueryInterface,
-    d3d12_device_factory_AddRef,
-    d3d12_device_factory_Release,
-    /* ID3D12DeviceFactory methods */
-    d3d12_device_factory_InitializeFromGlobalState,
-    d3d12_device_factory_ApplyToGlobalState,
-    d3d12_device_factory_SetFlags,
-    d3d12_device_factory_GetFlags,
-    d3d12_device_factory_GetConfigurationInterface,
-    d3d12_device_factory_EnableExperimentalFeatures,
-    d3d12_device_factory_CreateDevice,
-};
-
-static ULONG STDMETHODCALLTYPE d3d12_device_configuration_AddRef(ID3D12DeviceConfiguration1 *iface)
-{
-    struct d3d12_device_factory *factory = impl_from_ID3D12DeviceConfiguration1(iface);
-    return d3d12_device_factory_AddRef(&factory->ID3D12DeviceFactory_iface);
-}
-
-static ULONG STDMETHODCALLTYPE d3d12_device_configuration_Release(ID3D12DeviceConfiguration1 *iface)
-{
-    struct d3d12_device_factory *factory = impl_from_ID3D12DeviceConfiguration1(iface);
-    return d3d12_device_factory_Release(&factory->ID3D12DeviceFactory_iface);
-}
-
-static HRESULT STDMETHODCALLTYPE d3d12_device_configuration_QueryInterface(ID3D12DeviceConfiguration1 *iface,
-        REFIID iid, void **object)
-{
-    struct d3d12_device_factory *factory = impl_from_ID3D12DeviceConfiguration1(iface);
-    return d3d12_device_factory_QueryInterface(&factory->ID3D12DeviceFactory_iface, iid, object);
-}
-
-static D3D12_DEVICE_CONFIGURATION_DESC * STDMETHODCALLTYPE d3d12_device_configuration_GetDesc(
-        ID3D12DeviceConfiguration1 *iface, D3D12_DEVICE_CONFIGURATION_DESC *desc)
-{
-    TRACE("iface %p\n", iface);
-    memset(desc, 0, sizeof(*desc));
-    desc->SDKVersion = D3D12_SDK_VERSION;
-    return desc;
-}
-
-static HRESULT STDMETHODCALLTYPE d3d12_device_configuration_GetEnabledExperimentalFeatures(
-        ID3D12DeviceConfiguration1 *iface, GUID *pGuids, UINT NumGuids)
-{
-    FIXME("iface %p, pGuids %p, NumGuids %u stub!\n", iface, pGuids, NumGuids);
-    /* The spec doesn't say how this is supposed to work. We don't support experimental features anyway. */
-    return E_NOTIMPL;
-}
-
-static HRESULT STDMETHODCALLTYPE d3d12_device_configuration_SerializeVersionedRootSignature(
-        ID3D12DeviceConfiguration1 *iface, const D3D12_VERSIONED_ROOT_SIGNATURE_DESC *pDesc,
-        ID3DBlob **ppResult, ID3DBlob **ppError)
-{
-    TRACE("iface %p, pDesc %p, ppResult %p, ppError %p\n", iface, pDesc, ppResult, ppError);
-    return vkd3d_serialize_versioned_root_signature(pDesc, ppResult, ppError);
-}
-
-static HRESULT STDMETHODCALLTYPE d3d12_device_configuration_CreateVersionedRootSignatureDeserializer(
-        ID3D12DeviceConfiguration1 *iface, const void *pBlob, SIZE_T Size,
-        REFIID iid, void **ppvDeserializer)
-{
-    TRACE("iface %p, pBlob %p, Size %zu, iid %s, ppvDeserializer %p\n",
-        iface, pBlob, Size, debugstr_guid(iid), ppvDeserializer);
-    return vkd3d_create_versioned_root_signature_deserializer(pBlob, Size, iid, ppvDeserializer);
-}
-
-static HRESULT STDMETHODCALLTYPE d3d12_device_configuration_CreateVersionedRootSignatureDeserializerFromSubobjectInLibrary(
-        ID3D12DeviceConfiguration1 *iface, const void *pLibraryBlob, SIZE_T Size,
-        LPCWSTR RootSignatureSubobjectName, REFIID iid, void **ppvDeserializer)
-{
-    TRACE("iface %p, pLibraryBlob %p, Size %zu, RootSignatureSubobjectName %s, iid %s, ppvDeserializer %p\n",
-        iface, pLibraryBlob, Size, debugstr_w(RootSignatureSubobjectName), debugstr_guid(iid), ppvDeserializer);
-    return vkd3d_create_versioned_root_signature_deserializer_for_subobject(
-        pLibraryBlob, Size, RootSignatureSubobjectName, iid, ppvDeserializer);
-}
-
-static CONST_VTBL ID3D12DeviceConfiguration1Vtbl d3d12_device_configuration_vtbl =
-{
-    /* IUnknown methods */
-    d3d12_device_configuration_QueryInterface,
-    d3d12_device_configuration_AddRef,
-    d3d12_device_configuration_Release,
-    /* ID3D12DeviceConfiguration methods */
-    d3d12_device_configuration_GetDesc,
-    d3d12_device_configuration_GetEnabledExperimentalFeatures,
-    d3d12_device_configuration_SerializeVersionedRootSignature,
-    d3d12_device_configuration_CreateVersionedRootSignatureDeserializer,
-    /* ID3D12DeviceConfiguration1 methods */
-    d3d12_device_configuration_CreateVersionedRootSignatureDeserializerFromSubobjectInLibrary,
-};
-
-static ID3D12DeviceFactory *create_device_factory(void)
-{
-    struct d3d12_device_factory *factory = vkd3d_calloc(1, sizeof(*factory));
-    if (!factory)
-        return NULL;
-
-    factory->refcount = 1;
-    factory->ID3D12DeviceFactory_iface.lpVtbl = &d3d12_device_factory_vtbl;
-    factory->ID3D12DeviceConfiguration1_iface.lpVtbl = &d3d12_device_configuration_vtbl;
-    return &factory->ID3D12DeviceFactory_iface;
-}
-
 static HRESULT d3d12core_D3D12GetInterface(REFCLSID rcslid, REFIID iid, void **debug)
 {
     TRACE("rcslid %s iid %s, debug %p.\n", debugstr_guid(rcslid), debugstr_guid(iid), debug);
 
-    if (IsEqualGUID(rcslid, &CLSID_D3D12DeviceFactory))
-    {
-        ID3D12DeviceFactory *factory;
-        HRESULT hr;
-
-        if (!debug)
-            return S_FALSE;
-
-        factory = create_device_factory();
-        if (!factory)
-            return E_OUTOFMEMORY;
-
-        hr = ID3D12DeviceFactory_QueryInterface(factory, iid, debug);
-        ID3D12DeviceFactory_Release(factory);
-        return hr;
-    }
-
     if (IsEqualGUID(rcslid, &CLSID_VKD3DCore))
     {
-        if (!debug)
-            return S_FALSE;
-
         if (IsEqualGUID(iid, &IID_IVKD3DCoreInterface))
         {
             *debug = (void*)&d3d12core_interface_instance;
@@ -1332,9 +993,6 @@ static HRESULT d3d12core_D3D12GetInterface(REFCLSID rcslid, REFIID iid, void **d
 
     if (IsEqualGUID(rcslid, &CLSID_VKD3DDebugControl))
     {
-        if (!debug)
-            return S_FALSE;
-
         if (IsEqualGUID(iid, &IID_IVKD3DDebugControlInterface))
         {
             *debug = (void*)&vkd3d_debug_control_instance;
@@ -1352,4 +1010,4 @@ HRESULT WINAPI DLLEXPORT D3D12GetInterface(REFCLSID rcslid, REFIID iid, void **d
 
 /* Just expose the latest stable AgilitySDK version.
  * This is actually exported as a UINT and not a function it seems. */
-DLLEXPORT const UINT D3D12SDKVersion = D3D12_SDK_VERSION;
+DLLEXPORT const UINT D3D12SDKVersion = 618;

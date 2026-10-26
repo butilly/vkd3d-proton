@@ -18,12 +18,6 @@
 import "vkd3d_d3d12.idl";
 import "vkd3d_vk_includes.h";
 
-typedef enum D3D12_VK_EXT_PIPELINE_CREATION_STATE_FLAG
-{
-    D3D12_VK_EXT_PIPELINE_CREATION_STATE_FLAGS_NONE = 0x0,
-    D3D12_VK_EXT_PIPELINE_CREATION_STATE_FLAGS_ENABLE_OMM_SUPPORT = 0x1
-} D3D12_VK_EXT_PIPELINE_CREATION_STATE_FLAG;
-
 [
     uuid(11ea7a1a-0f6a-49bf-b612-3e30f8e201dd),
     object,
@@ -91,20 +85,6 @@ interface ID3D12DXVKInteropDevice2 : ID3D12DXVKInteropDevice1
 }
 
 [
-    uuid(22a70184-a6a4-4c24-bf97-7d6df9f12d8a),
-    object,
-    local,
-    pointer_default(unique)
-]
-interface ID3D12DXVKInteropDevice3 : ID3D12DXVKInteropDevice2
-{
-    /* Returns VkDeviceMemory and memory offset corresponding to the D3D12 heap allocation.
-     * If the heap has no Vulkan backing allocation yet, this method fails. */
-    HRESULT GetVulkanHeapInfo(ID3D12Heap *heap, UINT64 *vk_memory, UINT64 *heap_offset,
-            UINT32 *vk_memory_type);
-}
-
-[
     uuid(f3112584-41f9-348d-a59b-00b7e1d285d6),
     object,
     local,
@@ -130,56 +110,6 @@ interface ID3D12DeviceExt1 : ID3D12DeviceExt
     HRESULT CreateResourceFromBorrowedHandle(const D3D12_RESOURCE_DESC1 *desc, UINT64 vk_handle, ID3D12Resource **resource);
     HRESULT GetVulkanQueueInfoEx(ID3D12CommandQueue *queue, VkQueue *vk_queue, UINT32 *vk_queue_index, UINT32 *vk_queue_flags, UINT32 *vk_queue_family);
 }
-
-[
-    uuid(e859c4ac-ba8f-41c4-8eac-1137fde6158d),
-    object,
-    local,
-    pointer_default(unique)
-]
-interface ID3D12DeviceExt2 : ID3D12DeviceExt1
-{
-    BOOL SupportsCubin64bit();
-    HRESULT CreateCubinComputeShaderExV2(D3D12_CREATE_CUBIN_SHADER_PARAMS *params);
-    HRESULT GetCudaMergedTextureSamplerObject(D3D12_GET_CUDA_MERGED_TEXTURE_SAMPLER_OBJECT_PARAMS *params);
-    HRESULT GetCudaIndependentDescriptorObject(D3D12_GET_CUDA_INDEPENDENT_DESCRIPTOR_OBJECT_PARAMS *params);
-}
-
-[
-    uuid(3aefa75c-c9f3-4b7f-a180-5df695d083bf),
-    object,
-    local,
-    pointer_default(unique)
-]
-interface ID3D12DeviceExt3 : ID3D12DeviceExt2
-{
-    BOOL SupportsAGSExtension(D3D12_AGS_EXTENSION agsExtension);
-    HRESULT SetAGSUAVSlot(UINT uavSlot);
-}
-
-[
-    uuid(a91b5617-a06a-4d6f-b437-03ebbef91415),
-    object,
-    local,
-    pointer_default(unique)
-]
-interface ID3D12DeviceExt4 : ID3D12DeviceExt3
-{
-    BOOL IsNvShaderExtnOpCodeSupported(UINT32 op_code);
-    HRESULT SetNvShaderExtnSlotSpace(UINT32 uav_slot, UINT32 uav_space, BOOL local_thread);
-}
-
-[
-    uuid(e51323f6-3541-4ddf-894d-8a8c70e3e427),
-    object,
-    local,
-    pointer_default(unique)
-]
-interface ID3D12DeviceExt5 : ID3D12DeviceExt4
-{
-    BOOL SetCreatePipelineStateFlagsNVAPI(D3D12_VK_EXT_PIPELINE_CREATION_STATE_FLAG pipeline_state_flags);
-}
-
 
 /* 1:1 implementation of ffx_antilag2_dx12.h */
 struct AmdAntiLagAPIData_v1
@@ -220,17 +150,4 @@ struct AmdAntiLagAPIData_v2
 interface IAmdExtAntiLagApi : IUnknown
 {
     HRESULT UpdateAntiLagState(void *pData);
-}
-
-/* Used to get underlying vkd3d-proton own object from wrapped interface */
-[
-    uuid(cc1419e0-8ca3-4206-bc1f-064e7c7345cc),
-    object,
-    local,
-    pointer_default(unique)
-]
-interface ID3D12ExtDummyInterface
-{
-    /* This is to keep MSVC compilation happy. */
-    void dummy(void);
 }

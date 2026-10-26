@@ -85,10 +85,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_command_list_vkd3d_ext_LaunchCubinShaderE
     TRACE("iface %p, handle %p, block_x %u, block_y %u, block_z %u, smem_size %u, params %p, param_size %u, raw_params %p, raw_params_count %u\n",
            iface, handle, block_x, block_y, block_z, smem_size, params, param_size, raw_params, raw_params_count);
 
-    d3d12_command_list_flush_dgc_batch(command_list);
-    d3d12_command_list_update_global_descriptor_heap(command_list);
-
-    if (!handle || !params || !param_size)
+    if (!handle || !block_x || !block_y || !block_z || !params || !param_size)
         return E_INVALIDARG;
 
     launchInfo.function = handle->vkCuFunction;
@@ -123,21 +120,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_command_list_vkd3d_ext_LaunchCubinShader(
                                                             0 /* raw_params_count */);
 }
 
-static BOOL STDMETHODCALLTYPE d3d12_command_list_vkd3d_ext_VerifyOpacityMicromapArrayNVAPI(d3d12_command_list_vkd3d_ext_iface *iface,
-    D3D12_GPU_VIRTUAL_ADDRESS opacity_micromap_array)
-{
-    struct d3d12_command_list *list = d3d12_command_list_from_ID3D12GraphicsCommandListExt(iface);
-    enum vkd3d_rtas_kind rtas_kind;
-    VkAccelerationStructureKHR as;
-
-    TRACE("iface %p, opacity_micromap_array %#"PRIx64".\n", iface, opacity_micromap_array);
-
-    vkd3d_va_map_try_read_rtas(&list->device->memory_allocator.va_map, list->device,
-                opacity_micromap_array, &as, &rtas_kind);
-    return as != VK_NULL_HANDLE && (rtas_kind == VKD3D_RTAS_KIND_NON_TLAS || rtas_kind == VKD3D_RTAS_KIND_MUTATED);
-}
-
-CONST_VTBL struct ID3D12GraphicsCommandListExt2Vtbl d3d12_command_list_vkd3d_ext_vtbl =
+CONST_VTBL struct ID3D12GraphicsCommandListExt1Vtbl d3d12_command_list_vkd3d_ext_vtbl =
 {
     /* IUnknown methods */
     d3d12_command_list_vkd3d_ext_QueryInterface,
@@ -150,8 +133,5 @@ CONST_VTBL struct ID3D12GraphicsCommandListExt2Vtbl d3d12_command_list_vkd3d_ext
 
     /* ID3D12GraphicsCommandListExt1 methods */
     d3d12_command_list_vkd3d_ext_LaunchCubinShaderEx,
-
-    /* ID3D12GraphicsCommandListExt2 methods */
-    d3d12_command_list_vkd3d_ext_VerifyOpacityMicromapArrayNVAPI,
 };
 

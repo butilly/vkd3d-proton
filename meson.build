@@ -1,5 +1,5 @@
 # For maintainers: remember to update vcs_tag(fallback) as well
-project('vkd3d-proton', ['c', 'cpp'], version : '3.1.0', meson_version : '>= 0.49', default_options : [
+project('vkd3d-proton', ['c', 'cpp'], version : '3.0', meson_version : '>= 0.49', default_options : [
   'warning_level=2', 'c_std=c11', 'cpp_std=c++17'
 ])
 
@@ -89,17 +89,13 @@ glsl_generator = generator(glsl_compiler,
 
 threads_dep = dependency('threads')
 
-if vkd3d_platform == 'linux' or vkd3d_platform == 'android'
+if vkd3d_platform == 'linux'
   lib_dl           = vkd3d_compiler.find_library('dl')
   vkd3d_extra_libs = [ lib_dl, threads_dep ]
 elif vkd3d_platform == 'windows'
   lib_dxgi         = vkd3d_compiler.find_library('dxgi')
   lib_gdi32        = vkd3d_compiler.find_library('gdi32')
-  lib_version      = vkd3d_compiler.find_library('version')
-  lib_pathcch      = vkd3d_compiler.find_library('pathcch')
-  lib_psapi        = vkd3d_compiler.find_library('psapi')
-  lib_ntdll        = vkd3d_compiler.find_library('ntdll')
-  vkd3d_extra_libs = [ threads_dep, lib_version, lib_pathcch, lib_psapi, lib_ntdll ]
+  vkd3d_extra_libs = [ threads_dep ]
 else
   error('Unknown platform')
 endif
@@ -111,8 +107,7 @@ add_project_arguments(vkd3d_compiler.get_supported_arguments([
     # For some reason, the use of VLAs isn't in all+extra+pedantic
     # We don't want to use these accidentally from consts...
     '-Wvla',
-    '-Wformat',
-    '-Wno-format-truncation',
+    '-Wno-format',
     '-Wno-missing-field-initializers',
     '-Wno-unused-parameter',
     '-Wdeclaration-after-statement',
@@ -134,7 +129,7 @@ if cpu_family == 'x86'
 
   # Need to link against libatomic for 64-bit atomic emulation on x86
   # when using clang.
-  if vkd3d_platform == 'linux' or vkd3d_platform == 'android'
+  if vkd3d_platform == 'linux'
     if vkd3d_is_clang
       lib_atomic = vkd3d_compiler.find_library('atomic')
       vkd3d_extra_libs += lib_atomic
@@ -176,7 +171,7 @@ vkd3d_build = vcs_tag(
 vkd3d_version = vcs_tag(
   command : ['git', 'describe', '--always', '--tags', '--dirty=+'],
   input   : 'vkd3d_version.h.in',
-  output  : 'vkd3d_version.h', fallback : '301000')
+  output  : 'vkd3d_version.h', fallback : '201401')
 
 dxil_spirv = subproject('dxil-spirv')
 dxil_spirv_dep = dxil_spirv.get_variable('dxil_spirv_dep')
@@ -192,7 +187,7 @@ else
   lib_d3d12 = d3d12_dep
 endif
 
-if vkd3d_platform == 'linux' or vkd3d_platform == 'android'
+if vkd3d_platform == 'linux'
   pkg = import('pkgconfig')
   pkg.generate(d3d12_lib, filebase : 'libvkd3d-proton-d3d12', subdirs : 'vkd3d-proton', description : 'The vkd3d-proton D3D12 implementation')
   install_headers('include/vkd3d_vk_includes.h', 'include/vkd3d_types.h', 'include/vkd3d_win32.h', 'include/vkd3d_windows.h', subdir : 'vkd3d-proton')

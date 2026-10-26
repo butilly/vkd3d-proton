@@ -22,10 +22,6 @@
 #define VKD3D_DBG_CHANNEL VKD3D_DBG_CHANNEL_API
 #include "d3d12_crosstest.h"
 
-#ifndef _WIN32
-#include <sys/mman.h>
-#endif
-
 void test_clock_calibration(void)
 {
 #ifndef _WIN32
@@ -39,12 +35,12 @@ void test_clock_calibration(void)
         return;
 
     hr = ID3D12CommandQueue_GetClockCalibration(context.queue, &gpu_times[0], &cpu_times[0]);
-    ok(hr == S_OK, "Failed retrieve calibrated timestamps, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed retrieve calibrated timestamps, hr %#x.\n", hr);
 
     vkd3d_sleep(100);
 
     hr = ID3D12CommandQueue_GetClockCalibration(context.queue, &gpu_times[1], &cpu_times[1]);
-    ok(hr == S_OK, "Failed retrieve calibrated timestamps, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed retrieve calibrated timestamps, hr %#x.\n", hr);
 
     ok(gpu_times[1] > gpu_times[0], "Inconsistent GPU timestamps.\n");
     ok(cpu_times[1] > cpu_times[0], "Inconsistent CPU timestamps.\n");
@@ -55,18 +51,16 @@ void test_clock_calibration(void)
 
 void test_open_heap_from_address(void)
 {
+#ifdef _WIN32
     ID3D12Resource *readback_resource;
     struct test_context context;
     struct resource_readback rb;
     D3D12_HEAP_DESC heap_desc;
     ID3D12Resource *resource;
-    ID3D12Device13 *device13;
     unsigned int heap_size;
     ID3D12Device3 *device3;
     ID3D12Device *device;
-#ifdef _WIN32
     HANDLE file_handle;
-#endif
     ID3D12Heap *heap;
     unsigned int i;
     uint32_t *addr;
@@ -79,31 +73,19 @@ void test_open_heap_from_address(void)
 
     device = context.device;
     hr = ID3D12Device_QueryInterface(device, &IID_ID3D12Device3, (void **)&device3);
-    ok(hr == S_OK, "Failed to query ID3D12Device3, hr #%x.\n", (int)hr);
-
-    if (FAILED(ID3D12Device_QueryInterface(device, &IID_ID3D12Device13, (void **)&device13)))
-        device13 = NULL;
+    ok(hr == S_OK, "Failed to query ID3D12Device3, hr #%x.\n", hr);
 
     /* Simple case, import directly from VirtualAlloc. */
     {
         heap_size = 64 * 1024;
-#ifdef _WIN32
         addr = VirtualAlloc(NULL, heap_size, MEM_COMMIT, PAGE_READWRITE);
         ok(!!addr, "Failed to VirtualAllocate.\n");
-#else
-        addr = mmap(NULL, heap_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-        ok(addr != MAP_FAILED, "Failed to mmap.\n");
-#endif
 
         for (i = 0; i < heap_size / sizeof(uint32_t); i++)
             addr[i] = i;
 
-#ifdef _WIN32
         hr = ID3D12Device3_OpenExistingHeapFromAddress(device3, addr, &IID_ID3D12Heap, (void **)&heap);
-#else
-        hr = ID3D12Device13_OpenExistingHeapFromAddress1(device13, addr, heap_size, &IID_ID3D12Heap, (void **)&heap);
-#endif
-        ok(hr == S_OK, "Failed to open heap from address: hr #%x.\n", (int)hr);
+        ok(hr == S_OK, "Failed to open heap from address: hr #%x.\n", hr);
 
         freed = false;
 
@@ -117,7 +99,7 @@ void test_open_heap_from_address(void)
             resource = create_placed_buffer(device, heap, 0, heap_size, D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER, D3D12_RESOURCE_STATE_COPY_SOURCE);
             ok(!!resource, "Failed to create resource.\n");
             hr = ID3D12Resource_Map(resource, 0u, NULL, &map_ptr);
-            ok(hr == S_OK, "Failed to map resource, hr %#x.\n", (int)hr);
+            ok(hr == S_OK, "Failed to map resource, hr %#x.\n", hr);
             ID3D12Resource_Unmap(resource, 0u, NULL);
             ok(map_ptr == addr, "Expected mapped pointer %p to match VirtualAlloc address %p.\n", map_ptr, addr);
             readback_resource = create_default_buffer(device, heap_size, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST);
@@ -127,26 +109,19 @@ void test_open_heap_from_address(void)
             reset_command_list(context.list, context.allocator);
             ok(!memcmp(rb.data, addr, heap_size), "Expected exact copy.\n");
             release_resource_readback(&rb);
-#ifdef _WIN32
             freed = VirtualFree(addr, 0, MEM_RELEASE);
             todo ok(!freed, "Expected VirtualFree to fail.\n");
-#endif
             ID3D12Heap_Release(heap);
             ID3D12Resource_Release(readback_resource);
             ID3D12Resource_Release(resource);
         }
         if (!freed)
         {
-#ifdef _WIN32
             freed = VirtualFree(addr, 0, MEM_RELEASE);
             ok(freed, "Expected VirtualFree to succeed.\n");
-#else
-            munmap(addr, heap_size);
-#endif
         }
     }
 
-#ifdef _WIN32
     /* Import at offset, which should fail. */
     {
         heap_size = 64 * 1024;
@@ -168,7 +143,7 @@ void test_open_heap_from_address(void)
             addr[i] = i;
 
         hr = ID3D12Device3_OpenExistingHeapFromFileMapping(device3, file_handle, &IID_ID3D12Heap, (void **)&heap);
-        ok(hr == S_OK, "Failed to open heap from file mapping: hr #%x.\n", (int)hr);
+        ok(hr == S_OK, "Failed to open heap from file mapping: hr #%x.\n", hr);
 
         if (SUCCEEDED(hr))
         {
@@ -200,12 +175,12 @@ void test_open_heap_from_address(void)
         UnmapViewOfFile(addr);
         CloseHandle(file_handle);
     }
-#endif
 
-    if (device13)
-        ID3D12Device13_Release(device13);
     ID3D12Device3_Release(device3);
     destroy_test_context(&context);
+#else
+    skip("Cannot test OpenExistingHeapFrom* on non-native Win32 platforms.\n");
+#endif
 }
 
 void test_write_watch(void)
@@ -254,7 +229,7 @@ void test_write_watch(void)
     hr = ID3D12Device_CreateCommittedResource(context.device, &heap_properties,
             D3D12_HEAP_FLAG_ALLOW_WRITE_WATCH, &resource_desc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             NULL, &IID_ID3D12Resource, (void **)&buffer);
-    ok(hr == E_INVALIDARG, "Got hr %#x, expected %#x.\n", (int)hr, (int)E_INVALIDARG);
+    ok(hr == E_INVALIDARG, "Got hr %#x, expected %#x.\n", hr, E_INVALIDARG);
     if (buffer)
         ID3D12Resource_Release(buffer);
 
@@ -264,7 +239,7 @@ void test_write_watch(void)
     hr = ID3D12Device_CreateCommittedResource(context.device, &heap_properties,
             D3D12_HEAP_FLAG_ALLOW_WRITE_WATCH, &resource_desc, D3D12_RESOURCE_STATE_GENERIC_READ,
             NULL, &IID_ID3D12Resource, (void **)&buffer);
-    ok(hr == S_OK, "Got hr %#x, expected %#x.\n", (int)hr, (int)S_OK);
+    ok(hr == S_OK, "Got hr %#x, expected %#x.\n", hr, S_OK);
 
     if (FAILED(hr))
     {
@@ -274,7 +249,7 @@ void test_write_watch(void)
 
     /* Do some basic write watch testing... */
     hr = ID3D12Resource_Map(buffer, 0, NULL, (void**) &map_ptr);
-    ok(hr == S_OK, "Got hr %#x, expected %#x.\n", (int)hr, (int)S_OK);
+    ok(hr == S_OK, "Got hr %#x, expected %#x.\n", hr, S_OK);
     if (FAILED(hr))
     {
         skip("Failed to map write watch resource.\n");
@@ -282,7 +257,7 @@ void test_write_watch(void)
     }
 
     result = ResetWriteWatch((void*) map_ptr, mapping_size);
-    ok(!result, "Failed to ResetWriteWatch %#x.\n", (int)GetLastError());
+    ok(!result, "Failed to ResetWriteWatch %#x.\n", GetLastError());
     if (result)
     {
         skip("Failed to ResetWriteWatch, skipping the rest of the WRITE_WATCH tests.\n");
@@ -300,15 +275,15 @@ void test_write_watch(void)
     map_ptr[9 * page_size] = 'd';
 
     result = GetWriteWatch(WRITE_WATCH_FLAG_RESET, (void*) map_ptr, mapping_size, dirty_addresses, &address_count, &page_size);
-    ok(!result, "Failed to GetWriteWatch %#x.\n", (int)GetLastError());
+    ok(!result, "Failed to GetWriteWatch %#x.\n", GetLastError());
     if (result)
     {
         skip("Failed to GetWriteWatch, skipping the rest of the WRITE_WATCH tests.\n");
         goto done;
     }
 
-    ok(address_count == 4, "Expected address_count of %d, got %zu\n", 4, (size_t)address_count);
-    ok(page_size == 0x1000, "Expected page_size of %u, got %u\n", 0x1000, (unsigned int)page_size);
+    ok(address_count == 4, "Expected address_count of %p, got %p\n", 4, address_count);
+    ok(page_size == 0x1000, "Expected page_size of %u, got %u\n", 0x1000, page_size);
     ok(dirty_addresses[0] == (void*)&map_ptr[0 * page_size], "Expected dirty address 0 to be %p, got %p\n",
             (void*)&map_ptr[0 * page_size], dirty_addresses[0]);
     ok(dirty_addresses[1] == (void*)&map_ptr[1 * page_size], "Expected dirty address 1 to be %p, got %p\n",

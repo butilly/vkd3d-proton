@@ -56,7 +56,7 @@ HRESULT vkd3d_create_device(const struct vkd3d_device_create_info *create_info,
     }
     else if (FAILED(hr = vkd3d_create_instance(create_info->instance_create_info, &instance)))
     {
-        WARN("Failed to create instance, hr %#x.\n", (int)hr);
+        WARN("Failed to create instance, hr %#x.\n", hr);
         return E_FAIL;
     }
 
@@ -64,6 +64,12 @@ HRESULT vkd3d_create_device(const struct vkd3d_device_create_info *create_info,
     vkd3d_instance_decref(instance);
     if (FAILED(hr))
         return hr;
+
+    if (!device)
+    {
+        ID3D12Device12_Release(&object->ID3D12Device_iface);
+        return S_FALSE;
+    }
 
     return return_interface(&object->ID3D12Device_iface, &IID_ID3D12Device, iid, device);
 }
@@ -113,7 +119,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_root_signature_deserializer_QueryInterfac
 static ULONG STDMETHODCALLTYPE d3d12_root_signature_deserializer_AddRef(ID3D12RootSignatureDeserializer *iface)
 {
     struct d3d12_root_signature_deserializer *deserializer = impl_from_ID3D12RootSignatureDeserializer(iface);
-    unsigned int refcount = InterlockedIncrement(&deserializer->refcount);
+    ULONG refcount = InterlockedIncrement(&deserializer->refcount);
 
     TRACE("%p increasing refcount to %u.\n", deserializer, refcount);
 
@@ -123,7 +129,7 @@ static ULONG STDMETHODCALLTYPE d3d12_root_signature_deserializer_AddRef(ID3D12Ro
 static ULONG STDMETHODCALLTYPE d3d12_root_signature_deserializer_Release(ID3D12RootSignatureDeserializer *iface)
 {
     struct d3d12_root_signature_deserializer *deserializer = impl_from_ID3D12RootSignatureDeserializer(iface);
-    unsigned int refcount = InterlockedDecrement(&deserializer->refcount);
+    ULONG refcount = InterlockedDecrement(&deserializer->refcount);
 
     TRACE("%p decreasing refcount to %u.\n", deserializer, refcount);
 
@@ -178,7 +184,7 @@ HRESULT vkd3d_create_root_signature_deserializer(const void *data, SIZE_T data_s
     struct d3d12_root_signature_deserializer *object;
     HRESULT hr;
 
-    TRACE("data %p, data_size %zu, iid %s, deserializer %p.\n",
+    TRACE("data %p, data_size %lu, iid %s, deserializer %p.\n",
             data, data_size, debugstr_guid(iid), deserializer);
 
     if (!(object = vkd3d_malloc(sizeof(*object))))
@@ -240,7 +246,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_versioned_root_signature_deserializer_Que
 static ULONG STDMETHODCALLTYPE d3d12_versioned_root_signature_deserializer_AddRef(ID3D12VersionedRootSignatureDeserializer *iface)
 {
     struct d3d12_versioned_root_signature_deserializer *deserializer = impl_from_ID3D12VersionedRootSignatureDeserializer(iface);
-    unsigned int refcount = InterlockedIncrement(&deserializer->refcount);
+    ULONG refcount = InterlockedIncrement(&deserializer->refcount);
 
     TRACE("%p increasing refcount to %u.\n", deserializer, refcount);
 
@@ -250,7 +256,7 @@ static ULONG STDMETHODCALLTYPE d3d12_versioned_root_signature_deserializer_AddRe
 static ULONG STDMETHODCALLTYPE d3d12_versioned_root_signature_deserializer_Release(ID3D12VersionedRootSignatureDeserializer *iface)
 {
     struct d3d12_versioned_root_signature_deserializer *deserializer = impl_from_ID3D12VersionedRootSignatureDeserializer(iface);
-    unsigned int refcount = InterlockedDecrement(&deserializer->refcount);
+    ULONG refcount = InterlockedDecrement(&deserializer->refcount);
     unsigned int i;
 
     TRACE("%p decreasing refcount to %u.\n", deserializer, refcount);
@@ -334,28 +340,17 @@ static CONST_VTBL struct ID3D12VersionedRootSignatureDeserializerVtbl d3d12_vers
 };
 
 static HRESULT d3d12_versioned_root_signature_deserializer_init(struct d3d12_versioned_root_signature_deserializer *deserializer,
-        const struct vkd3d_shader_code *dxbc, bool raw_payload)
+        const struct vkd3d_shader_code *dxbc)
 {
     int ret;
 
     deserializer->ID3D12VersionedRootSignatureDeserializer_iface.lpVtbl = &d3d12_versioned_root_signature_deserializer_vtbl;
     deserializer->refcount = 1;
 
-    if (raw_payload)
+    if ((ret = vkd3d_shader_parse_root_signature(dxbc, &deserializer->desc.vkd3d, NULL)) < 0)
     {
-        if ((ret = vkd3d_shader_parse_root_signature_raw(dxbc->code, dxbc->size, &deserializer->desc.vkd3d, NULL)) < 0)
-        {
-            WARN("Failed to parse root signature, vkd3d result %d.\n", ret);
-            return hresult_from_vkd3d_result(ret);
-        }
-    }
-    else
-    {
-        if ((ret = vkd3d_shader_parse_root_signature(dxbc, &deserializer->desc.vkd3d, NULL)) < 0)
-        {
-            WARN("Failed to parse root signature, vkd3d result %d.\n", ret);
-            return hresult_from_vkd3d_result(ret);
-        }
+        WARN("Failed to parse root signature, vkd3d result %d.\n", ret);
+        return hresult_from_vkd3d_result(ret);
     }
 
     memset(&deserializer->other_desc, 0, sizeof(deserializer->other_desc));
@@ -370,81 +365,17 @@ HRESULT vkd3d_create_versioned_root_signature_deserializer(const void *data, SIZ
     struct vkd3d_shader_code dxbc = {data, data_size};
     HRESULT hr;
 
-    TRACE("data %p, data_size %zu, iid %s, deserializer %p.\n",
+    TRACE("data %p, data_size %lu, iid %s, deserializer %p.\n",
             data, data_size, debugstr_guid(iid), deserializer);
 
     if (!(object = vkd3d_malloc(sizeof(*object))))
         return E_OUTOFMEMORY;
 
-    if (FAILED(hr = d3d12_versioned_root_signature_deserializer_init(object, &dxbc, false)))
+    if (FAILED(hr = d3d12_versioned_root_signature_deserializer_init(object, &dxbc)))
     {
         vkd3d_free(object);
         return hr;
     }
-
-    return return_interface(&object->ID3D12VersionedRootSignatureDeserializer_iface,
-            &IID_ID3D12VersionedRootSignatureDeserializer, iid, deserializer);
-}
-
-HRESULT vkd3d_create_versioned_root_signature_deserializer_for_subobject(const void *data, SIZE_T data_size,
-        LPCWSTR subobject_name, REFIID iid, void **deserializer)
-{
-    struct d3d12_versioned_root_signature_deserializer *object = NULL;
-    struct vkd3d_shader_library_entry_point *entry_points = NULL;
-    struct vkd3d_shader_library_subobject *subobjects = NULL;
-    D3D12_DXIL_LIBRARY_DESC dxil_lib;
-    size_t entry_point_count = 0;
-    size_t entry_point_size = 0;
-    size_t subobjects_count = 0;
-    size_t subobjects_size = 0;
-    HRESULT hr = S_OK;
-    size_t i;
-
-    memset(&dxil_lib, 0, sizeof(dxil_lib));
-    dxil_lib.DXILLibrary.pShaderBytecode = data;
-    dxil_lib.DXILLibrary.BytecodeLength = data_size;
-
-    if (vkd3d_shader_dxil_append_library_entry_points_and_subobjects(&dxil_lib, 0,
-            &entry_points, &entry_point_size, &entry_point_count,
-            &subobjects, &subobjects_size, &subobjects_count) < 0)
-    {
-        return E_INVALIDARG;
-    }
-
-    for (i = 0; i < subobjects_count; i++)
-    {
-        if (subobjects[i].kind == VKD3D_SHADER_SUBOBJECT_KIND_GLOBAL_ROOT_SIGNATURE ||
-            subobjects[i].kind == VKD3D_SHADER_SUBOBJECT_KIND_LOCAL_ROOT_SIGNATURE)
-        {
-            if (vkd3d_export_strequal(subobject_name, subobjects[i].name))
-            {
-                struct vkd3d_shader_code dxbc = {subobjects[i].data.payload.data, subobjects[i].data.payload.size};
-
-                if (!(object = vkd3d_malloc(sizeof(*object))))
-                {
-                    hr = E_OUTOFMEMORY;
-                    break;
-                }
-
-                if (FAILED(hr = d3d12_versioned_root_signature_deserializer_init(object, &dxbc, true)))
-                {
-                    vkd3d_free(object);
-                    object = NULL;
-                }
-
-                break;
-            }
-        }
-    }
-
-    if (i == subobjects_count)
-        hr = E_INVALIDARG;
-
-    vkd3d_shader_dxil_free_library_entry_points(entry_points, entry_point_count);
-    vkd3d_shader_dxil_free_library_subobjects(subobjects, subobjects_count);
-
-    if (!object)
-        return hr;
 
     return return_interface(&object->ID3D12VersionedRootSignatureDeserializer_iface,
             &IID_ID3D12VersionedRootSignatureDeserializer, iid, deserializer);
@@ -488,7 +419,7 @@ HRESULT vkd3d_serialize_root_signature(const D3D12_ROOT_SIGNATURE_DESC *desc,
 
     if (FAILED(hr = d3d_blob_create((void *)dxbc.code, dxbc.size, &blob_object)))
     {
-        WARN("Failed to create blob object, hr %#x.\n", (int)hr);
+        WARN("Failed to create blob object, hr %#x.\n", hr);
         vkd3d_shader_free_shader_code(&dxbc);
         return hr;
     }
@@ -529,7 +460,7 @@ HRESULT vkd3d_serialize_versioned_root_signature(const D3D12_VERSIONED_ROOT_SIGN
 
     if (FAILED(hr = d3d_blob_create((void *)dxbc.code, dxbc.size, &blob_object)))
     {
-        WARN("Failed to create blob object, hr %#x.\n", (int)hr);
+        WARN("Failed to create blob object, hr %#x.\n", hr);
         vkd3d_shader_free_shader_code(&dxbc);
         return hr;
     }

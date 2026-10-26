@@ -33,7 +33,8 @@
 #include <string.h>
 #include <stdio.h>
 
-#define VKD3D_DEBUG_BUFFER_COUNT 8
+#define VKD3D_DEBUG_BUFFER_COUNT 64
+#define VKD3D_DEBUG_BUFFER_SIZE 512
 
 static const char *debug_level_names[] =
 {
@@ -265,17 +266,12 @@ void vkd3d_dbg_printf(enum vkd3d_dbg_channel channel, enum vkd3d_dbg_level level
 
 static char *get_buffer(void)
 {
-    static VKD3D_THREAD_LOCAL char buffers[VKD3D_DEBUG_BUFFER_COUNT][VKD3D_DEBUG_BUFFER_SIZE];
-    static VKD3D_THREAD_LOCAL size_t buffer_index;
-    size_t current_index;
+    static char buffers[VKD3D_DEBUG_BUFFER_COUNT][VKD3D_DEBUG_BUFFER_SIZE];
+    static LONG buffer_index;
+    LONG current_index;
 
-    current_index = (++buffer_index) % ARRAY_SIZE(buffers);
+    current_index = InterlockedIncrement(&buffer_index) % ARRAY_SIZE(buffers);
     return buffers[current_index];
-}
-
-char *vkd3d_dbg_get_buffer(void)
-{
-    return get_buffer();
 }
 
 const char *vkd3d_dbg_vsprintf(const char *fmt, va_list args)
@@ -463,10 +459,10 @@ bool vkd3d_debug_list_has_member(const char *string, const char *member)
     return false;
 }
 
-union vkd3d_config_flags vkd3d_parse_debug_options(const char *string,
+uint64_t vkd3d_parse_debug_options(const char *string,
         const struct vkd3d_debug_option *options, unsigned int option_count)
 {
-    union vkd3d_config_flags flags = VKD3D_CONFIG_FLAGS_NONE;
+    uint64_t flags = 0;
     unsigned int i;
 
     for (i = 0; i < option_count; ++i)
@@ -474,7 +470,7 @@ union vkd3d_config_flags vkd3d_parse_debug_options(const char *string,
         const struct vkd3d_debug_option *opt = &options[i];
 
         if (vkd3d_debug_list_has_member(string, opt->name))
-            vkd3d_config_flag_add(&flags, opt->flag);
+            flags |= opt->flag;
     }
 
     return flags;

@@ -105,12 +105,12 @@ static void vkd3d_descriptor_debug_init_once(void)
             descriptor_debug_active_log = true;
     }
 
-    if (VKD3D_CONFIG_FLAG_IS_SET(DESCRIPTOR_QA_CHECKS))
+    if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_DESCRIPTOR_QA_CHECKS)
     {
         INFO("Enabling descriptor QA checks!\n");
         descriptor_debug_active_descriptor_checks = true;
     }
-    else if (VKD3D_CONFIG_FLAG_IS_SET(INSTRUCTION_QA_CHECKS))
+    else if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_INSTRUCTION_QA_CHECKS)
     {
         INFO("Enabling instruction-level QA checks!\n");
         descriptor_debug_active_instruction_checks = true;
@@ -263,34 +263,6 @@ uint32_t vkd3d_descriptor_debug_clear_bloom_filter(
     return sync_cookie;
 }
 
-const char *vkd3d_expect_assume_qa_value_to_tag(uint32_t value)
-{
-#define TAG(tag) case VKD3D_EXPECT_ASSUME_##tag: return #tag
-    switch (value)
-    {
-        TAG(QUAD_UNIFORM);
-        TAG(MESH_VERTEX_OVERFLOW);
-        TAG(MESH_PRIM_OVERFLOW);
-        TAG(SAMPLER_HEAP_OOB);
-        TAG(RESOURCE_HEAP_OOB);
-        TAG(MISSED_NURI);
-        TAG(ROOT_CBV_OOB);
-        TAG(GROUP_SHARED_GEP_OOB);
-        TAG(CONSTANT_GEP_OOB);
-        TAG(ALLOCA_GEP_OOB);
-        TAG(QUESTIONABLE_BAB_OVERFLOW);
-        TAG(QUESTIONABLE_STRUCTURED_OVERFLOW);
-        TAG(UDIV_BY_ZERO);
-        TAG(UMOD_BY_ZERO);
-        TAG(SDIV_BY_ZERO);
-        TAG(SREM_BY_ZERO);
-        default: break;
-    }
-#undef TAG
-
-    return NULL;
-}
-
 static void *vkd3d_descriptor_debug_qa_check_instruction(void *userdata)
 {
     struct vkd3d_descriptor_qa_global_info *global_info = userdata;
@@ -321,26 +293,12 @@ static void *vkd3d_descriptor_debug_qa_check_instruction(void *userdata)
             {
                 while (word)
                 {
-                    const char *expect_assume_tag = NULL;
-                    uint32_t value;
-
                     payload_index = i * 16 + (vkd3d_bitmask_iter32(&word) - 16);
-                    value = payload_data[payload_index].value;
-                    expect_assume_tag = vkd3d_expect_assume_qa_value_to_tag(value);
-
-                    if (expect_assume_tag)
-                    {
-                        ERR("QA: expect-assume error %s || shader %016"PRIx64", inst %u.\n",
-                                 expect_assume_tag,
-                                 payload_data[payload_index].hash,
-                                 payload_data[payload_index].instruction);
-                    }
-                    else
-                    {
-                        ERR("QA: non-normal value || shader %016"PRIx64", inst %u, value #%x / %u.\n",
-                                payload_data[payload_index].hash,
-                                payload_data[payload_index].instruction, value, value);
-                    }
+                    ERR("QA: non-normal value || shader %016"PRIx64", inst %u, value #%x / %u.\n",
+                            payload_data[payload_index].hash,
+                            payload_data[payload_index].instruction,
+                            payload_data[payload_index].value,
+                            payload_data[payload_index].value);
                 }
 
                 vkd3d_atomic_uint32_store_explicit(&global_info->control_data[i], 0, vkd3d_memory_order_release);
@@ -495,7 +453,7 @@ static HRESULT vkd3d_descriptor_debug_alloc_global_info_instructions(
 #endif
 
     if (FAILED(hr = vkd3d_allocate_internal_buffer_memory(device, global_info->vk_payload_buffer,
-            memory_properties, 0, &global_info->payload_device_allocation)))
+            memory_properties, &global_info->payload_device_allocation)))
     {
         vkd3d_descriptor_debug_free_global_info(global_info, device);
         return hr;
@@ -522,7 +480,7 @@ static HRESULT vkd3d_descriptor_debug_alloc_global_info_instructions(
 
     if (needs_sync_val)
     {
-        if (VKD3D_CONFIG_FLAG_IS_SET(SINGLE_QUEUE))
+        if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_SINGLE_QUEUE)
         {
             buffer_desc.Width += bloom_buffer_size;
             global_info->needs_sync_validation = true;
@@ -553,7 +511,7 @@ static HRESULT vkd3d_descriptor_debug_alloc_global_info_instructions(
 #endif
 
     if (FAILED(hr = vkd3d_allocate_internal_buffer_memory(device, global_info->vk_control_buffer,
-            memory_properties, 0, &global_info->control_device_allocation)))
+            memory_properties, &global_info->control_device_allocation)))
     {
         vkd3d_descriptor_debug_free_global_info(global_info, device);
         return hr;
@@ -711,7 +669,7 @@ static HRESULT vkd3d_descriptor_debug_alloc_global_info_descriptors(
 #endif
 
     if (FAILED(hr = vkd3d_allocate_internal_buffer_memory(device, global_info->vk_payload_buffer,
-            memory_properties, 0,
+            memory_properties,
             &global_info->payload_device_allocation)))
     {
         vkd3d_descriptor_debug_free_global_info(global_info, device);

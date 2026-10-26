@@ -345,12 +345,12 @@ static void wait_queue_idle_(unsigned int line, ID3D12Device *device, ID3D12Comm
 
     hr = ID3D12Device_CreateFence(device, 0, D3D12_FENCE_FLAG_NONE,
             &IID_ID3D12Fence, (void **)&fence);
-    assert_that_(line)(hr == S_OK, "Failed to create fence, hr %#x.\n", (int)hr);
+    assert_that_(line)(hr == S_OK, "Failed to create fence, hr %#x.\n", hr);
 
     hr = ID3D12CommandQueue_Signal(queue, fence, 1);
-    assert_that_(line)(hr == S_OK, "Failed to signal fence, hr %#x.\n", (int)hr);
+    assert_that_(line)(hr == S_OK, "Failed to signal fence, hr %#x.\n", hr);
     hr = wait_for_fence(fence, 1);
-    assert_that_(line)(hr == S_OK, "Failed to wait for fence, hr %#x.\n", (int)hr);
+    assert_that_(line)(hr == S_OK, "Failed to wait for fence, hr %#x.\n", hr);
 
     ID3D12Fence_Release(fence);
 }
@@ -362,12 +362,12 @@ static inline void wait_queue_idle_no_event_(unsigned int line, ID3D12Device *de
 
     hr = ID3D12Device_CreateFence(device, 0, D3D12_FENCE_FLAG_NONE,
         &IID_ID3D12Fence, (void **)&fence);
-    assert_that_(line)(hr == S_OK, "Failed to create fence, hr %#x.\n", (int)hr);
+    assert_that_(line)(hr == S_OK, "Failed to create fence, hr %#x.\n", hr);
 
     hr = ID3D12CommandQueue_Signal(queue, fence, 1);
-    assert_that_(line)(hr == S_OK, "Failed to signal fence, hr %#x.\n", (int)hr);
+    assert_that_(line)(hr == S_OK, "Failed to signal fence, hr %#x.\n", hr);
     hr = wait_for_fence_no_event(fence, 1);
-    assert_that_(line)(hr == S_OK, "Failed to wait for fence, hr %#x.\n", (int)hr);
+    assert_that_(line)(hr == S_OK, "Failed to wait for fence, hr %#x.\n", hr);
 
     ID3D12Fence_Release(fence);
 }
@@ -416,7 +416,7 @@ static IUnknown *create_warp_adapter(IDXGIFactory4 *factory)
     adapter = NULL;
     hr = IDXGIFactory4_EnumWarpAdapter(factory, &IID_IUnknown, (void **)&adapter);
     if (FAILED(hr))
-        trace("Failed to get WARP adapter, hr %#x.\n", (int)hr);
+        trace("Failed to get WARP adapter, hr %#x.\n", hr);
     return adapter;
 }
 
@@ -427,7 +427,7 @@ static IUnknown *create_adapter(void)
     HRESULT hr;
 
     hr = CreateDXGIFactory1(&IID_IDXGIFactory4, (void **)&factory);
-    ok(hr == S_OK, "Failed to create IDXGIFactory4, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create IDXGIFactory4, hr %#x.\n", hr);
 
     if (use_warp_device && (adapter = create_warp_adapter(factory)))
     {
@@ -438,7 +438,7 @@ static IUnknown *create_adapter(void)
     hr = IDXGIFactory4_EnumAdapters(factory, use_adapter_idx, (IDXGIAdapter **)&adapter);
     IDXGIFactory4_Release(factory);
     if (FAILED(hr))
-        trace("Failed to get adapter, hr %#x.\n", (int)hr);
+        trace("Failed to get adapter, hr %#x.\n", hr);
     return adapter;
 }
 
@@ -478,11 +478,11 @@ static inline void init_adapter_info(void)
         return;
 
     hr = IUnknown_QueryInterface(adapter, &IID_IDXGIAdapter, (void **)&dxgi_adapter);
-    ok(hr == S_OK, "Failed to query IDXGIAdapter, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to query IDXGIAdapter, hr %#x.\n", hr);
     IUnknown_Release(adapter);
 
     hr = IDXGIAdapter_GetDesc(dxgi_adapter, &desc);
-    ok(hr == S_OK, "Failed to get adapter desc, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to get adapter desc, hr %#x.\n", hr);
 
     /* FIXME: Use debugstr_w(). */
     for (i = 0; i < ARRAY_SIZE(desc.Description) && isprint(desc.Description[i]); ++i)
@@ -515,13 +515,13 @@ static inline bool get_adapter_desc(ID3D12Device *device, DXGI_ADAPTER_DESC *des
     luid = ID3D12Device_GetAdapterLuid(device);
 
     hr = CreateDXGIFactory1(&IID_IDXGIFactory4, (void **)&factory);
-    ok(hr == S_OK, "Failed to create IDXGIFactory4, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create IDXGIFactory4, hr %#x.\n", hr);
 
     hr = IDXGIFactory4_EnumAdapterByLuid(factory, luid, &IID_IDXGIAdapter, (void **)&adapter);
     if (SUCCEEDED(hr))
     {
         hr = IDXGIAdapter_GetDesc(adapter, desc);
-        ok(hr == S_OK, "Failed to get adapter desc, hr %#x.\n", (int)hr);
+        ok(hr == S_OK, "Failed to get adapter desc, hr %#x.\n", hr);
         IDXGIAdapter_Release(adapter);
     }
 
@@ -565,11 +565,6 @@ static inline bool is_nvidia_device(ID3D12Device *device)
     return false;
 }
 
-static inline bool is_nvk_device(ID3D12Device *device)
-{
-    return false;
-}
-
 static inline bool is_radv_device(ID3D12Device *device)
 {
     return false;
@@ -585,11 +580,6 @@ static inline bool is_adreno_device(ID3D12Device *device)
     return false;
 }
 
-static inline bool is_integrated_vulkan_device(ID3D12Device *device)
-{
-    return false;
-}
-
 static inline bool is_vk_device_extension_supported(ID3D12Device *device, const char *ext)
 {
     return false;
@@ -601,11 +591,6 @@ static inline bool is_vkd3d_proton_device(ID3D12Device *device)
 }
 
 static inline bool get_driver_vk_features(ID3D12Device *device, void *pnext)
-{
-    return false;
-}
-
-static inline bool get_vulkan_device_properties2(ID3D12Device *device, VkPhysicalDeviceProperties2 *props2)
 {
     return false;
 }
@@ -648,9 +633,10 @@ static inline bool get_driver_vk_features(ID3D12Device *device, void *pnext)
     return true;
 }
 
-static inline bool get_vulkan_device_properties2(ID3D12Device *device, VkPhysicalDeviceProperties2 *props2)
+static bool get_driver_properties(ID3D12Device *device, VkPhysicalDeviceDriverPropertiesKHR *driver_properties)
 {
     PFN_vkGetPhysicalDeviceProperties2 pfn_vkGetPhysicalDeviceProperties2;
+    VkPhysicalDeviceProperties2 device_properties2;
     VkPhysicalDevice vk_physical_device;
     VkInstance vk_instance;
     ID3D12DeviceExt *ext;
@@ -663,28 +649,20 @@ static inline bool get_vulkan_device_properties2(ID3D12Device *device, VkPhysica
         return false;
 
     ID3D12DeviceExt_GetVulkanHandles(ext, &vk_instance, &vk_physical_device, &vk_device);
-    ID3D12DeviceExt_Release(ext);
+	ID3D12DeviceExt_Release(ext);
+
+    memset(driver_properties, 0, sizeof(*driver_properties));
+    driver_properties->sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES_KHR;
 
     pfn_vkGetPhysicalDeviceProperties2
         = (void *)pfn_vkGetInstanceProcAddr(vk_instance, "vkGetPhysicalDeviceProperties2");
     ok(pfn_vkGetPhysicalDeviceProperties2, "vkGetPhysicalDeviceProperties2 is NULL.\n");
 
-    pfn_vkGetPhysicalDeviceProperties2(vk_physical_device, props2);
-    return true;
-}
-
-static inline bool get_driver_properties(ID3D12Device *device, VkPhysicalDeviceDriverPropertiesKHR *driver_properties)
-{
-    VkPhysicalDeviceProperties2 device_properties2;
-
     memset(&device_properties2, 0, sizeof(device_properties2));
     device_properties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-
-    memset(driver_properties, 0, sizeof(*driver_properties));
-    driver_properties->sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES_KHR;
     device_properties2.pNext = driver_properties;
-
-    return get_vulkan_device_properties2(device, &device_properties2);
+    pfn_vkGetPhysicalDeviceProperties2(vk_physical_device, &device_properties2);
+    return true;
 }
 
 static inline bool is_vk_device_extension_supported(ID3D12Device *device, const char *ext)
@@ -790,14 +768,6 @@ static inline bool is_nvidia_device(ID3D12Device *device)
     return properties.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY_KHR;
 }
 
-static inline bool is_nvk_device(ID3D12Device *device)
-{
-    VkPhysicalDeviceDriverPropertiesKHR properties;
-
-    get_driver_properties(device, &properties);
-    return properties.driverID == VK_DRIVER_ID_MESA_NVK;
-}
-
 static inline bool is_radv_device(ID3D12Device *device)
 {
     VkPhysicalDeviceDriverPropertiesKHR properties;
@@ -823,15 +793,6 @@ static inline bool is_adreno_device(ID3D12Device *device)
     get_driver_properties(device, &properties);
     return properties.driverID == VK_DRIVER_ID_QUALCOMM_PROPRIETARY ||
             properties.driverID == VK_DRIVER_ID_MESA_TURNIP;
-}
-
-static inline bool is_integrated_vulkan_device(ID3D12Device *device)
-{
-    VkPhysicalDeviceProperties2 props2;
-    memset(&props2, 0, sizeof(props2));
-    props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-    return get_vulkan_device_properties2(device, &props2) &&
-            props2.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
 }
 #endif
 
@@ -939,16 +900,7 @@ static inline void vkd3d_set_out_of_spec_test_behavior(VKD3D_DEBUG_CONTROL_OUT_O
     if (!pfn_D3D12GetInterface)
         return;
     if (SUCCEEDED(pfn_D3D12GetInterface(&CLSID_VKD3DDebugControl, &IID_IVKD3DDebugControlInterface, (void**)&dbg)))
-        ok(SUCCEEDED(IVKD3DDebugControlInterface_SetOutOfSpecTestBehavior(dbg, behavior, enable)), "Failed to set out of spec behavior.\n");
-}
-
-static inline void vkd3d_set_behavior_flags(VKD3D_DEBUG_CONTROL_BEHAVIOR_FLAGS flags)
-{
-    IVKD3DDebugControlInterface *dbg = NULL;
-    if (!pfn_D3D12GetInterface)
-        return;
-    if (SUCCEEDED(pfn_D3D12GetInterface(&CLSID_VKD3DDebugControl, &IID_IVKD3DDebugControlInterface, (void**)&dbg)))
-        ok(SUCCEEDED(IVKD3DDebugControlInterface_SetBehaviorFlags(dbg, flags)), "Failed to set behavior flags.\n");
+        ok(SUCCEEDED(IVKD3DDebugControlInterface_SetOutOfSpecTestBehavior(dbg, behavior, enable)), "Failed to unmute validation.\n");
 }
 
 #endif  /* __VKD3D_D3D12_CROSSTEST_H */

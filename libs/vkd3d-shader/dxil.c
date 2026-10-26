@@ -19,7 +19,6 @@
 #define VKD3D_DBG_CHANNEL VKD3D_DBG_CHANNEL_SHADER
 
 #define DXIL_SPV_ENABLE_EXPERIMENTAL_WORKGRAPHS
-#define DXIL_SPV_ENABLE_EXPERIMENTAL_MULTIVIEW
 #include "vkd3d_shader_private.h"
 #include "vkd3d_utf8.h"
 #include "vkd3d_string.h"
@@ -100,9 +99,6 @@ static bool vkd3d_shader_resource_binding_is_global_heap(const struct vkd3d_shad
 static bool dxil_resource_is_in_range(const struct vkd3d_shader_resource_binding *binding,
                                       const dxil_spv_d3d_binding *d3d_binding)
 {
-    uint32_t available_bindings;
-    bool is_inside_range;
-
     if (vkd3d_shader_resource_binding_is_global_heap(binding) && dxil_resource_is_global_heap(d3d_binding))
         return true;
 
@@ -111,23 +107,8 @@ static bool dxil_resource_is_in_range(const struct vkd3d_shader_resource_binding
     if (d3d_binding->register_index < binding->register_index)
         return false;
 
-    /* Unbounded in root signature, so it's always in bounds. */
-    if (binding->register_count == UINT_MAX)
-        return true;
-
-    is_inside_range = (d3d_binding->register_index - binding->register_index) < binding->register_count;
-    if (!is_inside_range)
-        return false;
-
-    /* The DXIL binding is unbounded, so it consumes whatever it can consume.
-     * In some cases, this means 1 descriptor, which trivializes the unsized array.
-     * This is normally benign, however, as a special case we need to demote unsized array or static descriptors
-     * in some cases. dxil-spirv will retry the binding query with range of 1. */
-    if (d3d_binding->range_size == UINT32_MAX)
-        return (binding->flags & VKD3D_SHADER_BINDING_FLAG_BINDLESS) || binding->register_count != 1;
-
-    available_bindings = binding->register_count - (d3d_binding->register_index - binding->register_index);
-    return d3d_binding->range_size <= available_bindings;
+    return binding->register_count == UINT_MAX ||
+           ((d3d_binding->register_index - binding->register_index) < binding->register_count);
 }
 
 static bool vkd3d_shader_binding_is_root_descriptor(const struct vkd3d_shader_resource_binding *binding)
@@ -142,22 +123,15 @@ struct vkd3d_dxil_remap_userdata
 {
     const struct vkd3d_shader_interface_info *shader_interface_info;
     const struct vkd3d_shader_interface_local_info *shader_interface_local_info;
-    vkd3d_shader_quirks_t quirks;
     unsigned int num_root_descriptors;
-    bool skip_heap_lowering;
 };
 
 struct vkd3d_dxil_remap_info
 {
     const struct vkd3d_shader_resource_binding *bindings;
-    unsigned int shader_interface_flags;
     unsigned int binding_count;
     unsigned int num_root_descriptors;
     unsigned int descriptor_table_offset_words;
-    unsigned int min_ssbo_alignment;
-    vkd3d_shader_quirks_t quirks;
-    bool skip_heap_lowering;
-    bool local_root_signature;
 };
 
 static dxil_spv_bool dxil_remap_inner(
@@ -185,28 +159,8 @@ static dxil_spv_bool dxil_remap_inner(
 
             if (vkd3d_shader_binding_is_root_descriptor(binding))
             {
-                if ((remap->shader_interface_flags & VKD3D_SHADER_INTERFACE_HEAP_LOWERING) &&
-                    (descriptor_type == VKD3D_SHADER_DESCRIPTOR_TYPE_CBV ||
-                        d3d_binding->kind == DXIL_SPV_RESOURCE_KIND_RT_ACCELERATION_STRUCTURE ||
-                        remap->min_ssbo_alignment <= d3d_binding->alignment))
-                {
-                    if (d3d_binding->kind == DXIL_SPV_RESOURCE_KIND_RT_ACCELERATION_STRUCTURE)
-                        vk_binding->descriptor_type = DXIL_SPV_VULKAN_DESCRIPTOR_TYPE_IDENTITY;
-                    else if (descriptor_type == VKD3D_SHADER_DESCRIPTOR_TYPE_CBV)
-                        vk_binding->descriptor_type = DXIL_SPV_VULKAN_DESCRIPTOR_TYPE_UBO;
-                    else
-                        vk_binding->descriptor_type = DXIL_SPV_VULKAN_DESCRIPTOR_TYPE_SSBO;
-
-                    vk_binding->set = binding->binding.set;
-                    vk_binding->binding = binding->binding.binding;
-                }
-                else
-                {
-                    /* In some cases we cannot use SSBOs due to alignment requirements.
-                     * Just fallback to good old BDA. */
-                    vk_binding->descriptor_type = DXIL_SPV_VULKAN_DESCRIPTOR_TYPE_BUFFER_DEVICE_ADDRESS;
-                    vk_binding->root_constant_index = root_descriptor_index;
-                }
+                vk_binding->descriptor_type = DXIL_SPV_VULKAN_DESCRIPTOR_TYPE_BUFFER_DEVICE_ADDRESS;
+                vk_binding->root_constant_index = root_descriptor_index;
             }
             else if (binding->flags & VKD3D_SHADER_BINDING_FLAG_BINDLESS)
             {
@@ -225,45 +179,19 @@ static dxil_spv_bool dxil_remap_inner(
                             d3d_binding->register_index - binding->register_index;
                     vk_binding->root_constant_index = binding->descriptor_table + remap->descriptor_table_offset_words;
 
-                    /* If we can, lower push address + offset into a plain binding to aid readability and
-                     * potentially better optimization for drivers. */
-                    if ((remap->shader_interface_flags & VKD3D_SHADER_INTERFACE_HEAP_LOWERING) &&
-                        !(remap->quirks & VKD3D_SHADER_QUIRK_DESCRIPTOR_HEAP_ROBUSTNESS) &&
-                        !remap->skip_heap_lowering &&
-                        !(binding->flags & VKD3D_SHADER_BINDING_FLAG_RAW_VA))
+                    if (vk_binding->root_constant_index < 2 * remap->num_root_descriptors)
                     {
-                        vk_binding->bindless.use_heap = DXIL_SPV_FALSE;
-                        if (remap->local_root_signature)
-                            vk_binding->set = VKD3D_SHADER_LOCAL_TABLES_VIRTUAL_DESCRIPTOR_SET_BASE;
-                        else
-                            vk_binding->set = VKD3D_SHADER_TABLES_VIRTUAL_DESCRIPTOR_SET_BASE;
-                        vk_binding->set += binding->descriptor_table;
-                        vk_binding->binding = vk_binding->bindless.heap_root_offset;
+                        ERR("Bindless push constant table offset is impossible. %u < 2 * %u\n",
+                                vk_binding->root_constant_index, remap->num_root_descriptors);
+                        return DXIL_SPV_FALSE;
                     }
-                    else
-                    {
-                        if (vk_binding->root_constant_index < 2 * remap->num_root_descriptors)
-                        {
-                            ERR("Bindless push constant table offset is impossible. %u < 2 * %u\n",
-                                    vk_binding->root_constant_index, remap->num_root_descriptors);
-                            return DXIL_SPV_FALSE;
-                        }
-                        vk_binding->root_constant_index -= 2 * remap->num_root_descriptors;
-                    }
+                    vk_binding->root_constant_index -= 2 * remap->num_root_descriptors;
                 }
 
+                /* Acceleration structures are mapped to SSBO uvec2[] array instead of normal heap. */
                 if (d3d_binding->kind == DXIL_SPV_RESOURCE_KIND_RT_ACCELERATION_STRUCTURE)
                 {
-                    if (remap->shader_interface_flags & VKD3D_SHADER_INTERFACE_HEAP_LOWERING)
-                    {
-                        /* We use proper RTAS descriptors in heap. */
-                        vk_binding->descriptor_type = DXIL_SPV_VULKAN_DESCRIPTOR_TYPE_IDENTITY;
-                    }
-                    else
-                    {
-                        /* Acceleration structures are mapped to SSBO uvec2[] array instead of normal heap. */
-                        vk_binding->descriptor_type = DXIL_SPV_VULKAN_DESCRIPTOR_TYPE_SSBO;
-                    }
+                    vk_binding->descriptor_type = DXIL_SPV_VULKAN_DESCRIPTOR_TYPE_SSBO;
                 }
                 else if (descriptor_type == VKD3D_SHADER_DESCRIPTOR_TYPE_UAV &&
                         (binding->flags & VKD3D_SHADER_BINDING_FLAG_AUX_BUFFER) &&
@@ -304,11 +232,6 @@ static dxil_spv_bool dxil_remap(const struct vkd3d_dxil_remap_userdata *remap,
     remap_info.binding_count = shader_interface_info->binding_count;
     remap_info.descriptor_table_offset_words = shader_interface_info->descriptor_tables.offset / sizeof(uint32_t);
     remap_info.num_root_descriptors = remap->num_root_descriptors;
-    remap_info.shader_interface_flags = shader_interface_info->flags;
-    remap_info.min_ssbo_alignment = shader_interface_info->min_ssbo_alignment;
-    remap_info.quirks = remap->quirks;
-    remap_info.skip_heap_lowering = remap->skip_heap_lowering;
-    remap_info.local_root_signature = false;
 
     if (!dxil_remap_inner(&remap_info, descriptor_type, d3d_binding, vk_binding, resource_flags))
     {
@@ -322,16 +245,6 @@ static dxil_spv_bool dxil_remap(const struct vkd3d_dxil_remap_userdata *remap,
             /* Not relevant. */
             remap_info.descriptor_table_offset_words = 0;
             remap_info.num_root_descriptors = 0;
-            remap_info.local_root_signature = true;
-
-            /* For local table UAVs, we have to be conservative since we globally
-             * opted into legacy-style remapping. */
-            if (descriptor_type == VKD3D_SHADER_DESCRIPTOR_TYPE_UAV &&
-                shader_interface_info->raw_uav_counter_offset != 0)
-            {
-                remap_info.skip_heap_lowering = true;
-            }
-
             return dxil_remap_inner(&remap_info, descriptor_type, d3d_binding, vk_binding, resource_flags);
         }
         else
@@ -354,21 +267,10 @@ static dxil_spv_bool dxil_srv_remap(void *userdata, const dxil_spv_d3d_binding *
     resource_flags = dxil_resource_flags_from_kind(d3d_binding->kind, false);
     use_ssbo = resource_flags_ssbo != resource_flags;
 
-    /* For heap, we have the option to dynamically fall back to texel buffers. */
-    if ((shader_interface_info->flags & VKD3D_SHADER_INTERFACE_HEAP_LOWERING) &&
-        d3d_binding->kind == DXIL_SPV_RESOURCE_KIND_STRUCTURED_BUFFER &&
-        d3d_binding->alignment < shader_interface_info->min_ssbo_alignment)
-    {
-        use_ssbo = false;
-    }
-
     if (use_ssbo && dxil_remap(remap, VKD3D_SHADER_DESCRIPTOR_TYPE_SRV,
             d3d_binding, &vk_binding->buffer_binding, resource_flags_ssbo))
     {
-        /* For heap, we may turn a root SSBO into BDA if alignments don't work out. */
-        if (vk_binding->buffer_binding.descriptor_type != DXIL_SPV_VULKAN_DESCRIPTOR_TYPE_BUFFER_DEVICE_ADDRESS)
-            vk_binding->buffer_binding.descriptor_type = DXIL_SPV_VULKAN_DESCRIPTOR_TYPE_SSBO;
-
+        vk_binding->buffer_binding.descriptor_type = DXIL_SPV_VULKAN_DESCRIPTOR_TYPE_SSBO;
         if (shader_interface_info->flags & VKD3D_SHADER_INTERFACE_SSBO_OFFSET_BUFFER)
         {
             vk_binding->offset_binding.set = shader_interface_info->offset_buffer_binding->set;
@@ -502,7 +404,6 @@ static dxil_spv_bool dxil_uav_remap(void *userdata, const dxil_spv_uav_d3d_bindi
     const struct vkd3d_shader_interface_info *shader_interface_info;
     const struct vkd3d_dxil_remap_userdata *remap = userdata;
     unsigned int resource_flags, resource_flags_ssbo;
-    struct vkd3d_dxil_remap_userdata tmp_remap;
     bool use_ssbo;
 
     shader_interface_info = remap->shader_interface_info;
@@ -510,31 +411,12 @@ static dxil_spv_bool dxil_uav_remap(void *userdata, const dxil_spv_uav_d3d_bindi
     resource_flags = dxil_resource_flags_from_kind(d3d_binding->d3d_binding.kind, false);
     use_ssbo = resource_flags != resource_flags_ssbo;
 
-    /* For heap, we have the option to dynamically fall back to texel buffers. */
-    if ((shader_interface_info->flags & VKD3D_SHADER_INTERFACE_HEAP_LOWERING) &&
-        d3d_binding->d3d_binding.kind == DXIL_SPV_RESOURCE_KIND_STRUCTURED_BUFFER &&
-        d3d_binding->d3d_binding.alignment < shader_interface_info->min_ssbo_alignment)
-    {
-        use_ssbo = false;
-    }
-
-    /* We'll need to use explicit heap lowering here since we cannot mix and match these in dxil-spirv. */
-    if (d3d_binding->has_counter && shader_interface_info->raw_uav_counter_offset)
-    {
-        tmp_remap = *remap;
-        tmp_remap.skip_heap_lowering = true;
-        remap = &tmp_remap;
-    }
-
     if (use_ssbo)
     {
         if (dxil_remap(remap, VKD3D_SHADER_DESCRIPTOR_TYPE_UAV, &d3d_binding->d3d_binding,
                 &vk_binding->buffer_binding, resource_flags_ssbo))
         {
-            /* For heap, we may turn a root SSBO into BDA if alignments don't work out. */
-            if (vk_binding->buffer_binding.descriptor_type != DXIL_SPV_VULKAN_DESCRIPTOR_TYPE_BUFFER_DEVICE_ADDRESS)
-                vk_binding->buffer_binding.descriptor_type = DXIL_SPV_VULKAN_DESCRIPTOR_TYPE_SSBO;
-
+            vk_binding->buffer_binding.descriptor_type = DXIL_SPV_VULKAN_DESCRIPTOR_TYPE_SSBO;
             if (shader_interface_info->flags & VKD3D_SHADER_INTERFACE_SSBO_OFFSET_BUFFER)
             {
                 vk_binding->offset_binding.set = shader_interface_info->offset_buffer_binding->set;
@@ -549,8 +431,7 @@ static dxil_spv_bool dxil_uav_remap(void *userdata, const dxil_spv_uav_d3d_bindi
         else if (vk_binding->buffer_binding.descriptor_type != DXIL_SPV_VULKAN_DESCRIPTOR_TYPE_BUFFER_DEVICE_ADDRESS)
         {
             /* By default, we use TEXEL_BUFFER unless dxil_remap remaps it to BDA.
-             * We won't trigger SSBO path when using pure BDA (legacy model).
-             * In heap model, we may start checking for SSBO first, which could fallback to BDA. */
+             * We won't trigger SSBO path when using BDA. */
             vk_binding->buffer_binding.descriptor_type = DXIL_SPV_VULKAN_DESCRIPTOR_TYPE_TEXEL_BUFFER;
             if (shader_interface_info->flags & VKD3D_SHADER_INTERFACE_TYPED_OFFSET_BUFFER)
             {
@@ -673,7 +554,7 @@ static bool dxil_match_shader_stage(dxil_spv_shader_stage blob_stage, VkShaderSt
 
 static const struct vkd3d_quirk_to_dxil_mapping
 {
-    vkd3d_shader_quirks_t vkd3d_quirk;
+    uint32_t vkd3d_quirk;
     dxil_spv_shader_quirk dxil_quirk;
 } vkd3d_quirk_mapping[] = {
     { VKD3D_SHADER_QUIRK_FORCE_DEVICE_MEMORY_BARRIER_THREAD_GROUP_COHERENCY,
@@ -684,19 +565,11 @@ static const struct vkd3d_quirk_to_dxil_mapping
     { VKD3D_SHADER_QUIRK_PROMOTE_GROUP_TO_DEVICE_MEMORY_BARRIER, DXIL_SPV_SHADER_QUIRK_PROMOTE_GROUP_TO_DEVICE_MEMORY_BARRIER },
     { VKD3D_SHADER_QUIRK_FIXUP_LOOP_HEADER_UNDEF_PHIS, DXIL_SPV_SHADER_QUIRK_FIXUP_LOOP_HEADER_UNDEF_PHIS },
     { VKD3D_SHADER_QUIRK_FIXUP_RSQRT_INF_NAN, DXIL_SPV_SHADER_QUIRK_FIXUP_RSQRT_INF_NAN },
-    { VKD3D_SHADER_QUIRK_IGNORE_PRIMITIVE_SHADING_RATE, DXIL_SPV_SHADER_QUIRK_IGNORE_PRIMITIVE_SHADING_RATE },
-    { VKD3D_SHADER_QUIRK_FORCE_TGSM_BARRIERS, DXIL_SPV_SHADER_QUIRK_GROUP_SHARED_AUTO_BARRIER },
-    { VKD3D_SHADER_QUIRK_ROBUST_COMPUTE_QUAD_BROADCAST, DXIL_SPV_SHADER_QUIRK_ROBUST_COMPUTE_QUAD_BROADCAST },
-    { VKD3D_SHADER_QUIRK_PRECISE_FMA, DXIL_SPV_SHADER_QUIRK_PRECISE_FMA },
-    { VKD3D_SHADER_QUIRK_CLAMP_WAVE_SIZE_TO_THREAD_GROUP32, DXIL_SPV_SHADER_QUIRK_CLAMP_WAVE_SIZE_TO_THREAD_GROUP_32 },
-    { VKD3D_SHADER_QUIRK_ENABLE_FAIR_SCHEDULING, DXIL_SPV_SHADER_QUIRK_NON_SEMANTIC_SIGNAL_CONCURRENT_WORKGROUP },
-    { VKD3D_SHADER_QUIRK_FORCE_NONUNIFORM_RT, DXIL_SPV_SHADER_QUIRK_FORCE_NONUNIFORM },
-    { VKD3D_SHADER_QUIRK_FORCE_DENORM_LEGACY_FP16_CONVERSIONS, DXIL_SPV_SHADER_QUIRK_FORCE_DENORM_PRESERVE_FP16_CONVERSIONS },
 };
 
 static bool vkd3d_dxil_converter_set_quirks(dxil_spv_converter converter,
         const struct vkd3d_shader_interface_info *shader_interface_info,
-        vkd3d_shader_quirks_t quirks)
+        uint32_t quirks)
 {
     unsigned int i;
 
@@ -718,7 +591,7 @@ static bool vkd3d_dxil_converter_set_quirks(dxil_spv_converter converter,
         if (dxil_spv_converter_add_option(converter, &helper.base) != DXIL_SPV_SUCCESS)
         {
             WARN("dxil-spirv does not support BRANCH_CONTROL.\n");
-            return false;
+            return VKD3D_ERROR_NOT_IMPLEMENTED;
         }
     }
 
@@ -729,7 +602,7 @@ static bool vkd3d_dxil_converter_set_quirks(dxil_spv_converter converter,
         if (dxil_spv_converter_add_option(converter, &helper.base) != DXIL_SPV_SUCCESS)
         {
             ERR("dxil-spirv does not support INVARIANT_POSITION.\n");
-            return false;
+            return VKD3D_ERROR_NOT_IMPLEMENTED;
         }
     }
 
@@ -740,7 +613,7 @@ static bool vkd3d_dxil_converter_set_quirks(dxil_spv_converter converter,
         if (dxil_spv_converter_add_option(converter, &helper.base) != DXIL_SPV_SUCCESS)
         {
             ERR("dxil-spirv does not support FORCE_SUBGROUP_SIZE_1.\n");
-            return false;
+            return VKD3D_ERROR_NOT_IMPLEMENTED;
         }
     }
 
@@ -751,7 +624,7 @@ static bool vkd3d_dxil_converter_set_quirks(dxil_spv_converter converter,
         if (dxil_spv_converter_add_option(converter, &helper.base) != DXIL_SPV_SUCCESS)
         {
             ERR("dxil-spirv does not support SAMPLE_GRAD_OPTIMIZATION_CONTROL.\n");
-            return false;
+            return VKD3D_ERROR_NOT_IMPLEMENTED;
         }
     }
 
@@ -767,28 +640,9 @@ static bool vkd3d_dxil_converter_set_quirks(dxil_spv_converter converter,
         if (dxil_spv_converter_add_option(converter, &helper.base) != DXIL_SPV_SUCCESS)
         {
             WARN("dxil-spirv does not support DESCRIPTOR_HEAP_ROBUSTNESS.\n");
-            return false;
+            return VKD3D_ERROR_NOT_IMPLEMENTED;
         }
     }
-
-    return true;
-}
-
-static bool vkd3d_dxil_converter_can_use_soft_float_fp16_conv(
-        const struct vkd3d_shader_compile_arguments *compiler_args)
-{
-    /* Only enter this path if we can determine that fp16 denorms are explicitly not supported.
-     * This is a bit quirky since we should be able key off the plain preserve extension,
-     * but we need to avoid hitting NVIDIA's weird cases here where we *assume* FP16 denorms
-     * without explicitly declare it in the shader (_DEFAULT).
-     * NVIDIA doesn't really expose denorm control in a useful way, and
-     * we rely on the default behavior instead to avoid leaking FP16 denorm state into FP32. */
-
-    unsigned int i;
-    for (i = 0; i < compiler_args->target_extension_count; i++)
-        if (compiler_args->target_extensions[i] == VKD3D_SHADER_TARGET_EXTENSION_SUPPORT_FP16_DENORM_PRESERVE ||
-            compiler_args->target_extensions[i] == VKD3D_SHADER_TARGET_EXTENSION_SUPPORT_FP16_DENORM_PRESERVE_DEFAULT)
-            return false;
 
     return true;
 }
@@ -796,15 +650,12 @@ static bool vkd3d_dxil_converter_can_use_soft_float_fp16_conv(
 static int vkd3d_dxil_converter_set_options(dxil_spv_converter converter,
         const struct vkd3d_shader_interface_info *shader_interface_info,
         const struct vkd3d_shader_compile_arguments *compiler_args,
-        vkd3d_shader_quirks_t quirks, vkd3d_shader_hash_t hash, const char *export, bool bda)
+        uint32_t quirks, vkd3d_shader_hash_t hash, const char *export, bool bda)
 {
     dxil_spv_option_compute_shader_derivatives compute_shader_derivatives = {{ DXIL_SPV_OPTION_COMPUTE_SHADER_DERIVATIVES }};
     dxil_spv_option_denorm_preserve_support denorm_preserve = {{ DXIL_SPV_OPTION_DENORM_PRESERVE_SUPPORT }};
     dxil_spv_option_float8_support float8 = {{ DXIL_SPV_OPTION_FLOAT8_SUPPORT }};
     unsigned int i, j, max_tess_factor;
-
-    if (!vkd3d_dxil_converter_can_use_soft_float_fp16_conv(compiler_args))
-        quirks &= ~VKD3D_SHADER_QUIRK_FORCE_DENORM_LEGACY_FP16_CONVERSIONS;
 
     if (!vkd3d_dxil_converter_set_quirks(converter, shader_interface_info, quirks))
     {
@@ -957,7 +808,7 @@ static int vkd3d_dxil_converter_set_options(dxil_spv_converter converter,
         const struct dxil_spv_option_physical_address_descriptor_indexing helper =
                 { { DXIL_SPV_OPTION_PHYSICAL_ADDRESS_DESCRIPTOR_INDEXING },
                     shader_interface_info->descriptor_size_cbv_srv_uav / sizeof(VkDeviceAddress),
-                    shader_interface_info->raw_uav_counter_offset / sizeof(VkDeviceAddress) };
+                    0 };
 
         if (dxil_spv_converter_add_option(converter, &helper.base) != DXIL_SPV_SUCCESS)
         {
@@ -1132,17 +983,6 @@ static int vkd3d_dxil_converter_set_options(dxil_spv_converter converter,
                     }
                 }
             }
-            else if (compiler_args->target_extensions[i] == VKD3D_SHADER_TARGET_EXTENSION_MIN_PRECISION_IS_RELAXED)
-            {
-                static const dxil_spv_option_arithmetic_relaxed_precision helper =
-                    { { DXIL_SPV_OPTION_ARITHMETIC_RELAXED_PRECISION }, DXIL_SPV_TRUE };
-
-                if (dxil_spv_converter_add_option(converter, &helper.base) != DXIL_SPV_SUCCESS)
-                {
-                    ERR("dxil-spirv does not support MIN_PRECISION_IS_RELAXED.\n");
-                    return VKD3D_ERROR_NOT_IMPLEMENTED;
-                }
-            }
             else if (compiler_args->target_extensions[i] == VKD3D_SHADER_TARGET_EXTENSION_SUPPORT_FP16_DENORM_PRESERVE)
                 denorm_preserve.supports_float16_denorm_preserve = DXIL_SPV_TRUE;
             else if (compiler_args->target_extensions[i] == VKD3D_SHADER_TARGET_EXTENSION_SUPPORT_FP64_DENORM_PRESERVE)
@@ -1180,21 +1020,18 @@ static int vkd3d_dxil_converter_set_options(dxil_spv_converter converter,
                     return VKD3D_ERROR_NOT_IMPLEMENTED;
                 }
             }
+#if 0
             else if (compiler_args->target_extensions[i] == VKD3D_SHADER_TARGET_EXTENSION_OPACITY_MICROMAP)
             {
-                dxil_spv_option_opacity_micromap helper = { { DXIL_SPV_OPTION_OPACITY_MICROMAP } };
-                helper.trace_ray_enabled =
-                        (shader_interface_info->flags & VKD3D_SHADER_INTERFACE_RAYTRACING_OPACITY_MICROMAP)
-                                ? DXIL_SPV_TRUE : DXIL_SPV_FALSE;
-                helper.ray_query_force_omm_execution_mode_in_legacy_sm =
-                        (shader_interface_info->flags & VKD3D_SHADER_INTERFACE_RAY_QUERY_OMM_DEVICE_GLOBAL)
-                                ? DXIL_SPV_TRUE : DXIL_SPV_FALSE;
+                static const dxil_spv_option_opacity_micromap helper =
+                        { { DXIL_SPV_OPTION_OPACITY_MICROMAP }, DXIL_SPV_TRUE };
                 if (dxil_spv_converter_add_option(converter, &helper.base) != DXIL_SPV_SUCCESS)
                 {
                     ERR("dxil-spirv does not support OPACITY_MICROMAP.\n");
                     return VKD3D_ERROR_NOT_IMPLEMENTED;
                 }
             }
+#endif
             else if (compiler_args->target_extensions[i] == VKD3D_SHADER_TARGET_EXTENSION_WMMA_FP8)
             {
                 float8.wmma_fp8 = DXIL_SPV_TRUE;
@@ -1239,79 +1076,6 @@ static int vkd3d_dxil_converter_set_options(dxil_spv_converter converter,
                             shader_interface_info->root_signature_blob_size);
                 }
             }
-            else if (compiler_args->target_extensions[i] == VKD3D_SHADER_TARGET_EXTENSION_MIXED_FLOAT_DOT_PRODUCT)
-            {
-                static const dxil_spv_option_mixed_float_dot_product mixed = {
-                    { DXIL_SPV_OPTION_MIXED_FLOAT_DOT_PRODUCT }, DXIL_SPV_TRUE };
-
-                if (dxil_spv_converter_add_option(converter, &mixed.base) != DXIL_SPV_SUCCESS)
-                {
-                    ERR("dxil-spirv does not support MIXED_FLOAT_DOT_PRODUCT.\n");
-                    return VKD3D_ERROR_NOT_IMPLEMENTED;
-                }
-            }
-            else if (compiler_args->target_extensions[i] == VKD3D_SHADER_TARGET_EXTENSION_COMPUTE_SHADER_DERIVATIVES_QUAD)
-            {
-                static const dxil_spv_option_compute_shader_derivatives_quad quad = {
-                    { DXIL_SPV_OPTION_COMPUTE_SHADER_DERIVATIVES_QUAD }, DXIL_SPV_TRUE
-                };
-
-                if (dxil_spv_converter_add_option(converter, &quad.base) != DXIL_SPV_SUCCESS)
-                {
-                    ERR("dxil-spirv does not support COMPUTE_SHADER_DERIVATIVES_QUAD.\n");
-                    return VKD3D_ERROR_NOT_IMPLEMENTED;
-                }
-            }
-            else if (compiler_args->target_extensions[i] == VKD3D_SHADER_TARGET_EXTENSION_ASSUME_SSBO_32BIT_WRAPPING)
-            {
-                /* raw_access_chains works the same way as normal SSBO on NVIDIA for now.
-                 * Revisit if we need to split the behavior. */
-                static const dxil_spv_option_ssbo_addressing_behavior behavior = {
-                    { DXIL_SPV_OPTION_SSBO_ADDRESSING_BEHAVIOR }, DXIL_SPV_TRUE, DXIL_SPV_TRUE,
-                };
-
-                if (dxil_spv_converter_add_option(converter, &behavior.base) != DXIL_SPV_SUCCESS)
-                {
-                    ERR("dxil-spirv does not support SSBO_ADDRESSING_BEHAVIOR.\n");
-                    return VKD3D_ERROR_NOT_IMPLEMENTED;
-                }
-            }
-            else if (compiler_args->target_extensions[i] == VKD3D_SHADER_TARGET_EXTENSION_FLOAT_CONTROLS_2)
-            {
-                static const dxil_spv_options_float_controls_2 fc2 = {
-                    { DXIL_SPV_OPTION_FLOAT_CONTROLS_2 }, DXIL_SPV_TRUE,
-                };
-
-                if (dxil_spv_converter_add_option(converter, &fc2.base) != DXIL_SPV_SUCCESS)
-                {
-                    ERR("dxil-spirv does not support FLOAT_CONTROLS_2.\n");
-                    return VKD3D_ERROR_NOT_IMPLEMENTED;
-                }
-            }
-            else if (compiler_args->target_extensions[i] == VKD3D_SHADER_TARGET_EXTENSION_SHADER_ABORT)
-            {
-                static const dxil_spv_option_shader_abort shader_abort = {
-                    { DXIL_SPV_OPTION_SHADER_ABORT }, DXIL_SPV_TRUE,
-                };
-
-                if (dxil_spv_converter_add_option(converter, &shader_abort.base) != DXIL_SPV_SUCCESS)
-                {
-                    ERR("dxil-spirv does not support SHADER_ABORT.\n");
-                    return VKD3D_ERROR_NOT_IMPLEMENTED;
-                }
-            }
-            else if (compiler_args->target_extensions[i] == VKD3D_SHADER_TARGET_EXTENSION_SHADER_IMPLIED_SSBO_ALIGNMENT)
-            {
-                static const dxil_spv_option_conservative_ssbo_vectorization conservative = {
-                    { DXIL_SPV_OPTION_CONSERVATIVE_SSBO_VECTORIZATION }, DXIL_SPV_TRUE,
-                };
-
-                if (dxil_spv_converter_add_option(converter, &conservative.base) != DXIL_SPV_SUCCESS)
-                {
-                    ERR("dxil-spirv does not support CONSERVATIVE_SSBO_VECTORIZATION.\n");
-                    return VKD3D_ERROR_NOT_IMPLEMENTED;
-                }
-            }
         }
 
         if (compiler_args->driver_version)
@@ -1326,19 +1090,6 @@ static int vkd3d_dxil_converter_set_options(dxil_spv_converter converter,
                 return VKD3D_ERROR_NOT_IMPLEMENTED;
             }
         }
-
-        if (compiler_args->nv_shader_extn_uav_slot != UINT32_MAX)
-        {
-            const dxil_spv_option_nvapi helper =
-                    { { DXIL_SPV_OPTION_NVAPI },
-                    DXIL_SPV_TRUE, compiler_args->nv_shader_extn_uav_slot, compiler_args->nv_shader_extn_uav_space };
-            if (dxil_spv_converter_add_option(converter, &helper.base) != DXIL_SPV_SUCCESS)
-            {
-                ERR("dxil-spirv does not support NVAPI.\n");
-                return VKD3D_ERROR_NOT_IMPLEMENTED;
-            }
-        }
-
         if (compiler_args->dual_source_blending)
         {
             static const dxil_spv_option_dual_source_blending helper =
@@ -1378,40 +1129,6 @@ static int vkd3d_dxil_converter_set_options(dxil_spv_converter converter,
                 }
             }
         }
-
-        if (compiler_args->multiview.enable)
-        {
-            struct dxil_spv_option_view_instancing helper = {{ DXIL_SPV_OPTION_VIEW_INSTANCING }};
-            helper.enabled = DXIL_SPV_TRUE;
-            helper.last_pre_rasterization_stage = compiler_args->multiview.last_pre_rasterization ?
-                    DXIL_SPV_TRUE : DXIL_SPV_FALSE;
-            /* TODO: If we have forced view instancing, we need to set this to UINT32_MAX. */
-            /* TODO: If we dynamically cannot do view instancing, we need to set meta descriptors. */
-            helper.view_index_to_view_instance_spec_id = UINT32_MAX;
-            helper.view_instance_to_viewport_spec_id = UINT32_MAX;
-
-            for (i = 0; i < compiler_args->parameter_count; i++)
-            {
-                const struct vkd3d_shader_parameter *argument = &compiler_args->parameters[i];
-                if (argument->type != VKD3D_SHADER_PARAMETER_TYPE_SPECIALIZATION_CONSTANT)
-                    continue;
-
-                if (argument->name == VKD3D_SHADER_PARAMETER_NAME_VIEW_INDEX_TO_VIEW_ID)
-                    helper.view_index_to_view_instance_spec_id = argument->specialization_constant.id;
-                else if (argument->name == VKD3D_SHADER_PARAMETER_NAME_VIEW_ID_TO_VIEWPORT)
-                    helper.view_instance_to_viewport_spec_id = argument->specialization_constant.id;
-            }
-
-            if (dxil_spv_converter_add_option(converter, &helper.base) != DXIL_SPV_SUCCESS)
-            {
-                WARN("dxil-spirv does not support VIEW_INSTANCING.\n");
-                return VKD3D_ERROR_NOT_IMPLEMENTED;
-            }
-
-            /* Set a dummy meta descriptor so that dxil-spirv doesn't assert. */
-            dxil_spv_converter_set_meta_descriptor(converter, DXIL_SPV_META_DESCRIPTOR_DYNAMIC_VIEW_INSTANCING_OFFSETS,
-                    DXIL_SPV_META_DESCRIPTOR_KIND_UBO_CONTAINING_CONSTANT, 0, 0);
-        }
     }
 
     /* For legacy reasons, COMPUTE_SHADER_DERIVATIVES_NV is default true in dxil-spirv,
@@ -1445,34 +1162,6 @@ static int vkd3d_dxil_converter_set_options(dxil_spv_converter converter,
         }
     }
 
-    if (shader_interface_info->flags & VKD3D_SHADER_INTERFACE_HEAP_LOWERING)
-    {
-        /* We use special sauce for meta descriptors in heap. */
-        if (shader_interface_info->flags & VKD3D_SHADER_INTERFACE_INLINE_REDZONE_CBV)
-        {
-            /* Redirect these through PUSH_DATA CBV. */
-            dxil_spv_converter_set_meta_descriptor(converter,
-                DXIL_SPV_META_DESCRIPTOR_RESOURCE_DESCRIPTOR_HEAP_SIZE,
-                DXIL_SPV_META_DESCRIPTOR_KIND_UBO_CONTAINING_CONSTANT,
-                VKD3D_SHADER_GLOBAL_HEAP_VIRTUAL_DESCRIPTOR_SET,
-                VKD3D_SHADER_GLOBAL_HEAP_SIZE_BINDING);
-
-            dxil_spv_converter_set_meta_descriptor(converter,
-                DXIL_SPV_META_DESCRIPTOR_RAW_DESCRIPTOR_HEAP_VIEW,
-                DXIL_SPV_META_DESCRIPTOR_KIND_UBO_CONTAINING_BDA,
-                VKD3D_SHADER_GLOBAL_HEAP_VIRTUAL_DESCRIPTOR_SET,
-                VKD3D_SHADER_RAW_VIEW_GLOBAL_HEAP_BINDING);
-        }
-        else
-        {
-            dxil_spv_converter_set_meta_descriptor(converter,
-                DXIL_SPV_META_DESCRIPTOR_RAW_DESCRIPTOR_HEAP_VIEW,
-                DXIL_SPV_META_DESCRIPTOR_KIND_READONLY_SSBO,
-                VKD3D_SHADER_GLOBAL_HEAP_VIRTUAL_DESCRIPTOR_SET,
-                VKD3D_SHADER_RAW_VIEW_GLOBAL_HEAP_BINDING);
-        }
-    }
-
     return VKD3D_OK;
 }
 
@@ -1492,12 +1181,11 @@ int vkd3d_shader_compile_dxil(const struct vkd3d_shader_code *dxbc,
     dxil_spv_converter converter = NULL;
     dxil_spv_parsed_blob blob = NULL;
     dxil_spv_compiled_spirv compiled;
-    vkd3d_shader_quirks_t quirks;
     dxil_spv_shader_stage stage;
     unsigned int i, max_size;
     vkd3d_shader_hash_t hash;
-    const char *quirk_entry;
     int ret = VKD3D_OK;
+    uint32_t quirks;
     void *code;
 
     dxil_spv_set_thread_log_callback(vkd3d_dxil_log_callback, NULL);
@@ -1513,24 +1201,7 @@ int vkd3d_shader_compile_dxil(const struct vkd3d_shader_code *dxbc,
         spirv->meta.flags |= VKD3D_SHADER_META_FLAG_REPLACED;
         return ret;
     }
-
-    dxil_spv_begin_thread_allocator_context();
-
-    vkd3d_shader_dump_shader(hash, dxbc, is_dxil ? "dxil" : "dxbc");
-
-    if (dxil_spv_parse_dxil_blob(dxbc->code, dxbc->size, &blob) != DXIL_SPV_SUCCESS)
-    {
-        ret = VKD3D_ERROR_INVALID_SHADER;
-        goto end;
-    }
-
-    if (dxil_spv_parsed_blob_get_entry_point_demangled_name(blob, 0, &quirk_entry) != DXIL_SPV_SUCCESS)
-    {
-        ret = VKD3D_ERROR_INVALID_SHADER;
-        goto end;
-    }
-
-    quirks = vkd3d_shader_compile_arguments_select_quirks(compiler_args, hash, quirk_entry);
+    quirks = vkd3d_shader_compile_arguments_select_quirks(compiler_args, hash);
     if (quirks & VKD3D_SHADER_QUIRK_FORCE_COMPUTE_BARRIER)
         spirv->meta.flags |= VKD3D_SHADER_META_FLAG_FORCE_COMPUTE_BARRIER_AFTER_DISPATCH;
     if (quirks & VKD3D_SHADER_QUIRK_FORCE_PRE_COMPUTE_BARRIER)
@@ -1543,13 +1214,16 @@ int vkd3d_shader_compile_dxil(const struct vkd3d_shader_code *dxbc,
         spirv->meta.flags |= VKD3D_SHADER_META_FLAG_DISABLE_OPTIMIZATIONS;
     if (quirks & VKD3D_SHADER_QUIRK_FORCE_GRAPHICS_BARRIER_BEFORE_RENDER_PASS)
         spirv->meta.flags |= VKD3D_SHADER_META_FLAG_FORCE_GRAPHICS_BARRIER_BEFORE_RENDER_PASS;
-    if (quirks & VKD3D_SHADER_QUIRK_FORCE_GRAPHICS_BARRIER_BEFORE_DRAW)
-        spirv->meta.flags |= VKD3D_SHADER_META_FLAG_FORCE_GRAPHICS_BARRIER_BEFORE_DRAW;
-    if (quirks & VKD3D_SHADER_QUIRK_FORCE_FEEDBACK_LOOP)
-        spirv->meta.flags |= VKD3D_SHADER_META_FLAG_FEEDBACK_LOOP;
 
-    /* This quirk should only apply to exports. */
-    quirks &= ~VKD3D_SHADER_QUIRK_FORCE_NONUNIFORM_RT;
+    dxil_spv_begin_thread_allocator_context();
+
+    vkd3d_shader_dump_shader(hash, dxbc, is_dxil ? "dxil" : "dxbc");
+
+    if (dxil_spv_parse_dxil_blob(dxbc->code, dxbc->size, &blob) != DXIL_SPV_SUCCESS)
+    {
+        ret = VKD3D_ERROR_INVALID_SHADER;
+        goto end;
+    }
 
     stage = dxil_spv_parsed_blob_get_shader_stage(blob);
     if (!dxil_match_shader_stage(stage, shader_interface_info->stage))
@@ -1600,8 +1274,6 @@ int vkd3d_shader_compile_dxil(const struct vkd3d_shader_code *dxbc,
     remap_userdata.shader_interface_info = shader_interface_info;
     remap_userdata.shader_interface_local_info = NULL;
     remap_userdata.num_root_descriptors = num_root_descriptors;
-    remap_userdata.quirks = quirks;
-    remap_userdata.skip_heap_lowering = false;
 
     dxil_spv_converter_set_root_constant_word_count(converter, root_constant_words);
     dxil_spv_converter_set_root_descriptor_count(converter, num_root_descriptors);
@@ -1628,19 +1300,6 @@ int vkd3d_shader_compile_dxil(const struct vkd3d_shader_code *dxbc,
     {
         ret = VKD3D_ERROR_INVALID_ARGUMENT;
         goto end;
-    }
-
-    {
-        /* For now, we cannot support view instancing with fallback paths, but that's not a dxil-spirv issue,
-         * but rather a vkd3d-proton issue. */
-        dxil_spv_bool compatible = DXIL_SPV_FALSE;
-        if (compiler_args && compiler_args->multiview.enable &&
-            (dxil_spv_converter_is_multiview_compatible(converter, &compatible) != DXIL_SPV_SUCCESS ||
-            compatible == DXIL_SPV_FALSE))
-        {
-            ret = VKD3D_ERROR_NOT_IMPLEMENTED;
-            goto end;
-        }
     }
 
     if (dxil_spv_converter_get_compiled_spirv(converter, &compiled) != DXIL_SPV_SUCCESS)
@@ -1694,16 +1353,6 @@ int vkd3d_shader_compile_dxil(const struct vkd3d_shader_code *dxbc,
     if (!wave_size_max)
         wave_size_max = wave_size_min;
 
-    if ((stage == DXIL_SPV_STAGE_COMPUTE || stage == DXIL_SPV_STAGE_MESH || stage == DXIL_SPV_STAGE_AMPLIFICATION) &&
-        wave_size_max == 32 &&
-        (quirks & VKD3D_SHADER_QUIRK_CLAMP_WAVE_SIZE_TO_THREAD_GROUP32) &&
-        spirv->meta.cs_workgroup_size[0] == 32 &&
-        spirv->meta.cs_workgroup_size[1] == 1 &&
-        spirv->meta.cs_workgroup_size[2] == 1)
-    {
-        spirv->meta.flags |= VKD3D_SHADER_META_FLAG_ALLOW_WAVE32;
-    }
-
     if (compiler_args->promote_wave_size_heuristics)
     {
         dxil_spv_converter_get_compute_heuristic_min_wave_size(converter, &heuristic_min_wave_size);
@@ -1730,14 +1379,6 @@ int vkd3d_shader_compile_dxil(const struct vkd3d_shader_code *dxbc,
                 wave_size_preferred = heuristic_min_wave_size;
             }
         }
-    }
-
-    if (quirks & VKD3D_SHADER_QUIRK_DEBUG_FORCE_MIN_WAVE64)
-    {
-        /* Force it when we use the debug quirk. */
-        wave_size_min = 64;
-        wave_size_max = 64;
-        wave_size_preferred = 64;
     }
 
     spirv->meta.cs_wave_size_min = wave_size_min;
@@ -1770,12 +1411,10 @@ int vkd3d_shader_compile_dxil_export(const struct vkd3d_shader_code *dxil,
     dxil_spv_converter converter = NULL;
     dxil_spv_parsed_blob blob = NULL;
     dxil_spv_compiled_spirv compiled;
-    bool root_desc_heap_lowering;
-    vkd3d_shader_quirks_t quirks;
     unsigned int i, j, max_size;
-    bool table_heap_lowering;
     vkd3d_shader_hash_t hash;
     int ret = VKD3D_OK;
+    uint32_t quirks;
     void *code;
 
     dxil_spv_set_thread_log_callback(vkd3d_dxil_log_callback, NULL);
@@ -1784,17 +1423,7 @@ int vkd3d_shader_compile_dxil_export(const struct vkd3d_shader_code *dxil,
     hash = vkd3d_shader_hash(dxil);
     spirv->meta.hash = hash;
 
-    /* For user provided (not mangled) export names, just inherit that name. */
-    if (!demangled_export)
-        demangled_export = export;
-
-    if (demangled_export && vkd3d_shader_replace_export(hash, &spirv->code, &spirv->size, demangled_export))
-    {
-        spirv->meta.flags |= VKD3D_SHADER_META_FLAG_REPLACED;
-        return ret;
-    }
-
-    quirks = vkd3d_shader_compile_arguments_select_quirks(compiler_args, hash, demangled_export);
+    quirks = vkd3d_shader_compile_arguments_select_quirks(compiler_args, hash);
     if (quirks & VKD3D_SHADER_QUIRK_FORCE_COMPUTE_BARRIER)
         spirv->meta.flags |= VKD3D_SHADER_META_FLAG_FORCE_COMPUTE_BARRIER_AFTER_DISPATCH;
     if (quirks & VKD3D_SHADER_QUIRK_FORCE_PRE_COMPUTE_BARRIER)
@@ -1805,6 +1434,16 @@ int vkd3d_shader_compile_dxil_export(const struct vkd3d_shader_code *dxil,
         spirv->meta.flags |= VKD3D_SHADER_META_FLAG_FORCE_GRAPHICS_BEFORE_DISPATCH;
     if (quirks & VKD3D_SHADER_QUIRK_DISABLE_OPTIMIZATIONS)
         spirv->meta.flags |= VKD3D_SHADER_META_FLAG_DISABLE_OPTIMIZATIONS;
+
+    /* For user provided (not mangled) export names, just inherit that name. */
+    if (!demangled_export)
+        demangled_export = export;
+
+    if (demangled_export && vkd3d_shader_replace_export(hash, &spirv->code, &spirv->size, demangled_export))
+    {
+        spirv->meta.flags |= VKD3D_SHADER_META_FLAG_REPLACED;
+        return ret;
+    }
 
     dxil_spv_begin_thread_allocator_context();
 
@@ -1841,12 +1480,6 @@ int vkd3d_shader_compile_dxil_export(const struct vkd3d_shader_code *dxil,
         if (vkd3d_shader_binding_is_root_descriptor(&shader_interface_info->bindings[i]))
             num_root_descriptors++;
 
-    table_heap_lowering =
-            !!(shader_interface_info->flags & VKD3D_SHADER_INTERFACE_HEAP_LOWERING) &&
-            !(quirks & VKD3D_SHADER_QUIRK_DESCRIPTOR_HEAP_ROBUSTNESS);
-    root_desc_heap_lowering =
-            !!(shader_interface_info->flags & VKD3D_SHADER_INTERFACE_HEAP_LOWERING);
-
     /* Push local root parameters. We cannot rely on callbacks here
      * since the local root signature has a physical layout in ShaderRecordKHR
      * which needs to be precisely specified up front. */
@@ -1856,7 +1489,6 @@ int vkd3d_shader_compile_dxil_export(const struct vkd3d_shader_code *dxil,
         switch (root_parameter->parameter_type)
         {
             case D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS:
-                /* Always lower to shader record buffer for these. Concerns about OOB behavior on root CBVs. */
                 record_constant_buffer =
                         &shader_interface_local_info->shader_record_constant_buffers[root_parameter->constant.constant_index];
                 dxil_spv_converter_add_local_root_constants(converter,
@@ -1865,9 +1497,6 @@ int vkd3d_shader_compile_dxil_export(const struct vkd3d_shader_code *dxil,
                 break;
 
             case D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE:
-            {
-                bool has_entry = false;
-
                 if (dxil_spv_converter_begin_local_root_descriptor_table(converter) != DXIL_SPV_SUCCESS)
                 {
                     ret = VKD3D_ERROR_INVALID_ARGUMENT;
@@ -1878,20 +1507,6 @@ int vkd3d_shader_compile_dxil_export(const struct vkd3d_shader_code *dxil,
                 {
                     dxil_spv_resource_class resource_class;
                     resource_binding = &root_parameter->descriptor_table.first_binding[j];
-
-                    if (resource_binding->type == VKD3D_SHADER_DESCRIPTOR_TYPE_UAV)
-                    {
-                        /* For bindless UAV counters we risk having to force lowering.
-                         * If that lowering means raw VA shenanigans, we have to force shader record
-                         * table path for all UAVs just in case. */
-                        if (table_heap_lowering && shader_interface_info->raw_uav_counter_offset == 0)
-                            continue;
-                    }
-                    else
-                    {
-                        if (table_heap_lowering)
-                            continue;
-                    }
 
                     switch (resource_binding->type)
                     {
@@ -1920,15 +1535,6 @@ int vkd3d_shader_compile_dxil_export(const struct vkd3d_shader_code *dxil,
                             resource_class,
                             resource_binding->register_space, resource_binding->register_index,
                             resource_binding->register_count, resource_binding->descriptor_offset);
-
-                    has_entry = true;
-                }
-
-                if (!has_entry)
-                {
-                    /* Dummy parameters to make dxil-spirv happy. These are mapped with proper API elsewhere. */
-                    dxil_spv_converter_add_local_root_descriptor_table(converter,
-                            DXIL_SPV_RESOURCE_CLASS_UAV, UINT32_MAX, 0, 0, 0);
                 }
 
                 if (dxil_spv_converter_end_local_root_descriptor_table(converter) != DXIL_SPV_SUCCESS)
@@ -1937,51 +1543,23 @@ int vkd3d_shader_compile_dxil_export(const struct vkd3d_shader_code *dxil,
                     goto end;
                 }
                 break;
-            }
 
             case D3D12_ROOT_PARAMETER_TYPE_CBV:
-                if (root_desc_heap_lowering)
-                {
-                    /* Dummy parameters to make dxil-spirv happy. These are mapped with proper API elsewhere. */
-                    dxil_spv_converter_add_local_root_descriptor(converter,
-                            DXIL_SPV_RESOURCE_CLASS_SAMPLER, UINT32_MAX, UINT32_MAX);
-                }
-                else
-                {
-                    dxil_spv_converter_add_local_root_descriptor(converter,
-                            DXIL_SPV_RESOURCE_CLASS_CBV, root_parameter->descriptor.binding->register_space,
-                            root_parameter->descriptor.binding->register_index);
-                }
+                dxil_spv_converter_add_local_root_descriptor(converter,
+                        DXIL_SPV_RESOURCE_CLASS_CBV, root_parameter->descriptor.binding->register_space,
+                        root_parameter->descriptor.binding->register_index);
                 break;
 
             case D3D12_ROOT_PARAMETER_TYPE_SRV:
-                if (root_desc_heap_lowering && shader_interface_info->min_ssbo_alignment == 1)
-                {
-                    /* If we risk having to fallback to raw BDA due to alignment rules, we just force BDA path. */
-                    dxil_spv_converter_add_local_root_descriptor(converter,
-                            DXIL_SPV_RESOURCE_CLASS_SAMPLER, UINT32_MAX, UINT32_MAX);
-                }
-                else
-                {
-                    dxil_spv_converter_add_local_root_descriptor(converter,
-                            DXIL_SPV_RESOURCE_CLASS_SRV, root_parameter->descriptor.binding->register_space,
-                            root_parameter->descriptor.binding->register_index);
-                }
+                dxil_spv_converter_add_local_root_descriptor(converter,
+                        DXIL_SPV_RESOURCE_CLASS_SRV, root_parameter->descriptor.binding->register_space,
+                        root_parameter->descriptor.binding->register_index);
                 break;
 
             case D3D12_ROOT_PARAMETER_TYPE_UAV:
-                if (root_desc_heap_lowering && shader_interface_info->min_ssbo_alignment == 1)
-                {
-                    /* If we risk having to fallback to raw BDA due to alignment rules, we just force BDA path. */
-                    dxil_spv_converter_add_local_root_descriptor(converter,
-                            DXIL_SPV_RESOURCE_CLASS_SAMPLER, UINT32_MAX, UINT32_MAX);
-                }
-                else
-                {
-                    dxil_spv_converter_add_local_root_descriptor(converter,
-                            DXIL_SPV_RESOURCE_CLASS_UAV, root_parameter->descriptor.binding->register_space,
-                            root_parameter->descriptor.binding->register_index);
-                }
+                dxil_spv_converter_add_local_root_descriptor(converter,
+                        DXIL_SPV_RESOURCE_CLASS_UAV, root_parameter->descriptor.binding->register_space,
+                        root_parameter->descriptor.binding->register_index);
                 break;
 
             default:
@@ -2004,8 +1582,6 @@ int vkd3d_shader_compile_dxil_export(const struct vkd3d_shader_code *dxil,
     remap_userdata.shader_interface_info = shader_interface_info;
     remap_userdata.shader_interface_local_info = shader_interface_local_info;
     remap_userdata.num_root_descriptors = num_root_descriptors;
-    remap_userdata.quirks = quirks;
-    remap_userdata.skip_heap_lowering = false;
 
     dxil_spv_converter_set_root_constant_word_count(converter, root_constant_words);
     dxil_spv_converter_set_root_descriptor_count(converter, num_root_descriptors);
@@ -2412,8 +1988,6 @@ int vkd3d_shader_dxil_append_library_entry_points_and_subobjects(
                 subobject = &(*subobjects)[*subobjects_count];
                 vkd3d_shader_dxil_copy_subobject(identifier, subobject, &sub);
                 *subobjects_count += 1;
-                vkd3d_free(ascii_entry);
-                ascii_entry = NULL;
             }
             else
             {

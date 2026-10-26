@@ -151,7 +151,7 @@ void test_get_resource_tiling(void)
         return;
 
     hr = ID3D12Device_CheckFeatureSupport(context.device, D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options));
-    ok(hr == S_OK, "Failed to check feature support, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to check feature support, hr %#x.\n", hr);
 
     if (!options.TiledResourcesTier)
     {
@@ -175,7 +175,7 @@ void test_get_resource_tiling(void)
 
     hr = ID3D12Device_CreateReservedResource(context.device, &resource_desc,
         D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource, (void **)&resource);
-    ok(hr == S_OK, "Failed to create reserved resource, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create reserved resource, hr %#x.\n", hr);
 
     /* This is nonsense, but it doesn't crash or generate errors. */
     ID3D12Device_GetResourceTiling(context.device, resource, NULL, NULL, NULL, NULL, 0, NULL);
@@ -245,7 +245,7 @@ void test_get_resource_tiling(void)
         hr = ID3D12Device_CreateReservedResource(context.device, &resource_desc,
             D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource, (void **)&resource);
         todo_if(is_radv_device(context.device) && tests[i].todo_radv)
-        ok(hr == S_OK, "Failed to create reserved resource, hr %#x.\n", (int)hr);
+        ok(hr == S_OK, "Failed to create reserved resource, hr %#x.\n", hr);
 
         if (hr != S_OK)
             continue;
@@ -328,7 +328,7 @@ static void set_region_size(D3D12_TILE_REGION_SIZE *region, uint32_t num_tiles, 
     region->Depth = d;
 }
 
-static void test_update_tile_mappings_remap_inner(bool smem)
+void test_update_tile_mappings_remap_stress(void)
 {
     D3D12_FEATURE_DATA_D3D12_OPTIONS options;
     D3D12_ROOT_SIGNATURE_DESC rs_desc;
@@ -346,7 +346,6 @@ static void test_update_tile_mappings_remap_inner(bool smem)
     HRESULT hr;
 
 #include "shaders/sparse/headers/update_tile_mappings.h"
-#include "shaders/sparse/headers/update_tile_mappings_smem.h"
 
     memset(&desc, 0, sizeof(desc));
     desc.no_render_target = true;
@@ -356,7 +355,7 @@ static void test_update_tile_mappings_remap_inner(bool smem)
         return;
 
     hr = ID3D12Device_CheckFeatureSupport(context.device, D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options));
-    ok(hr == S_OK, "Failed to check feature support, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to check feature support, hr %#x.\n", hr);
 
     if (!options.TiledResourcesTier)
     {
@@ -387,7 +386,7 @@ static void test_update_tile_mappings_remap_inner(bool smem)
 
     hr = ID3D12Device_CreateReservedResource(context.device, &resource_desc,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS, NULL, &IID_ID3D12Resource, (void **)&resource);
-    ok(hr == S_OK, "Failed to create reserved buffer, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create reserved buffer, hr %#x.\n", hr);
 
     output_resource = create_default_buffer(context.device, 64 * sizeof(uint32_t),
             D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
@@ -401,7 +400,7 @@ static void test_update_tile_mappings_remap_inner(bool smem)
     create_root_signature(context.device, &rs_desc, &context.root_signature);
 
     context.pipeline_state = create_compute_pipeline_state(
-            context.device, context.root_signature, smem ? update_tile_mappings_smem_dxbc : update_tile_mappings_dxbc);
+            context.device, context.root_signature, update_tile_mappings_dxbc);
 
     for (iter = 0; iter < 100; iter++)
     {
@@ -432,11 +431,11 @@ static void test_update_tile_mappings_remap_inner(bool smem)
         };
 
         hr = ID3D12Device_CreateHeap(context.device, &heap_desc, &IID_ID3D12Heap, (void **)&new_heap);
-        ok(hr == S_OK, "Failed to create heap, hr %#x.\n", (int)hr);
+        ok(hr == S_OK, "Failed to create heap, hr %#x.\n", hr);
 
         hr = ID3D12Device_CreatePlacedResource(context.device, new_heap, 0, &resource_desc,
                 D3D12_RESOURCE_STATE_COMMON, NULL, &IID_ID3D12Resource, (void **)&placed_resource);
-        ok(SUCCEEDED(hr), "Failed to create resource, hr #%x.\n", (int)hr);
+        ok(SUCCEEDED(hr), "Failed to create resource, hr #%x.\n", hr);
 
         /* Destroy the old heap while it has mappings to the heap, then rebind those pages. Should not explode. */
         if (heap)
@@ -477,7 +476,7 @@ static void test_update_tile_mappings_remap_inner(bool smem)
                 ID3D12Resource_GetGPUVirtualAddress(resource) + OFFSET_INTO_PAGE);
         ID3D12GraphicsCommandList_SetComputeRootUnorderedAccessView(context.list, 1,
                 ID3D12Resource_GetGPUVirtualAddress(output_resource));
-        ID3D12GraphicsCommandList_Dispatch(context.list, smem ? 64 : 1, 1, 1);
+        ID3D12GraphicsCommandList_Dispatch(context.list, 1, 1, 1);
         transition_resource_state(context.list, output_resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_COPY_SOURCE);
         get_buffer_readback_with_command_list(output_resource, DXGI_FORMAT_R32_UINT, &rb, context.queue, context.list);
@@ -509,16 +508,6 @@ static void test_update_tile_mappings_remap_inner(bool smem)
     ID3D12Resource_Release(output_resource);
     ID3D12Heap_Release(heap);
     destroy_test_context(&context);
-}
-
-void test_update_tile_mappings_remap_vmem(void)
-{
-    test_update_tile_mappings_remap_inner(false);
-}
-
-void test_update_tile_mappings_remap_smem(void)
-{
-    test_update_tile_mappings_remap_inner(true);
 }
 
 void test_update_tile_mappings(void)
@@ -596,7 +585,7 @@ void test_update_tile_mappings(void)
         return;
 
     hr = ID3D12Device_CheckFeatureSupport(context.device, D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options));
-    ok(hr == S_OK, "Failed to check feature support, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to check feature support, hr %#x.\n", hr);
 
     if (!options.TiledResourcesTier)
     {
@@ -624,7 +613,7 @@ void test_update_tile_mappings(void)
     root_signature_desc.pStaticSamplers = NULL;
     root_signature_desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
     hr = create_root_signature(context.device, &root_signature_desc, &root_signature);
-    ok(hr == S_OK, "Failed to create root signature, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create root signature, hr %#x.\n", hr);
 
     descriptor_range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
     root_parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
@@ -633,7 +622,7 @@ void test_update_tile_mappings(void)
     root_parameters[1].Constants.Num32BitValues = 4;
     root_parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     hr = create_root_signature(context.device, &root_signature_desc, &clear_root_signature);
-    ok(hr == S_OK, "Failed to create root signature, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create root signature, hr %#x.\n", hr);
 
     clear_texture_pipeline = create_compute_pipeline_state(context.device, clear_root_signature, update_tile_mappings_cs_clear_dxbc);
     check_texture_pipeline = create_compute_pipeline_state(context.device, root_signature, update_tile_mappings_texture_dxbc);
@@ -660,7 +649,7 @@ void test_update_tile_mappings(void)
     resource_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     hr = ID3D12Device_CreateCommittedResource(context.device, &heap_properties, D3D12_HEAP_FLAG_NONE,
             &resource_desc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, NULL, &IID_ID3D12Resource, (void **)&readback_buffer);
-    ok(hr == S_OK, "Failed to create readback buffer, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create readback buffer, hr %#x.\n", hr);
 
     readback_va = ID3D12Resource_GetGPUVirtualAddress(readback_buffer);
 
@@ -670,12 +659,12 @@ void test_update_tile_mappings(void)
     heap_desc.SizeInBytes = 64 * 65536;
     heap_desc.Flags = D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS;
     hr = ID3D12Device_CreateHeap(context.device, &heap_desc, &IID_ID3D12Heap, (void **)&heap);
-    ok(hr == S_OK, "Failed to create heap, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create heap, hr %#x.\n", hr);
 
     resource_desc.Width = 64 * 65536;
     hr = ID3D12Device_CreateReservedResource(context.device, &resource_desc,
         D3D12_RESOURCE_STATE_UNORDERED_ACCESS, NULL, &IID_ID3D12Resource, (void **)&resource);
-    ok(hr == S_OK, "Failed to create reserved buffer, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create reserved buffer, hr %#x.\n", hr);
 
     srv_desc.Format = DXGI_FORMAT_UNKNOWN;
     srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
@@ -881,7 +870,7 @@ void test_update_tile_mappings(void)
     heap_desc.SizeInBytes = 64 * 65536;
     heap_desc.Flags = D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES;
     hr = ID3D12Device_CreateHeap(context.device, &heap_desc, &IID_ID3D12Heap, (void **)&heap);
-    ok(hr == S_OK, "Failed to create heap, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create heap, hr %#x.\n", hr);
 
     resource_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     resource_desc.Alignment = 0;
@@ -897,7 +886,7 @@ void test_update_tile_mappings(void)
 
     hr = ID3D12Device_CreateReservedResource(context.device, &resource_desc,
         D3D12_RESOURCE_STATE_UNORDERED_ACCESS, NULL, &IID_ID3D12Resource, (void **)&resource);
-    ok(hr == S_OK, "Failed to create reserved texture, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create reserved texture, hr %#x.\n", hr);
 
     num_tilings = resource_desc.MipLevels;
     ID3D12Device_GetResourceTiling(context.device, resource, NULL, &packed_mip_info, &tile_shape, &num_tilings, 0, tilings);
@@ -1057,7 +1046,7 @@ void test_update_tile_mappings(void)
 
         hr = ID3D12Device_CreateReservedResource(context.device, &resource_desc,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS, NULL, &IID_ID3D12Resource, (void **)&resource);
-        ok(hr == S_OK, "Failed to create reserved texture, hr %#x.\n", (int)hr);
+        ok(hr == S_OK, "Failed to create reserved texture, hr %#x.\n", hr);
 
         num_tilings = resource_desc.MipLevels;
         ID3D12Device_GetResourceTiling(context.device, resource, NULL, &packed_mip_info, &tile_shape, &num_tilings, 0, tilings);
@@ -1210,7 +1199,7 @@ void test_update_tile_mappings(void)
 
         hr = ID3D12Device_CreateReservedResource(context.device, &resource_desc,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS, NULL, &IID_ID3D12Resource, (void **)&resource);
-        ok(hr == S_OK, "Failed to create reserved texture, hr %#x.\n", (int)hr);
+        ok(hr == S_OK, "Failed to create reserved texture, hr %#x.\n", hr);
 
         /* Map entire image */
         tile_offsets[0] = 0;
@@ -1251,7 +1240,6 @@ void test_update_tile_mappings(void)
                     resource, clear_value, 0, NULL);
         }
 
-        transition_resource_state(context.list, resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         transition_resource_state(context.list, readback_buffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         ID3D12GraphicsCommandList_SetDescriptorHeaps(context.list, 1, &gpu_heap);
         ID3D12GraphicsCommandList_SetComputeRootSignature(context.list, root_signature);
@@ -1330,7 +1318,7 @@ void test_copy_tiles(void)
         return;
 
     hr = ID3D12Device_CheckFeatureSupport(context.device, D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options));
-    ok(hr == S_OK, "Failed to check feature support, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to check feature support, hr %#x.\n", hr);
 
     if (!options.TiledResourcesTier)
     {
@@ -1356,10 +1344,10 @@ void test_copy_tiles(void)
     resource_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
     hr = ID3D12Device_CreateCommittedResource(context.device, &heap_desc.Properties, D3D12_HEAP_FLAG_NONE,
             &resource_desc, D3D12_RESOURCE_STATE_COPY_DEST, NULL, &IID_ID3D12Resource, (void **)&src_buffer);
-    ok(hr == S_OK, "Failed to create buffer, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create buffer, hr %#x.\n", hr);
     hr = ID3D12Device_CreateCommittedResource(context.device, &heap_desc.Properties, D3D12_HEAP_FLAG_NONE,
             &resource_desc, D3D12_RESOURCE_STATE_COPY_DEST, NULL, &IID_ID3D12Resource, (void **)&dst_buffer);
-    ok(hr == S_OK, "Failed to create buffer, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create buffer, hr %#x.\n", hr);
 
     buffer_data = malloc(resource_desc.Width);
     for (i = 0; i < resource_desc.Width / sizeof(*buffer_data); i++)
@@ -1373,11 +1361,11 @@ void test_copy_tiles(void)
     /* Test buffer */
     hr = ID3D12Device_CreateReservedResource(context.device, &resource_desc,
             D3D12_RESOURCE_STATE_COPY_DEST, NULL, &IID_ID3D12Resource, (void **)&tiled_resource);
-    ok(hr == S_OK, "Failed to create tiled buffer, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create tiled buffer, hr %#x.\n", hr);
 
     heap_desc.Flags = D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS;
     hr = ID3D12Device_CreateHeap(context.device, &heap_desc, &IID_ID3D12Heap, (void **)&heap);
-    ok(hr == S_OK, "Failed to create heap, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create heap, hr %#x.\n", hr);
 
     tile_offset = 0;
     ID3D12CommandQueue_UpdateTileMappings(context.queue, tiled_resource,
@@ -1456,11 +1444,11 @@ void test_copy_tiles(void)
 
     hr = ID3D12Device_CreateReservedResource(context.device, &resource_desc,
             D3D12_RESOURCE_STATE_COPY_DEST, NULL, &IID_ID3D12Resource, (void **)&tiled_resource);
-    ok(hr == S_OK, "Failed to create tiled buffer, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create tiled buffer, hr %#x.\n", hr);
 
     heap_desc.Flags = D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES;
     hr = ID3D12Device_CreateHeap(context.device, &heap_desc, &IID_ID3D12Heap, (void **)&heap);
-    ok(hr == S_OK, "Failed to create heap, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create heap, hr %#x.\n", hr);
 
     tile_offset = 0;
     ID3D12CommandQueue_UpdateTileMappings(context.queue, tiled_resource,
@@ -1618,7 +1606,7 @@ static void test_buffer_feedback_instructions(bool use_dxil)
     }
 
     hr = ID3D12Device_CheckFeatureSupport(context.device, D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options));
-    ok(hr == S_OK, "Failed to check feature support, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to check feature support, hr %#x.\n", hr);
 
     if (options.TiledResourcesTier < D3D12_TILED_RESOURCES_TIER_2)
     {
@@ -1656,7 +1644,7 @@ static void test_buffer_feedback_instructions(bool use_dxil)
     root_signature_desc.pStaticSamplers = NULL;
     root_signature_desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
     hr = create_root_signature(context.device, &root_signature_desc, &root_signature);
-    ok(hr == S_OK, "Failed to create root signature, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create root signature, hr %#x.\n", hr);
 
     memset(&heap_desc, 0, sizeof(heap_desc));
     heap_desc.Properties.Type = D3D12_HEAP_TYPE_DEFAULT;
@@ -1675,15 +1663,15 @@ static void test_buffer_feedback_instructions(bool use_dxil)
     resource_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     hr = ID3D12Device_CreateCommittedResource(context.device, &heap_desc.Properties, D3D12_HEAP_FLAG_NONE,
             &resource_desc, D3D12_RESOURCE_STATE_COPY_SOURCE, NULL, &IID_ID3D12Resource, (void **)&out_buffer);
-    ok(hr == S_OK, "Failed to create committed resource, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create committed resource, hr %#x.\n", hr);
 
     resource_desc.Width = 4 * TILE_SIZE;
     hr = ID3D12Device_CreateReservedResource(context.device, &resource_desc,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS, NULL, &IID_ID3D12Resource, (void **)&tiled_buffer);
-    ok(hr == S_OK, "Failed to create reserved resource, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create reserved resource, hr %#x.\n", hr);
 
     hr = ID3D12Device_CreateHeap(context.device, &heap_desc, &IID_ID3D12Heap, (void **)&heap);
-    ok(hr == S_OK, "Failed to create heap, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create heap, hr %#x.\n", hr);
 
     /* Map the 0k-64k range and the 128k-192k range, leave the rest unmapped */
     set_region_offset(&tile_regions[0], 0, 0, 0, 0);
@@ -1914,7 +1902,7 @@ static void test_texture_feedback_instructions(bool use_dxil)
     }
 
     hr = ID3D12Device_CheckFeatureSupport(context.device, D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options));
-    ok(hr == S_OK, "Failed to check feature support, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to check feature support, hr %#x.\n", hr);
 
     if (options.TiledResourcesTier < D3D12_TILED_RESOURCES_TIER_2)
     {
@@ -1957,7 +1945,7 @@ static void test_texture_feedback_instructions(bool use_dxil)
     root_signature_desc.pStaticSamplers = NULL;
     root_signature_desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
     hr = create_root_signature(context.device, &root_signature_desc, &root_signature);
-    ok(hr == S_OK, "Failed to create root signature, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create root signature, hr %#x.\n", hr);
 
     memset(&heap_desc, 0, sizeof(heap_desc));
     heap_desc.Properties.Type = D3D12_HEAP_TYPE_DEFAULT;
@@ -1976,12 +1964,12 @@ static void test_texture_feedback_instructions(bool use_dxil)
     resource_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
     hr = ID3D12Device_CreateCommittedResource(context.device, &heap_desc.Properties, D3D12_HEAP_FLAG_NONE,
             &resource_desc, D3D12_RESOURCE_STATE_RENDER_TARGET, NULL, &IID_ID3D12Resource, (void **)&color_rt);
-    ok(hr == S_OK, "Failed to create committed resource, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create committed resource, hr %#x.\n", hr);
 
     resource_desc.Format = DXGI_FORMAT_R32_UINT;
     hr = ID3D12Device_CreateCommittedResource(context.device, &heap_desc.Properties, D3D12_HEAP_FLAG_NONE,
             &resource_desc, D3D12_RESOURCE_STATE_RENDER_TARGET, NULL, &IID_ID3D12Resource, (void **)&residency_rt);
-    ok(hr == S_OK, "Failed to create committed resource, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create committed resource, hr %#x.\n", hr);
 
     resource_desc.MipLevels = 2;
     resource_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -1989,10 +1977,10 @@ static void test_texture_feedback_instructions(bool use_dxil)
     resource_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     hr = ID3D12Device_CreateReservedResource(context.device, &resource_desc,
             D3D12_RESOURCE_STATE_RENDER_TARGET, NULL, &IID_ID3D12Resource, (void **)&tiled_image);
-    ok(hr == S_OK, "Failed to create reserved resource, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create reserved resource, hr %#x.\n", hr);
 
     hr = ID3D12Device_CreateHeap(context.device, &heap_desc, &IID_ID3D12Heap, (void **)&heap);
-    ok(hr == S_OK, "Failed to create heap, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create heap, hr %#x.\n", hr);
 
     /* Map top-left + bottom-right of mip 0 + entire mip 1 */
     set_region_offset(&tile_regions[0], 0, 0, 0, 0);
@@ -2082,7 +2070,7 @@ static void test_texture_feedback_instructions(bool use_dxil)
         pipeline_desc.PS = use_dxil ? tests[i].ps_dxil : tests[i].ps_dxbc;
 
         hr = ID3D12Device_CreateGraphicsPipelineState(context.device, &pipeline_desc, &IID_ID3D12PipelineState, (void **)&pipeline_state);
-        ok(hr == S_OK, "Failed to compile graphics pipeline, hr %#x.\n", (int)hr);
+        ok(hr == S_OK, "Failed to compile graphics pipeline, hr %#x.\n", hr);
 
         ID3D12GraphicsCommandList_OMSetRenderTargets(context.list, 2, &rt_handle, true, NULL);
         ID3D12GraphicsCommandList_ClearRenderTargetView(context.list, get_cpu_rtv_handle(&context, rtv_heap, 1), clear_residency_rt, 0, NULL);
@@ -2189,7 +2177,7 @@ void test_sparse_buffer_memory_lifetime(void)
         return;
 
     hr = ID3D12Device_CheckFeatureSupport(context.device, D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options));
-    ok(hr == S_OK, "Failed to check feature support, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to check feature support, hr %#x.\n", hr);
 
     if (options.TiledResourcesTier < D3D12_TILED_RESOURCES_TIER_2)
     {
@@ -2220,9 +2208,9 @@ void test_sparse_buffer_memory_lifetime(void)
     heap_desc.Alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
     heap_desc.Flags = D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS;
     hr = ID3D12Device_CreateHeap(context.device, &heap_desc, &IID_ID3D12Heap, (void**)&heap);
-    ok(SUCCEEDED(hr), "Failed to create heap, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create heap, hr #%x.\n", hr);
     hr = ID3D12Device_CreateHeap(context.device, &heap_desc, &IID_ID3D12Heap, (void**)&heap_live);
-    ok(SUCCEEDED(hr), "Failed to create heap, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create heap, hr #%x.\n", hr);
 
     memset(&desc, 0, sizeof(desc));
     desc.Width = 64 * 1024 * 1024;
@@ -2237,7 +2225,7 @@ void test_sparse_buffer_memory_lifetime(void)
     desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     hr = ID3D12Device_CreateReservedResource(context.device, &desc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             NULL, &IID_ID3D12Resource, (void**)&sparse);
-    ok(SUCCEEDED(hr), "Failed to create reserved resource, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create reserved resource, hr #%x.\n", hr);
 
     {
         const D3D12_TILED_RESOURCE_COORDINATE region_start_coordinate = { 0 };
@@ -2368,7 +2356,7 @@ void test_reserved_resource_mapping(void)
         return;
 
     hr = ID3D12Device_CheckFeatureSupport(context.device, D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options));
-    ok(hr == S_OK, "Failed to check feature support, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to check feature support, hr %#x.\n", hr);
 
     if (!options.TiledResourcesTier)
     {
@@ -2387,10 +2375,10 @@ void test_reserved_resource_mapping(void)
     desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     desc.SampleDesc.Count = 1;
     hr = ID3D12Device_CreateReservedResource(context.device, &desc, D3D12_RESOURCE_STATE_COMMON, NULL, &IID_ID3D12Resource, (void **)&res);
-    ok(SUCCEEDED(hr), "Failed to create reserved resource, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create reserved resource, hr #%x.\n", hr);
 
     hr = ID3D12Resource_Map(res, 0, NULL, &ptr);
-    ok(hr == E_INVALIDARG, "Unexpected return value hr #%x.\n", (int)hr);
+    ok(hr == E_INVALIDARG, "Unexpected return value hr #%x.\n", hr);
 
     ID3D12Resource_Release(res);
 
@@ -2473,7 +2461,7 @@ void test_sparse_depth_stencil_rendering(void)
     pso_desc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
     pso_desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
     hr = ID3D12Device_CreateGraphicsPipelineState(context.device, &pso_desc, &IID_ID3D12PipelineState, (void **)&context.pipeline_state);
-    ok(SUCCEEDED(hr), "Failed to create PSO, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create PSO, hr #%x.\n", hr);
 
     memset(&resource_desc, 0, sizeof(resource_desc));
     resource_desc.Width = 256;
@@ -2486,7 +2474,7 @@ void test_sparse_depth_stencil_rendering(void)
     resource_desc.MipLevels = 1;
     resource_desc.SampleDesc.Count = 1;
     hr = ID3D12Device_CreateReservedResource(context.device, &resource_desc, D3D12_RESOURCE_STATE_COPY_SOURCE, NULL, &IID_ID3D12Resource, (void**)&ds);
-    ok(SUCCEEDED(hr), "Failed to create reserved resource, hr #%x\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create reserved resource, hr #%x\n", hr);
 
     if (FAILED(hr))
     {
@@ -2504,7 +2492,7 @@ void test_sparse_depth_stencil_rendering(void)
     heap_desc.Flags = D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES;
     heap_desc.Properties.Type = D3D12_HEAP_TYPE_DEFAULT;
     hr = ID3D12Device_CreateHeap(context.device, &heap_desc, &IID_ID3D12Heap, (void**)&heap);
-    ok(SUCCEEDED(hr), "Failed to create heap, hr #%x\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create heap, hr #%x\n", hr);
 
     dsv_heap = create_cpu_descriptor_heap(context.device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1);
     rtv_heap = create_cpu_descriptor_heap(context.device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1);
@@ -2564,8 +2552,7 @@ void test_sparse_depth_stencil_rendering(void)
         /* Unmapped pages should pass the depth test. We enable write in the PSO, but this write should be masked when passing.
          * We draw two full-screen primitives, the first with depth 0.25, the second one with 0.25 - delta.
          * If sparse isn't working as intended, we'll draw 0.25 depth, then 0.25 - delta fails, meaning we end up with 200 in RT.
-         * If sparse is working as intended, the depth test will always compare against 0, so we'll end up with 150 in RT.
-         * Due to tiler caching (which is allowed) we may observe depth writes coming through for the first instance. */
+         * If sparse is working as intended, the depth test will always compare against 0, so we'll end up with 150 in RT. */
         params[0] = 0.25f;
         params[1] = -0.05f;
         ID3D12GraphicsCommandList_SetGraphicsRoot32BitConstants(context.list, 0, ARRAY_SIZE(params), params, 0);
@@ -2592,39 +2579,15 @@ void test_sparse_depth_stencil_rendering(void)
         {
             for (x = 0; x < 2; x++)
             {
-                uint8_t value, expected, expected_alt;
+                uint8_t value, expected;
                 value = get_readback_uint8(&rb, x * 128, y * 128);
 
                 /* For mapped pages, we cleared to 0.5, so we don't expect to see FB write. */
                 expected = y * 2 + x <= iter ? 0 : 150;
-                expected_alt = y * 2 + x <= iter ? 0 : 200;
 
                 /* We work around lack of sparse support currently. */
                 todo_if(is_radv_device(context.device))
-                ok(value == expected || value == expected_alt, "Iter %u, tile %u, %u: expected %u or %u, got %u.\n",
-                    iter, x, y, expected, expected_alt, value);
-            }
-        }
-
-        release_resource_readback(&rb);
-
-        get_texture_readback_with_command_list(ds, 0, &rb, context.queue, context.list);
-        reset_command_list(context.list, context.allocator);
-
-        for (y = 0; y < 2; y++)
-        {
-            for (x = 0; x < 2; x++)
-            {
-                float value, expected;
-                value = get_readback_float(&rb, x * 128, y * 128);
-
-                /* For mapped pages, we cleared to 0.5, so we don't expect to see FB write. */
-                expected = y * 2 + x <= iter ? 0.5f : 0.0f;
-
-                /* We work around lack of sparse support currently. */
-                todo_if(is_radv_device(context.device))
-                ok(value == expected, "Iter %u, tile %u, %u: expected %f, got %f.\n",
-                    iter, x, y, expected, value);
+                ok(value == expected, "Iter %u, tile %u, %u: expected %u, got %u.\n", iter, x, y, expected, value);
             }
         }
 
@@ -2751,14 +2714,14 @@ void test_sparse_default_mapping(void)
     hr = ID3D12Device_CreateCommittedResource(context.device, &heap_properties,
             D3D12_HEAP_FLAG_NONE, &resource_desc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             NULL, &IID_ID3D12Resource, (void**)&feedback_buffer);
-    ok(hr == S_OK, "Failed to create feedback buffer, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create feedback buffer, hr %#x.\n", hr);
 
     resource_desc.Width = 256u * TILE_SIZE;
     resource_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
 
     hr = ID3D12Device_CreateReservedResource(context.device, &resource_desc, D3D12_RESOURCE_STATE_GENERIC_READ,
             NULL, &IID_ID3D12Resource, (void**)&tiled_buffer);
-    ok(hr == S_OK, "Failed to create tiled buffer, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create tiled buffer, hr %#x.\n", hr);
 
     memset(&resource_desc, 0, sizeof(resource_desc));
     resource_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
@@ -2772,7 +2735,7 @@ void test_sparse_default_mapping(void)
 
     hr = ID3D12Device_CreateReservedResource(context.device, &resource_desc, D3D12_RESOURCE_STATE_GENERIC_READ,
             NULL, &IID_ID3D12Resource, (void**)&tiled_image);
-    ok(hr == S_OK, "Failed to create tiled image, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create tiled image, hr %#x.\n", hr);
 
     memset(rs_descriptors, 0, sizeof(rs_descriptors));
     rs_descriptors[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
@@ -2797,14 +2760,14 @@ void test_sparse_default_mapping(void)
     rs_desc.pParameters = rs_args;
 
     hr = create_root_signature(context.device, &rs_desc, &rs);
-    ok(hr == S_OK, "Failed to create root signature, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create root signature, hr %#x.\n", hr);
 
     memset(&pso_desc, 0, sizeof(pso_desc));
     pso_desc.pRootSignature = rs;
     pso_desc.CS = sparse_init_access_dxil;
 
     hr = ID3D12Device_CreateComputePipelineState(context.device, &pso_desc, &IID_ID3D12PipelineState, (void**)&pso);
-    ok(hr == S_OK, "Failed to create compute pipeline, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create compute pipeline, hr %#x.\n", hr);
 
     memset(&descriptor_heap_desc, 0, sizeof(descriptor_heap_desc));
     descriptor_heap_desc.NumDescriptors = 3;
@@ -2812,7 +2775,7 @@ void test_sparse_default_mapping(void)
     descriptor_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 
     hr = ID3D12Device_CreateDescriptorHeap(context.device, &descriptor_heap_desc, &IID_ID3D12DescriptorHeap, (void**)&descriptor_heap);
-    ok(hr == S_OK, "Failed to create descriptor heap, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create descriptor heap, hr %#x.\n", hr);
 
     memset(&uav_desc, 0, sizeof(uav_desc));
     uav_desc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;

@@ -284,7 +284,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_meta_command_QueryInterface(d3d12_meta_co
 static ULONG STDMETHODCALLTYPE d3d12_meta_command_AddRef(d3d12_meta_command_iface *iface)
 {
     struct d3d12_meta_command *meta_command = impl_from_ID3D12MetaCommand(iface);
-    unsigned int refcount = InterlockedIncrement(&meta_command->refcount);
+    ULONG refcount = InterlockedIncrement(&meta_command->refcount);
 
     TRACE("%p increasing refcount to %u.\n", meta_command, refcount);
 
@@ -302,7 +302,7 @@ static ULONG STDMETHODCALLTYPE d3d12_meta_command_Release(d3d12_meta_command_ifa
 {
     struct d3d12_meta_command *meta_command = impl_from_ID3D12MetaCommand(iface);
     struct d3d12_device *device = meta_command->device;
-    unsigned int refcount;
+    ULONG refcount;
 
     refcount = InterlockedDecrement(&meta_command->refcount);
 
@@ -449,9 +449,8 @@ static void d3d12_meta_command_exec_dstorage(struct d3d12_meta_command *meta_com
         VK_CALL(vkCmdBindPipeline(list->cmd.vk_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                 meta_ops->dstorage.vk_emit_nv_memory_decompression_workgroups_pipeline));
 
-        d3d12_command_list_meta_push_data(list, list->cmd.vk_command_buffer,
-                meta_ops->dstorage.vk_dstorage_layout,
-                VK_SHADER_STAGE_COMPUTE_BIT, sizeof(push_args), &push_args);
+        VK_CALL(vkCmdPushConstants(list->cmd.vk_command_buffer, meta_ops->dstorage.vk_dstorage_layout,
+                VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push_args), &push_args));
 
         workgroup_count = vkd3d_compute_workgroup_count(parameters->stream_count, 32);
         VK_CALL(vkCmdDispatch(list->cmd.vk_command_buffer, workgroup_count, 1, 1));
@@ -473,9 +472,8 @@ static void d3d12_meta_command_exec_dstorage(struct d3d12_meta_command *meta_com
         {
             push_args.stream_index = i;
 
-            d3d12_command_list_meta_push_data(list, list->cmd.vk_command_buffer,
-                    meta_ops->dstorage.vk_dstorage_layout,
-                    VK_SHADER_STAGE_COMPUTE_BIT, sizeof(push_args), &push_args);
+            VK_CALL(vkCmdPushConstants(list->cmd.vk_command_buffer, meta_ops->dstorage.vk_dstorage_layout,
+                    VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push_args), &push_args));
 
             VK_CALL(vkCmdDispatchIndirect(list->cmd.vk_command_buffer, scratch_buffer->vk_buffer,
                     scratch_offset + workgroup_data_offset + i * sizeof(VkDispatchIndirectCommand)));
@@ -498,9 +496,8 @@ static void d3d12_meta_command_exec_dstorage(struct d3d12_meta_command *meta_com
         VK_CALL(vkCmdBindPipeline(list->cmd.vk_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                 meta_ops->dstorage.vk_gdeflate_prepare_pipeline));
 
-        d3d12_command_list_meta_push_data(list, list->cmd.vk_command_buffer,
-                meta_ops->dstorage.vk_dstorage_layout,
-                VK_SHADER_STAGE_COMPUTE_BIT, sizeof(push_args), &push_args);
+        VK_CALL(vkCmdPushConstants(list->cmd.vk_command_buffer, meta_ops->dstorage.vk_dstorage_layout,
+                VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push_args), &push_args));
 
         workgroup_count = vkd3d_compute_workgroup_count(parameters->stream_count, 32);
         VK_CALL(vkCmdDispatch(list->cmd.vk_command_buffer, workgroup_count, 1, 1));
@@ -519,9 +516,8 @@ static void d3d12_meta_command_exec_dstorage(struct d3d12_meta_command *meta_com
         {
             push_args.stream_index = i;
 
-            d3d12_command_list_meta_push_data(list, list->cmd.vk_command_buffer,
-                    meta_ops->dstorage.vk_dstorage_layout,
-                    VK_SHADER_STAGE_COMPUTE_BIT, sizeof(push_args), &push_args);
+            VK_CALL(vkCmdPushConstants(list->cmd.vk_command_buffer, meta_ops->dstorage.vk_dstorage_layout,
+                    VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push_args), &push_args));
 
             VK_CALL(vkCmdDispatchIndirect(list->cmd.vk_command_buffer, scratch_buffer->vk_buffer,
                     scratch_offset + i * sizeof(VkDispatchIndirectCommand)));

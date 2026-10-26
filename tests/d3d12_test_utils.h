@@ -101,9 +101,9 @@ static inline void reset_command_list_(unsigned int line,
     HRESULT hr;
 
     hr = ID3D12CommandAllocator_Reset(allocator);
-    assert_that_(line)(hr == S_OK, "Failed to reset command allocator, hr %#x.\n", (int)hr);
+    assert_that_(line)(hr == S_OK, "Failed to reset command allocator, hr %#x.\n", hr);
     hr = ID3D12GraphicsCommandList_Reset(list, allocator, NULL);
-    assert_that_(line)(hr == S_OK, "Failed to reset command list, hr %#x.\n", (int)hr);
+    assert_that_(line)(hr == S_OK, "Failed to reset command list, hr %#x.\n", hr);
 }
 
 #define queue_signal(a, b, c) queue_signal_(__LINE__, a, b, c)
@@ -112,7 +112,7 @@ static inline void queue_signal_(unsigned int line, ID3D12CommandQueue *queue, I
     HRESULT hr;
 
     hr = ID3D12CommandQueue_Signal(queue, fence, value);
-    ok_(line)(hr == S_OK, "Failed to submit signal operation to queue, hr %#x.\n", (int)hr);
+    ok_(line)(hr == S_OK, "Failed to submit signal operation to queue, hr %#x.\n", hr);
 }
 
 #define queue_wait(a, b, c) queue_wait_(__LINE__, a, b, c)
@@ -121,7 +121,7 @@ static inline void queue_wait_(unsigned int line, ID3D12CommandQueue *queue, ID3
     HRESULT hr;
 
     hr = ID3D12CommandQueue_Wait(queue, fence, value);
-    ok_(line)(hr == S_OK, "Failed to submit wait operation to queue, hr %#x.\n", (int)hr);
+    ok_(line)(hr == S_OK, "Failed to submit wait operation to queue, hr %#x.\n", hr);
 }
 
 #define create_placed_buffer(a, b, c, d, e, f) create_placed_buffer_(__LINE__, a, b, c, d, e, f)
@@ -147,7 +147,7 @@ static inline ID3D12Resource *create_placed_buffer_(unsigned int line, ID3D12Dev
 
     hr = ID3D12Device_CreatePlacedResource(device, heap, offset, &resource_desc,
             initial_resource_state, NULL, &IID_ID3D12Resource, (void **)&buffer);
-    assert_that_(line)(SUCCEEDED(hr), "Failed to create buffer, hr %#x.\n", (int)hr);
+    assert_that_(line)(SUCCEEDED(hr), "Failed to create buffer, hr %#x.\n", hr);
     return buffer;
 }
 
@@ -180,7 +180,7 @@ static inline ID3D12Resource *create_placed_buffer2_(unsigned int line, ID3D12De
 
     hr = ID3D12Device10_CreatePlacedResource2(device10, heap, offset, &resource_desc,
             D3D12_BARRIER_LAYOUT_UNDEFINED, NULL, 0, NULL, &IID_ID3D12Resource, (void **)&buffer);
-    assert_that_(line)(SUCCEEDED(hr), "Failed to create buffer, hr %#x.\n", (int)hr);
+    assert_that_(line)(SUCCEEDED(hr), "Failed to create buffer, hr %#x.\n", hr);
     ID3D12Device10_Release(device10);
     return buffer;
 }
@@ -213,7 +213,7 @@ static inline ID3D12Resource *create_buffer_(unsigned int line, ID3D12Device *de
     hr = ID3D12Device_CreateCommittedResource(device, &heap_properties,
             D3D12_HEAP_FLAG_NONE, &resource_desc, initial_resource_state,
             NULL, &IID_ID3D12Resource, (void **)&buffer);
-    assert_that_(line)(SUCCEEDED(hr), "Failed to create buffer, hr %#x.\n", (int)hr);
+    assert_that_(line)(SUCCEEDED(hr), "Failed to create buffer, hr %#x.\n", hr);
     return buffer;
 }
 
@@ -251,7 +251,7 @@ static inline ID3D12Resource *create_buffer2_(unsigned int line, ID3D12Device *d
     hr = ID3D12Device10_CreateCommittedResource3(device10, &heap_properties,
             D3D12_HEAP_FLAG_NONE, &resource_desc, D3D12_BARRIER_LAYOUT_UNDEFINED,
             NULL, NULL, 0, NULL, &IID_ID3D12Resource, (void **)&buffer);
-    assert_that_(line)(SUCCEEDED(hr), "Failed to create buffer, hr %#x.\n", (int)hr);
+    assert_that_(line)(SUCCEEDED(hr), "Failed to create buffer, hr %#x.\n", hr);
     ID3D12Device10_Release(device10);
     return buffer;
 }
@@ -282,7 +282,7 @@ static inline void update_buffer_data_(unsigned int line, ID3D12Resource *buffer
 
     range.Begin = range.End = 0;
     hr = ID3D12Resource_Map(buffer, 0, &range, &ptr);
-    ok_(line)(hr == S_OK, "Failed to map buffer, hr %#x.\n", (int)hr);
+    ok_(line)(hr == S_OK, "Failed to map buffer, hr %#x.\n", hr);
     memcpy((BYTE *)ptr + offset, data, size);
     ID3D12Resource_Unmap(buffer, 0, NULL);
 }
@@ -327,7 +327,7 @@ static inline ID3D12DescriptorHeap *create_cpu_descriptor_heap_(unsigned int lin
     heap_desc.NodeMask = 0;
     hr = ID3D12Device_CreateDescriptorHeap(device, &heap_desc,
             &IID_ID3D12DescriptorHeap, (void **)&descriptor_heap);
-    ok_(line)(SUCCEEDED(hr), "Failed to create descriptor heap, hr %#x.\n", (int)hr);
+    ok_(line)(SUCCEEDED(hr), "Failed to create descriptor heap, hr %#x.\n", hr);
 
     return descriptor_heap;
 }
@@ -346,7 +346,7 @@ static inline ID3D12DescriptorHeap *create_gpu_descriptor_heap_(unsigned int lin
     heap_desc.NodeMask = 0;
     hr = ID3D12Device_CreateDescriptorHeap(device, &heap_desc,
             &IID_ID3D12DescriptorHeap, (void **)&descriptor_heap);
-    ok_(line)(SUCCEEDED(hr), "Failed to create descriptor heap, hr %#x.\n", (int)hr);
+    ok_(line)(SUCCEEDED(hr), "Failed to create descriptor heap, hr %#x.\n", hr);
 
     return descriptor_heap;
 }
@@ -379,7 +379,7 @@ static inline ID3D12CommandQueue *create_command_queue_(unsigned int line, ID3D1
     queue_desc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
     queue_desc.NodeMask = 0;
     hr = ID3D12Device_CreateCommandQueue(device, &queue_desc, &IID_ID3D12CommandQueue, (void **)&queue);
-    ok_(line)(hr == S_OK, "Failed to create command queue, hr %#x.\n", (int)hr);
+    ok_(line)(hr == S_OK, "Failed to create command queue, hr %#x.\n", hr);
 
     return queue;
 }
@@ -389,25 +389,6 @@ static inline void transition_resource_state(ID3D12GraphicsCommandList *list, ID
 {
     transition_sub_resource_state(list, resource, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
             state_before, state_after);
-}
-
-static bool format_is_depth_and_stencil(DXGI_FORMAT format)
-{
-    switch (format)
-    {
-        case DXGI_FORMAT_D24_UNORM_S8_UINT:
-        case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
-        case DXGI_FORMAT_R24G8_TYPELESS:
-        case DXGI_FORMAT_R32G8X24_TYPELESS:
-        case DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS:
-        case DXGI_FORMAT_X32_TYPELESS_G8X24_UINT:
-        case DXGI_FORMAT_R24_UNORM_X8_TYPELESS:
-        case DXGI_FORMAT_X24_TYPELESS_G8_UINT:
-            return true;
-
-        default:
-            return false;
-    }
 }
 
 static inline unsigned int format_size(DXGI_FORMAT format)
@@ -437,8 +418,6 @@ static inline unsigned int format_size(DXGI_FORMAT format)
         case DXGI_FORMAT_R16G16_FLOAT:
         case DXGI_FORMAT_R16G16_UNORM:
         case DXGI_FORMAT_R16G16_UINT:
-        case DXGI_FORMAT_R16G16_SNORM:
-        case DXGI_FORMAT_R16G16_SINT:
         case DXGI_FORMAT_R11G11B10_FLOAT:
         case DXGI_FORMAT_R10G10B10A2_UINT:
         case DXGI_FORMAT_R10G10B10A2_UNORM:
@@ -498,11 +477,12 @@ static inline unsigned int format_size(DXGI_FORMAT format)
 
 static inline unsigned int format_num_planes(DXGI_FORMAT format)
 {
-    if (format_is_depth_and_stencil(format))
-        return 2;
-
     switch (format)
     {
+        case DXGI_FORMAT_D24_UNORM_S8_UINT:
+        case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
+        case DXGI_FORMAT_R24G8_TYPELESS:
+        case DXGI_FORMAT_R32G8X24_TYPELESS:
         case DXGI_FORMAT_NV12:
         case DXGI_FORMAT_P010:
         case DXGI_FORMAT_P016:
@@ -515,11 +495,15 @@ static inline unsigned int format_num_planes(DXGI_FORMAT format)
 
 static inline unsigned int format_size_planar(DXGI_FORMAT format, unsigned int plane)
 {
-    if (format_is_depth_and_stencil(format))
-        return plane ? 1 : 4;
-
     switch (format)
     {
+        case DXGI_FORMAT_D24_UNORM_S8_UINT:
+        case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
+        case DXGI_FORMAT_R24G8_TYPELESS:
+        case DXGI_FORMAT_R32G8X24_TYPELESS:
+        case DXGI_FORMAT_R24_UNORM_X8_TYPELESS:
+            return plane ? 1 : 4;
+
         case DXGI_FORMAT_NV12:
             return plane ? 2 : 1;
 
@@ -534,11 +518,15 @@ static inline unsigned int format_size_planar(DXGI_FORMAT format, unsigned int p
 
 static inline unsigned int format_to_footprint_format(DXGI_FORMAT format, unsigned int plane)
 {
-    if (format_is_depth_and_stencil(format))
-        return plane ? DXGI_FORMAT_R8_TYPELESS : DXGI_FORMAT_R32_TYPELESS;
-
     switch (format)
     {
+        case DXGI_FORMAT_D24_UNORM_S8_UINT:
+        case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
+        case DXGI_FORMAT_R24G8_TYPELESS:
+        case DXGI_FORMAT_R32G8X24_TYPELESS:
+        case DXGI_FORMAT_R24_UNORM_X8_TYPELESS:
+            return plane ? DXGI_FORMAT_R8_TYPELESS : DXGI_FORMAT_R32_TYPELESS;
+
         case DXGI_FORMAT_NV12:
             return plane ? DXGI_FORMAT_R8G8_TYPELESS : DXGI_FORMAT_R8_TYPELESS;
 
@@ -552,11 +540,6 @@ static inline unsigned int format_to_footprint_format(DXGI_FORMAT format, unsign
         default:
             return format;
     }
-}
-
-static inline bool format_is_depth_stencil(DXGI_FORMAT format)
-{
-    return format_is_depth_and_stencil(format) || format == DXGI_FORMAT_D32_FLOAT || format == DXGI_FORMAT_D16_UNORM;
 }
 
 static inline unsigned int format_block_width(DXGI_FORMAT format)
@@ -647,7 +630,7 @@ static inline void get_texture_readback_with_command_list(ID3D12Resource *textur
     HRESULT hr;
 
     hr = ID3D12Resource_GetDevice(texture, &IID_ID3D12Device, (void **)&device);
-    assert_that(hr == S_OK, "Failed to get device, hr %#x.\n", (int)hr);
+    assert_that(hr == S_OK, "Failed to get device, hr %#x.\n", hr);
 
     resource_desc = ID3D12Resource_GetDesc(texture);
     assert_that(resource_desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER,
@@ -669,7 +652,6 @@ static inline void get_texture_readback_with_command_list(ID3D12Resource *textur
 
     if (resource_desc.SampleDesc.Count > 1)
     {
-        ID3D12GraphicsCommandList1 *list1;
         memset(&heap_properties, 0, sizeof(heap_properties));
         heap_properties.Type = D3D12_HEAP_TYPE_DEFAULT;
 
@@ -680,21 +662,10 @@ static inline void get_texture_readback_with_command_list(ID3D12Resource *textur
         hr = ID3D12Device_CreateCommittedResource(device, &heap_properties, D3D12_HEAP_FLAG_NONE,
                 &resource_desc, D3D12_RESOURCE_STATE_RESOLVE_DEST, NULL,
                 &IID_ID3D12Resource, (void **)&src_resource);
-        assert_that(hr == S_OK, "Failed to create texture, hr %#x.\n", (int)hr);
+        assert_that(hr == S_OK, "Failed to create texture, hr %#x.\n", hr);
 
-        if (format_is_depth_stencil(resource_desc.Format) &&
-            SUCCEEDED(ID3D12GraphicsCommandList_QueryInterface(command_list, &IID_ID3D12GraphicsCommandList1, (void **)&list1)))
-        {
-            ID3D12GraphicsCommandList1_ResolveSubresourceRegion(list1,
-                    src_resource, 0, 0, 0, texture, sub_resource, NULL, resource_desc.Format, D3D12_RESOLVE_MODE_MIN);
-            ID3D12GraphicsCommandList1_Release(list1);
-        }
-        else
-        {
-            ID3D12GraphicsCommandList_ResolveSubresource(command_list,
-                    src_resource, 0, texture, sub_resource, resource_desc.Format);
-        }
-
+        ID3D12GraphicsCommandList_ResolveSubresource(command_list,
+                src_resource, 0, texture, sub_resource, resource_desc.Format);
         transition_resource_state(command_list, src_resource,
                 D3D12_RESOURCE_STATE_RESOLVE_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE);
 
@@ -723,7 +694,7 @@ static inline void get_texture_readback_with_command_list(ID3D12Resource *textur
 
     ID3D12GraphicsCommandList_CopyTextureRegion(command_list, &dst_location, 0, 0, 0, &src_location, NULL);
     hr = ID3D12GraphicsCommandList_Close(command_list);
-    assert_that(hr == S_OK, "Failed to close command list, hr %#x.\n", (int)hr);
+    assert_that(hr == S_OK, "Failed to close command list, hr %#x.\n", hr);
 
     exec_command_list(queue, command_list);
     wait_queue_idle(device, queue);
@@ -735,7 +706,7 @@ static inline void get_texture_readback_with_command_list(ID3D12Resource *textur
     read_range.Begin = 0;
     read_range.End = buffer_size;
     hr = ID3D12Resource_Map(rb->resource, 0, &read_range, &rb->data);
-    assert_that(hr == S_OK, "Failed to map readback buffer, hr %#x.\n", (int)hr);
+    assert_that(hr == S_OK, "Failed to map readback buffer, hr %#x.\n", hr);
 }
 
 static inline void *get_readback_data(struct resource_readback *rb,
@@ -846,7 +817,7 @@ static inline ID3D12Resource *create_default_texture_(unsigned int line, ID3D12D
     resource_desc.Flags = flags;
     hr = ID3D12Device_CreateCommittedResource(device, &heap_properties, D3D12_HEAP_FLAG_NONE,
             &resource_desc, initial_state, NULL, &IID_ID3D12Resource, (void **)&texture);
-    ok_(line)(SUCCEEDED(hr), "Failed to create texture, hr %#x.\n", (int)hr);
+    ok_(line)(SUCCEEDED(hr), "Failed to create texture, hr %#x.\n", hr);
 
     return texture;
 }
@@ -884,7 +855,7 @@ static inline ID3D12Resource *create_default_texture_enhanced_(unsigned int line
     resource_desc.Flags = flags;
     hr = ID3D12Device10_CreateCommittedResource3(device10, &heap_properties, D3D12_HEAP_FLAG_NONE,
         &resource_desc, initial_layout, NULL, NULL, 0, NULL, &IID_ID3D12Resource, (void **)&texture);
-    ok_(line)(SUCCEEDED(hr), "Failed to create texture, hr %#x.\n", (int)hr);
+    ok_(line)(SUCCEEDED(hr), "Failed to create texture, hr %#x.\n", hr);
 
     ID3D12Device10_Release(device10);
 
@@ -973,7 +944,7 @@ static inline ID3D12RootSignature *create_empty_root_signature_(unsigned int lin
     root_signature_desc.pStaticSamplers = NULL;
     root_signature_desc.Flags = flags;
     hr = create_root_signature(device, &root_signature_desc, &root_signature);
-    ok_(line)(SUCCEEDED(hr), "Failed to create root signature, hr %#x.\n", (int)hr);
+    ok_(line)(SUCCEEDED(hr), "Failed to create root signature, hr %#x.\n", hr);
 
     return root_signature;
 }
@@ -1191,7 +1162,7 @@ static inline ID3D12PipelineState *create_pipeline_state_(unsigned int line, ID3
     init_pipeline_state_desc(&pipeline_state_desc, root_signature, rt_format, vs, ps, input_layout);
     hr = ID3D12Device_CreateGraphicsPipelineState(device, &pipeline_state_desc,
             &IID_ID3D12PipelineState, (void **)&pipeline_state);
-    ok_(line)(SUCCEEDED(hr), "Failed to create graphics pipeline state, hr %#x.\n", (int)hr);
+    ok_(line)(SUCCEEDED(hr), "Failed to create graphics pipeline state, hr %#x.\n", hr);
 
     return pipeline_state;
 }
@@ -1209,7 +1180,7 @@ static inline ID3D12PipelineState *create_pipeline_state_dxil_(unsigned int line
     init_pipeline_state_desc_dxil(&pipeline_state_desc, root_signature, rt_format, vs, ps, input_layout);
     hr = ID3D12Device_CreateGraphicsPipelineState(device, &pipeline_state_desc,
                                                   &IID_ID3D12PipelineState, (void **)&pipeline_state);
-    ok_(line)(SUCCEEDED(hr), "Failed to create graphics pipeline state, hr %#x.\n", (int)hr);
+    ok_(line)(SUCCEEDED(hr), "Failed to create graphics pipeline state, hr %#x.\n", hr);
 
     return pipeline_state;
 }
@@ -1291,7 +1262,7 @@ static inline void create_render_target_(unsigned int line, struct test_context 
             &heap_properties, D3D12_HEAP_FLAG_NONE, &resource_desc,
             D3D12_RESOURCE_STATE_RENDER_TARGET, &clear_value,
             &IID_ID3D12Resource, (void **)render_target);
-    ok_(line)(hr == S_OK, "Failed to create texture, hr %#x.\n", (int)hr);
+    ok_(line)(hr == S_OK, "Failed to create texture, hr %#x.\n", hr);
 
     context->render_target_desc = resource_desc;
 
@@ -1367,11 +1338,11 @@ static inline bool init_test_context_(unsigned int line, struct test_context *co
 
     hr = ID3D12Device_CreateCommandAllocator(device, D3D12_COMMAND_LIST_TYPE_DIRECT,
             &IID_ID3D12CommandAllocator, (void **)&context->allocator);
-    ok_(line)(SUCCEEDED(hr), "Failed to create command allocator, hr %#x.\n", (int)hr);
+    ok_(line)(SUCCEEDED(hr), "Failed to create command allocator, hr %#x.\n", hr);
 
     hr = ID3D12Device_CreateCommandList(device, 0, D3D12_COMMAND_LIST_TYPE_DIRECT,
             context->allocator, NULL, &IID_ID3D12GraphicsCommandList, (void **)&context->list);
-    ok_(line)(SUCCEEDED(hr), "Failed to create command list, hr %#x.\n", (int)hr);
+    ok_(line)(SUCCEEDED(hr), "Failed to create command list, hr %#x.\n", hr);
 
     if (desc && desc->no_render_target)
         return true;
@@ -1382,7 +1353,7 @@ static inline bool init_test_context_(unsigned int line, struct test_context *co
     rtv_heap_desc.NodeMask = 0;
     hr = ID3D12Device_CreateDescriptorHeap(device, &rtv_heap_desc,
             &IID_ID3D12DescriptorHeap, (void **)&context->rtv_heap);
-    ok_(line)(SUCCEEDED(hr), "Failed to create descriptor heap, hr %#x.\n", (int)hr);
+    ok_(line)(SUCCEEDED(hr), "Failed to create descriptor heap, hr %#x.\n", hr);
 
     context->rtv = ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(context->rtv_heap);
 
@@ -1412,7 +1383,7 @@ static inline bool init_test_context_(unsigned int line, struct test_context *co
 #define destroy_test_context(context) destroy_test_context_(__LINE__, context)
 static inline void destroy_test_context_(unsigned int line, struct test_context *context)
 {
-    unsigned int refcount;
+    ULONG refcount;
 
 #ifdef _WIN32
     end_renderdoc_capturing(context->device);
@@ -1433,7 +1404,7 @@ static inline void destroy_test_context_(unsigned int line, struct test_context 
     ID3D12GraphicsCommandList_Release(context->list);
 
     refcount = ID3D12Device_Release(context->device);
-    ok_(line)(!refcount, "ID3D12Device has %u references left.\n", refcount);
+    ok_(line)(!refcount, "ID3D12Device has %u references left.\n", (unsigned int)refcount);
 }
 
 static inline D3D12_CPU_DESCRIPTOR_HANDLE get_cpu_handle(ID3D12Device *device,
@@ -1533,7 +1504,7 @@ bool compare_uvec4(const struct uvec4* v1, const struct uvec4 *v2);
 bool compare_uint8(uint8_t a, uint8_t b, unsigned int max_diff);
 bool compare_uint16(uint16_t a, uint16_t b, unsigned int max_diff);
 bool compare_uint64(uint64_t a, uint64_t b, unsigned int max_diff);
-unsigned int get_refcount(void *iface);
+ULONG get_refcount(void *iface);
 
 void check_interface_(unsigned int line, IUnknown *iface, REFIID riid, bool supported);
 void check_heap_properties_(unsigned int line,
@@ -1619,7 +1590,7 @@ bool context_supports_dxil_(unsigned int line, struct test_context *context);
 
 bool init_compute_test_context_(unsigned int line, struct test_context *context);
 ID3D12PipelineState *create_compute_pipeline_state_(unsigned int line, ID3D12Device *device,
-        ID3D12RootSignature *root_signature, const D3D12_SHADER_BYTECODE cs, bool checked);
+        ID3D12RootSignature *root_signature, const D3D12_SHADER_BYTECODE cs);
 
 struct depth_stencil_resource
 {
@@ -1656,8 +1627,7 @@ create_32bit_constants_root_signature_(__LINE__, a, b, c, e, 0)
 #define create_32bit_constants_root_signature_flags(a, b, c, e, f) \
 create_32bit_constants_root_signature_(__LINE__, a, b, c, e, f)
 #define create_texture_root_signature(a, b, c, d) create_texture_root_signature_(__LINE__, a, b, c, d, NULL)
-#define create_compute_pipeline_state(a, b, c) create_compute_pipeline_state_(__LINE__, a, b, c, true)
-#define create_compute_pipeline_state_unchecked(a, b, c) create_compute_pipeline_state_(__LINE__, a, b, c, false)
+#define create_compute_pipeline_state(a, b, c) create_compute_pipeline_state_(__LINE__, a, b, c)
 #define create_command_signature(a, b) create_command_signature_(__LINE__, a, b)
 #define init_compute_test_context(context) init_compute_test_context_(__LINE__, context)
 #define context_supports_dxil(context) context_supports_dxil_(__LINE__, context)
@@ -1876,12 +1846,5 @@ union d3d12_view_instancing_subobject
 
 float half_to_float(uint16_t u16_value);
 uint16_t float_to_half(float v);
-
-void insert_debug_label(ID3D12GraphicsCommandList *list, const char *str);
-void begin_debug_region(ID3D12GraphicsCommandList *list, const char *str);
-void end_debug_region(ID3D12GraphicsCommandList *list);
-
-void insert_debug_label_printf(ID3D12GraphicsCommandList *list, const char *fmt, ...);
-void begin_debug_region_printf(ID3D12GraphicsCommandList *list, const char *fmt, ...);
 
 #endif  /* __VKD3D_D3D12_TEST_UTILS_H */

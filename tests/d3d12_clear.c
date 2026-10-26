@@ -21,7 +21,6 @@
 
 #define VKD3D_DBG_CHANNEL VKD3D_DBG_CHANNEL_API
 #include "d3d12_crosstest.h"
-#include <float.h>
 
 void test_clear_depth_stencil_view(void)
 {
@@ -249,7 +248,7 @@ void test_clear_render_target_view(void)
             &heap_properties, D3D12_HEAP_FLAG_NONE, &resource_desc,
             D3D12_RESOURCE_STATE_RENDER_TARGET, &clear_value,
             &IID_ID3D12Resource, (void **)&resource);
-    ok(hr == S_OK, "Failed to create texture, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create texture, hr %#x.\n", hr);
 
     memset(&rtv_desc, 0, sizeof(rtv_desc));
     rtv_desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
@@ -275,7 +274,7 @@ void test_clear_render_target_view(void)
 
     /* R16G16B16A16 */
     hr = ID3D12GraphicsCommandList_Close(command_list);
-    ok(hr == S_OK, "Failed to close command list, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to close command list, hr %#x.\n", hr);
     reset_command_list(command_list, context.allocator);
     ID3D12Resource_Release(resource);
     resource_desc.Format = DXGI_FORMAT_R16G16B16A16_TYPELESS;
@@ -283,7 +282,7 @@ void test_clear_render_target_view(void)
             &heap_properties, D3D12_HEAP_FLAG_NONE, &resource_desc,
             D3D12_RESOURCE_STATE_RENDER_TARGET, NULL,
             &IID_ID3D12Resource, (void **)&resource);
-    ok(hr == S_OK, "Failed to create texture, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create texture, hr %#x.\n", hr);
 
     for (i = 0; i < ARRAY_SIZE(r16g16b16a16); ++i)
     {
@@ -305,7 +304,7 @@ void test_clear_render_target_view(void)
 
     /* 2D array texture */
     hr = ID3D12GraphicsCommandList_Close(command_list);
-    ok(hr == S_OK, "Failed to close command list, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to close command list, hr %#x.\n", hr);
     reset_command_list(command_list, context.allocator);
     ID3D12Resource_Release(resource);
     resource_desc.Format = DXGI_FORMAT_R8G8B8A8_TYPELESS;
@@ -314,7 +313,7 @@ void test_clear_render_target_view(void)
             &heap_properties, D3D12_HEAP_FLAG_NONE, &resource_desc,
             D3D12_RESOURCE_STATE_RENDER_TARGET, &clear_value,
             &IID_ID3D12Resource, (void **)&resource);
-    ok(hr == S_OK, "Failed to create texture, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create texture, hr %#x.\n", hr);
 
     for (i = 0; i < ARRAY_SIZE(array_colors); ++i)
     {
@@ -344,7 +343,7 @@ void test_clear_render_target_view(void)
             &heap_properties, D3D12_HEAP_FLAG_NONE, &resource_desc,
             D3D12_RESOURCE_STATE_RENDER_TARGET, &clear_value,
             &IID_ID3D12Resource, (void **)&resource);
-    ok(hr == S_OK, "Failed to create texture, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create texture, hr %#x.\n", hr);
 
     for (i = 0; i < ARRAY_SIZE(array_colors); ++i)
     {
@@ -359,7 +358,7 @@ void test_clear_render_target_view(void)
     }
 
     transition_resource_state(command_list, resource,
-            D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_RESOLVE_SOURCE);
+            D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
     for (i = 0; i < ARRAY_SIZE(array_expected_colors); ++i)
     {
         check_sub_resource_uint(resource, i, queue, command_list, array_expected_colors[i], 2);
@@ -376,7 +375,7 @@ void test_clear_render_target_view(void)
             &heap_properties, D3D12_HEAP_FLAG_NONE, &resource_desc,
             D3D12_RESOURCE_STATE_RENDER_TARGET, &clear_value,
             &IID_ID3D12Resource, (void **)&resource);
-    ok(hr == S_OK, "Failed to create texture, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create texture, hr %#x.\n", hr);
 
     ID3D12Device_CreateRenderTargetView(device, resource, NULL, rtv_handle);
 
@@ -410,169 +409,6 @@ void test_clear_render_target_view(void)
     ID3D12Resource_Release(resource);
     ID3D12DescriptorHeap_Release(rtv_heap);
     destroy_test_context(&context);
-}
-
-void test_clear_view_extreme_values(bool uav)
-{
-    D3D12_CPU_DESCRIPTOR_HANDLE cpu_handle = {0};
-    D3D12_GPU_DESCRIPTOR_HANDLE gpu_handle = {0};
-    ID3D12DescriptorHeap *gpu_desc_heap = NULL;
-    ID3D12DescriptorHeap *cpu_desc_heap = NULL;
-    ID3D12GraphicsCommandList *command_list;
-    struct test_context_desc desc;
-    struct test_context context;
-    ID3D12CommandQueue *queue;
-    ID3D12Resource *resource;
-    ID3D12Device *device;
-    unsigned int i;
-
-    /* NaN turns into NaN on clears. Skip testing it since there are multiple possible NaNs.
-     * NVIDIA Windows is extremely broken. */
-    const struct
-    {
-        float color[4];
-        DXGI_FORMAT format;
-        uint32_t result;
-        bool is_bug_nv_windows;
-    }
-    tests[] =
-    {
-        {{FLT_MAX, -FLT_MAX}, DXGI_FORMAT_R16G16_FLOAT, 0xfbff7bff},
-        {{INFINITY, -INFINITY}, DXGI_FORMAT_R16G16_FLOAT, 0xfc007c00},
-        {{FLT_MAX, -FLT_MAX, FLT_MAX}, DXGI_FORMAT_R9G9B9E5_SHAREDEXP, (31u << 27) | 0x1ff | (0x1ff << 18)},
-        {{INFINITY, -INFINITY}, DXGI_FORMAT_R9G9B9E5_SHAREDEXP, 0xf80001ff},
-        {{FLT_MAX, -FLT_MAX, FLT_MAX}, DXGI_FORMAT_R11G11B10_FLOAT, 0xf7c007bf},
-        {{INFINITY, -INFINITY, INFINITY /*NAN*/}, DXGI_FORMAT_R11G11B10_FLOAT, 0xf80007c0},
-
-#define NUM_UAV_TESTS 6 /* ClearUAVFloat doesn't work on UINT views. */
-
-        /* R32_UINT */
-        {{16.0f * 1024.0f * 1024.0f + 2.0f}, DXGI_FORMAT_R32_UINT, 0x01000002},
-        {{(float)(1ull << 32)}, DXGI_FORMAT_R32_UINT, 0xffffffff, true},
-        {{FLT_MAX}, DXGI_FORMAT_R32_UINT, 0xffffffff, true},
-        {{INFINITY}, DXGI_FORMAT_R32_UINT, 0xffffffff},
-        {{NAN}, DXGI_FORMAT_R32_UINT, 0},
-
-        /* R16_UINT */
-        {{16.0f * 1024.0f * 1024.0f + 2.0f}, DXGI_FORMAT_R16G16_UINT, 0xffff},
-        {{(float)(1ull << 32), -1000000.0f}, DXGI_FORMAT_R16G16_UINT, 0xffff, true},
-        {{FLT_MAX, -FLT_MAX}, DXGI_FORMAT_R16G16_UINT, 0xffff, true},
-        {{INFINITY, -INFINITY}, DXGI_FORMAT_R16G16_UINT, 0xffff},
-        {{NAN}, DXGI_FORMAT_R16G16_UINT, 0},
-
-        /* R8_UINT */
-        {{16.0f * 1024.0f * 1024.0f + 2.0f}, DXGI_FORMAT_R8G8B8A8_UINT, 0xff},
-        {{(float)(1ull << 32), -1000000.0f}, DXGI_FORMAT_R8G8B8A8_UINT, 0xff, true},
-        {{FLT_MAX, -FLT_MAX, INFINITY, -INFINITY}, DXGI_FORMAT_R8G8B8A8_UINT, 0xff00ff, true},
-        {{NAN}, DXGI_FORMAT_R8G8B8A8_UINT, 0},
-
-        /* R32_SINT */
-        {{-16.0f * 1024.0f * 1024.0f + -2.0f}, DXGI_FORMAT_R32_SINT, 0xfefffffe},
-        {{FLT_MAX}, DXGI_FORMAT_R32_SINT, INT32_MAX, true},
-        {{-FLT_MAX}, DXGI_FORMAT_R32_SINT, INT32_MIN},
-        {{INFINITY}, DXGI_FORMAT_R32_SINT, INT32_MAX},
-        {{-INFINITY}, DXGI_FORMAT_R32_SINT, INT32_MIN},
-        {{NAN}, DXGI_FORMAT_R32_SINT, 0},
-
-        /* R16_SINT */
-        {{-16.0f * 1024.0f * 1024.0f + -2.0f}, DXGI_FORMAT_R16G16_SINT, 0x8000},
-        {{FLT_MAX, -FLT_MAX}, DXGI_FORMAT_R16G16_SINT, 0x80007fff, true},
-        {{INFINITY, -INFINITY}, DXGI_FORMAT_R16G16_SINT, 0x80007fff},
-        {{NAN}, DXGI_FORMAT_R16G16_SINT, 0},
-
-        /* R8_SINT */
-        {{-16.0f * 1024.0f * 1024.0f + -2.0f}, DXGI_FORMAT_R8G8B8A8_SINT, 0x80},
-        {{FLT_MAX, -FLT_MAX, INFINITY, -INFINITY}, DXGI_FORMAT_R8G8B8A8_SINT, 0x807f807f, true},
-        {{NAN}, DXGI_FORMAT_R8G8B8A8_SINT, 0},
-
-        /* NaN on UNORM formats */
-        {{NAN, NAN, NAN, NAN}, DXGI_FORMAT_R8G8B8A8_UNORM, 0},
-        {{NAN, NAN, NAN, NAN}, DXGI_FORMAT_R16G16_UNORM, 0},
-        {{NAN, NAN, NAN, NAN}, DXGI_FORMAT_R8G8B8A8_SNORM, 0},
-        {{NAN, NAN, NAN, NAN}, DXGI_FORMAT_R16G16_SNORM, 0},
-
-#if 0
-        {{NAN}, DXGI_FORMAT_R16G16_FLOAT, 0x7fff},
-#endif
-    };
-
-    memset(&desc, 0, sizeof(desc));
-    desc.no_render_target = true;
-    if (!init_test_context(&context, &desc))
-        return;
-    device = context.device;
-    command_list = context.list;
-    queue = context.queue;
-
-    if (uav)
-    {
-        gpu_desc_heap = create_gpu_descriptor_heap(device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1);
-        gpu_handle = ID3D12DescriptorHeap_GetGPUDescriptorHandleForHeapStart(gpu_desc_heap);
-        cpu_desc_heap = create_cpu_descriptor_heap(device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1);
-        cpu_handle = ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(cpu_desc_heap);
-    }
-    else
-    {
-        cpu_desc_heap = create_cpu_descriptor_heap(device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1);
-        cpu_handle = ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(cpu_desc_heap);
-    }
-
-    for (i = 0; i < (uav ? NUM_UAV_TESTS : ARRAY_SIZE(tests)); ++i)
-    {
-        D3D12_FEATURE_DATA_FORMAT_SUPPORT format_support = { tests[i].format };
-        vkd3d_test_set_context("Test %u", i);
-
-        if (FAILED(ID3D12Device_CheckFeatureSupport(context.device, D3D12_FEATURE_FORMAT_SUPPORT,
-            &format_support, sizeof(format_support))))
-            continue;
-
-        if ((uav && (format_support.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE) == 0) ||
-            (!uav && (format_support.Support1 & D3D12_FORMAT_SUPPORT1_RENDER_TARGET) == 0))
-        {
-            skip("Format #%x is unsupported, skipping.\n", tests[i].format);
-            continue;
-        }
-
-        resource = create_default_texture2d(device, 64, 64, 1, 1, tests[i].format,
-            uav ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS : D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
-            uav ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS : D3D12_RESOURCE_STATE_RENDER_TARGET);
-
-        if (uav)
-        {
-            ID3D12Device_CreateUnorderedAccessView(device, resource, NULL, NULL,
-                ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(cpu_desc_heap));
-            ID3D12Device_CreateUnorderedAccessView(device, resource, NULL, NULL,
-                ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(gpu_desc_heap));
-            ID3D12GraphicsCommandList_ClearUnorderedAccessViewFloat(command_list, gpu_handle, cpu_handle, resource, tests[i].color, 0, NULL);
-        }
-        else
-        {
-            ID3D12Device_CreateRenderTargetView(device, resource, NULL, cpu_handle);
-            ID3D12GraphicsCommandList_ClearRenderTargetView(command_list, cpu_handle, tests[i].color, 0, NULL);
-        }
-        transition_resource_state(command_list, resource,
-                uav ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS : D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
-        bug_if(tests[i].is_bug_nv_windows && is_nvidia_windows_device(context.device))
-            check_sub_resource_uint(resource, 0, queue, command_list, tests[i].result, 0);
-        ID3D12Resource_Release(resource);
-        reset_command_list(command_list, context.allocator);
-    }
-
-    vkd3d_test_set_context(NULL);
-    if (uav)
-        ID3D12DescriptorHeap_Release(gpu_desc_heap);
-    ID3D12DescriptorHeap_Release(cpu_desc_heap);
-    destroy_test_context(&context);
-}
-
-void test_clear_render_target_view_extreme_values(void)
-{
-    test_clear_view_extreme_values(false);
-}
-
-void test_clear_uav_extreme_values(void)
-{
-    test_clear_view_extreme_values(true);
 }
 
 void test_clear_unordered_access_view_buffer(void)
@@ -649,8 +485,6 @@ void test_clear_unordered_access_view_buffer(void)
                 {0x1234, 0xabcd, 0, 0}, 0xabcd1234},
         {DXGI_FORMAT_R16G16_UINT, { 0, BUFFER_SIZE / sizeof(uint32_t), 0, 0, D3D12_BUFFER_UAV_FLAG_NONE},
                 {0x10000, 0, 0, 0}, 0},
-        {DXGI_FORMAT_R16G16B16A16_UINT, { 0, BUFFER_SIZE / sizeof(uint64_t), 0, 0, D3D12_BUFFER_UAV_FLAG_NONE},
-                {0x1234, 0x4567, 0x1234, 0x4567}, 0x45671234},
 
         {DXGI_FORMAT_R16G16_UNORM, { 0, BUFFER_SIZE / sizeof(uint32_t), 0, 0, D3D12_BUFFER_UAV_FLAG_NONE},
                 {0x1234, 0xabcd, 0, 0}, 0xabcd1234},
@@ -661,19 +495,11 @@ void test_clear_unordered_access_view_buffer(void)
         {DXGI_FORMAT_R16G16_UNORM, { 0, BUFFER_SIZE / sizeof(uint32_t), 0, 0, D3D12_BUFFER_UAV_FLAG_NONE},
                 {0xbf800000 /* -1.0f */, 0 /* 0.0f */, 0x3f000000 /* 1.0f */, 0x3f000000 /* 1.0f */}, 0, true},
 
-        {DXGI_FORMAT_R16_FLOAT, { 0, BUFFER_SIZE / sizeof(uint16_t), 0, 0, D3D12_BUFFER_UAV_FLAG_NONE},
-                {0x1234, 0, 0, 0}, 0x12341234},
         {DXGI_FORMAT_R16G16_FLOAT, { 0, BUFFER_SIZE / sizeof(uint32_t), 0, 0, D3D12_BUFFER_UAV_FLAG_NONE},
                 {0x1234, 0xabcd, 0, 0}, 0xabcd1234},
         {DXGI_FORMAT_R16G16_FLOAT, { 0, BUFFER_SIZE / sizeof(uint32_t), 0, 0, D3D12_BUFFER_UAV_FLAG_NONE},
                 {0x3f000000 /* 0.5f */, 0x3f800000 /* 1.0f */, 0, 0}, 0x3c003800, true},
-        {DXGI_FORMAT_R16G16B16A16_FLOAT, { 0, BUFFER_SIZE / sizeof(uint64_t), 0, 0, D3D12_BUFFER_UAV_FLAG_NONE},
-                {0x3f000000 /* 0.5f */, 0x3f800000 /* 1.0f */, 0x3f000000, 0x3f800000}, 0x3c003800, true},
 
-        {DXGI_FORMAT_R8_UINT, { 0, BUFFER_SIZE / sizeof(uint8_t), 0, 0, D3D12_BUFFER_UAV_FLAG_NONE},
-                {0x11, 0x22, 0x33, 0x44}, 0x11111111},
-        {DXGI_FORMAT_R8G8_UINT, { 0, BUFFER_SIZE / sizeof(uint16_t), 0, 0, D3D12_BUFFER_UAV_FLAG_NONE},
-                {0x11, 0x22, 0x33, 0x44}, 0x22112211},
         {DXGI_FORMAT_R8G8B8A8_UINT, { 0, BUFFER_SIZE / sizeof(uint32_t), 0, 0, D3D12_BUFFER_UAV_FLAG_NONE},
                 {0x11, 0x22, 0x33, 0x44}, 0x44332211},
         {DXGI_FORMAT_R8G8B8A8_UINT, { 0, BUFFER_SIZE / sizeof(uint32_t), 0, 0, D3D12_BUFFER_UAV_FLAG_NONE},
@@ -716,7 +542,7 @@ void test_clear_unordered_access_view_buffer(void)
     heap_desc.Alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
     heap_desc.Flags = D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS;
     hr = ID3D12Device_CreateHeap(device, &heap_desc, &IID_ID3D12Heap, (void **)&heap);
-    ok(hr == S_OK, "Failed to create heap, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create heap, hr %#x.\n", hr);
 
     for (i = 0; i < ARRAY_SIZE(tests); ++i)
     {
@@ -768,12 +594,12 @@ void test_clear_unordered_access_view_buffer(void)
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
         get_buffer_readback_with_command_list(buffer, DXGI_FORMAT_R32_TYPELESS, &rb, queue, command_list);
         box.left = 0;
-        box.right = uav_desc.Buffer.FirstElement * format_size(uav_desc.Format) / sizeof(uint32_t);
+        box.right = uav_desc.Buffer.FirstElement;
         check_readback_data_uint(&rb, &box, clear_value[0], 0);
-        box.left = uav_desc.Buffer.FirstElement * format_size(uav_desc.Format) / sizeof(uint32_t);
-        box.right = (uav_desc.Buffer.FirstElement + uav_desc.Buffer.NumElements) * format_size(uav_desc.Format) / sizeof(uint32_t);
+        box.left = uav_desc.Buffer.FirstElement;
+        box.right = uav_desc.Buffer.FirstElement + uav_desc.Buffer.NumElements;
         check_readback_data_uint(&rb, &box, tests[i].expected, tests[i].is_float ? 1 : 0);
-        box.left = (uav_desc.Buffer.FirstElement + uav_desc.Buffer.NumElements) * format_size(uav_desc.Format) / sizeof(uint32_t);
+        box.left = uav_desc.Buffer.FirstElement + uav_desc.Buffer.NumElements;
         box.right = BUFFER_SIZE / format_size(uav_desc.Format);
         check_readback_data_uint(&rb, &box, clear_value[0], 0);
         release_resource_readback(&rb);
@@ -948,7 +774,7 @@ void test_clear_unordered_access_view_image(void)
                     D3D12_HEAP_FLAG_NONE, &resource_desc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                     NULL, &IID_ID3D12Resource, (void **)&texture)))
             {
-                skip("Failed to create texture, hr %#x.\n", (int)hr);
+                skip("Failed to create texture, hr %#x.\n", hr);
                 continue;
             }
 
@@ -1093,16 +919,11 @@ void test_clear_unordered_access_view_image(void)
 
 void test_uav_clear_exhaustive_descriptors(void)
 {
-    /* Engineer the range so that we get to test clear_uav_with_copy. */
-    const uint32_t SLOW_INDEX_LO = 32 * 1024 + 4000;
-    const uint32_t SLOW_INDEX_HI = 32 * 1024 + 4200;
-    struct resource_readback rb_rt;
     struct test_context context;
     struct resource_readback rb;
     ID3D12DescriptorHeap *gpu;
     ID3D12DescriptorHeap *cpu;
     ID3D12Resource *buffer;
-    ID3D12Resource *tex_rt;
     ID3D12Resource *tex;
     unsigned int i, j;
 
@@ -1117,10 +938,6 @@ void test_uav_clear_exhaustive_descriptors(void)
     /* Pick a format that is deliberately hard to deal with w.r.t. NaN clears. */
     tex = create_default_texture2d(context.device, 64, 64, 1024, 1, DXGI_FORMAT_R16G16B16A16_FLOAT,
             D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    /* We don't end up with full uint MUTABLE on these resources. Need fallback clears most likely. */
-    tex_rt = create_default_texture2d(context.device, 64, 64, 1024, 1, DXGI_FORMAT_R16G16B16A16_FLOAT,
-            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS |
-            D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
     /* 64k descriptors. */
     for (j = 0; j < 64; j++)
@@ -1128,8 +945,6 @@ void test_uav_clear_exhaustive_descriptors(void)
         for (i = 0; i < 1024; i++)
         {
             D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc;
-            unsigned int heap_index;
-            bool use_rtv_tex;
             memset(&uav_desc, 0, sizeof(uav_desc));
 
             uav_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
@@ -1137,13 +952,10 @@ void test_uav_clear_exhaustive_descriptors(void)
             uav_desc.Texture2DArray.FirstArraySlice = i;
             uav_desc.Texture2DArray.ArraySize = 1;
 
-            heap_index = i + 1024 * j;
-            use_rtv_tex = heap_index >= SLOW_INDEX_LO && heap_index <= SLOW_INDEX_HI;
-
-            ID3D12Device_CreateUnorderedAccessView(context.device, use_rtv_tex ? tex_rt : tex, NULL, &uav_desc,
-                    get_cpu_descriptor_handle(&context, cpu, heap_index));
-            ID3D12Device_CreateUnorderedAccessView(context.device, use_rtv_tex ? tex_rt : tex, NULL, &uav_desc,
-                    get_cpu_descriptor_handle(&context, gpu, heap_index));
+            ID3D12Device_CreateUnorderedAccessView(context.device, tex, NULL, &uav_desc,
+                    get_cpu_descriptor_handle(&context, cpu, i + 1024 * j));
+            ID3D12Device_CreateUnorderedAccessView(context.device, tex, NULL, &uav_desc,
+                    get_cpu_descriptor_handle(&context, gpu, i + 1024 * j));
         }
     }
 
@@ -1186,7 +998,6 @@ void test_uav_clear_exhaustive_descriptors(void)
     for (i = 32 * 1024; i < 64 * 1024; i++)
     {
         uint32_t values[4] = { (i >> 0) & 0xff, (i >> 8) & 0xff, 0, 0 };
-        bool use_rtv_tex;
         D3D12_RECT rect;
 
         rect.left = 0;
@@ -1202,11 +1013,9 @@ void test_uav_clear_exhaustive_descriptors(void)
             values[3] = 0xffff;
         }
 
-        use_rtv_tex = i >= SLOW_INDEX_LO && i <= SLOW_INDEX_HI;
-
         ID3D12GraphicsCommandList_ClearUnorderedAccessViewUint(context.list,
                 get_gpu_descriptor_handle(&context, gpu, i),
-                get_cpu_descriptor_handle(&context, cpu, i), use_rtv_tex ? tex_rt : tex,
+                get_cpu_descriptor_handle(&context, cpu, i), tex,
                 values, 1, &rect);
     }
 
@@ -1256,16 +1065,11 @@ void test_uav_clear_exhaustive_descriptors(void)
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
     transition_resource_state(context.list, tex,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    transition_resource_state(context.list, tex_rt,
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
 
     for (i = 0; i < 1024; i++)
     {
-        bool use_rtv_tex;
         uint32_t y;
         get_texture_readback_with_command_list(tex, i, &rb, context.queue, context.list);
-        reset_command_list(context.list, context.allocator);
-        get_texture_readback_with_command_list(tex_rt, i, &rb_rt, context.queue, context.list);
 
         for (y = 0; y < 64; y++)
         {
@@ -1274,7 +1078,6 @@ void test_uav_clear_exhaustive_descriptors(void)
             uint64_t value;
 
             descriptor_index = i + y * 1024;
-            use_rtv_tex = descriptor_index >= SLOW_INDEX_LO && descriptor_index <= SLOW_INDEX_HI;
 
             if (descriptor_index < 32 * 1024)
             {
@@ -1291,13 +1094,12 @@ void test_uav_clear_exhaustive_descriptors(void)
                 expected = 0xfffffffefffdfffc;
             }
 
-            value = get_readback_uint64(use_rtv_tex ? &rb_rt : &rb, 0, y);
+            value = get_readback_uint64(&rb, 0, y);
             ok(expected == value, "desc %u, line %u: Expected %"PRIx64", got %"PRIx64".\n",
                     i, y, expected, value);
         }
 
         release_resource_readback(&rb);
-        release_resource_readback(&rb_rt);
         reset_command_list(context.list, context.allocator);
     }
 
@@ -1353,7 +1155,6 @@ void test_uav_clear_exhaustive_descriptors(void)
     ID3D12DescriptorHeap_Release(cpu);
     ID3D12Resource_Release(buffer);
     ID3D12Resource_Release(tex);
-    ID3D12Resource_Release(tex_rt);
     destroy_test_context(&context);
 }
 
@@ -1437,913 +1238,5 @@ void test_clear_uav_mismatch_heap(void)
     ID3D12DescriptorHeap_Release(gpu);
     ID3D12DescriptorHeap_Release(cpu);
     ID3D12Resource_Release(resource);
-    destroy_test_context(&context);
-}
-
-void test_deferred_clears(void)
-{
-    D3D12_CPU_DESCRIPTOR_HANDLE rtv_array, rtv_uint, rtv_base, dsv;
-    D3D12_DESCRIPTOR_HEAP_DESC descriptor_heap_desc;
-    D3D12_RESOURCE_ALLOCATION_INFO alloc_infos[2];
-    D3D12_CPU_DESCRIPTOR_HANDLE rtv_desc_array[4];
-    D3D12_FEATURE_DATA_D3D12_OPTIONS12 options12;
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso_desc;
-    ID3D12DescriptorHeap *rtv_heap, *dsv_heap;
-    D3D12_RENDER_TARGET_VIEW_DESC rtv_desc;
-    D3D12_DEPTH_STENCIL_VIEW_DESC dsv_desc;
-    D3D12_HEAP_PROPERTIES heap_properties;
-    D3D12_TEXTURE_BARRIER texture_barrier;
-    D3D12_RESOURCE_DESC resource_desc[2];
-    D3D12_RESOURCE_DESC1 resource_desc1;
-    ID3D12GraphicsCommandList7 *list7;
-    D3D12_BARRIER_GROUP barrier_group;
-    D3D12_RESOURCE_BARRIER barrier;
-    struct test_context_desc desc;
-    struct test_context context;
-    ID3D12Resource *rt[6], *ds;
-    D3D12_HEAP_DESC heap_desc;
-    ID3D12Device10 *device10;
-    ID3D12Heap *heap;
-    unsigned int i;
-    HRESULT hr;
-
-#include "shaders/clear/headers/ps_deferred_clear.h"
-#include "shaders/clear/headers/vs_deferred_clear.h"
-
-    static const FLOAT clear_green[] = { 0.0f, 1.0f, 0.0f, 1.0f };
-    static const FLOAT clear_red[] = { 1.0f, 0.0f, 0.0f, 1.0f };
-    static const FLOAT clear_blue[] = { 0.0f, 0.0f, 1.0f, 1.0f };
-    static const FLOAT clear_uint[] = { 63.0f, 127.0f, 191.0f, 255.0f };
-
-    union
-    {
-        float f;
-        uint32_t ui;
-    } depth;
-
-    memset(&desc, 0, sizeof(desc));
-    desc.no_render_target = true;
-    desc.no_pipeline = true;
-    desc.no_root_signature = true;
-
-    if (!init_test_context(&context, &desc))
-        return;
-
-    memset(&options12, 0, sizeof(options12));
-    ID3D12Device_CheckFeatureSupport(context.device, D3D12_FEATURE_D3D12_OPTIONS12, &options12, sizeof(options12));
-
-    context.viewport.TopLeftX = 0.0f;
-    context.viewport.TopLeftY = 0.0f;
-    context.viewport.Width = 16.0f;
-    context.viewport.Height = 16.0f;
-    context.viewport.MinDepth = 0.0f;
-    context.viewport.MaxDepth = 1.0f;
-
-    context.scissor_rect.left = 0u;
-    context.scissor_rect.top = 0u;
-    context.scissor_rect.right = 16u;
-    context.scissor_rect.bottom = 16u;
-
-    context.root_signature = create_32bit_constants_root_signature(context.device, 0, 1, D3D12_SHADER_VISIBILITY_VERTEX);
-
-    init_pipeline_state_desc(&pso_desc, context.root_signature, DXGI_FORMAT_UNKNOWN,
-            &vs_deferred_clear_dxbc, &ps_deferred_clear_dxbc, NULL);
-    pso_desc.DSVFormat = DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
-    pso_desc.DepthStencilState.DepthEnable = TRUE;
-    pso_desc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
-    pso_desc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_EQUAL;
-    pso_desc.DepthStencilState.StencilEnable = TRUE;
-    pso_desc.DepthStencilState.FrontFace.StencilPassOp = D3D12_STENCIL_OP_KEEP;
-    pso_desc.DepthStencilState.FrontFace.StencilFailOp = D3D12_STENCIL_OP_KEEP;
-    pso_desc.DepthStencilState.FrontFace.StencilDepthFailOp = D3D12_STENCIL_OP_KEEP;
-    pso_desc.DepthStencilState.FrontFace.StencilFunc = D3D12_COMPARISON_FUNC_EQUAL;
-    pso_desc.DepthStencilState.BackFace = pso_desc.DepthStencilState.FrontFace;
-    pso_desc.DepthStencilState.StencilReadMask = 0xffu;
-    pso_desc.DepthStencilState.StencilWriteMask = 0u;
-    pso_desc.NumRenderTargets = 4u;
-
-    for (i = 0u; i < 4u; i++)
-    {
-        pso_desc.RTVFormats[i] = DXGI_FORMAT_R8G8B8A8_UNORM;
-        pso_desc.BlendState.RenderTarget[i].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-    }
-
-    hr = ID3D12Device_CreateGraphicsPipelineState(context.device, &pso_desc,
-            &IID_ID3D12PipelineState, (void **)&context.pipeline_state);
-    ok(hr == S_OK, "Failed to create pipeline, hr %#x.\n", (int)hr);
-
-    memset(&descriptor_heap_desc, 0u, sizeof(descriptor_heap_desc));
-    descriptor_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-    descriptor_heap_desc.NumDescriptors = 2u;
-
-    hr = ID3D12Device_CreateDescriptorHeap(context.device, &descriptor_heap_desc,
-            &IID_ID3D12DescriptorHeap, (void**)&dsv_heap);
-    ok(hr == S_OK, "Failed to create DSV heap, hr %#x.\n", (int)hr);
-
-    descriptor_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-    descriptor_heap_desc.NumDescriptors = ARRAY_SIZE(rt) + 2u;
-
-    hr = ID3D12Device_CreateDescriptorHeap(context.device, &descriptor_heap_desc,
-            &IID_ID3D12DescriptorHeap, (void**)&rtv_heap);
-    ok(hr == S_OK, "Failed to create RTV heap, hr %#x.\n", (int)hr);
-
-    memset(&heap_properties, 0, sizeof(heap_properties));
-    heap_properties.Type = D3D12_HEAP_TYPE_DEFAULT;
-
-    memset(resource_desc, 0, sizeof(resource_desc));
-    resource_desc[0].Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    resource_desc[0].Width = 16;
-    resource_desc[0].Height = 16;
-    resource_desc[0].DepthOrArraySize = 1u;
-    resource_desc[0].MipLevels = 1u;
-    resource_desc[0].SampleDesc.Count = 1u;
-    resource_desc[0].Format = DXGI_FORMAT_R8G8B8A8_TYPELESS;
-    resource_desc[0].Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    resource_desc[0].Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-
-    for (i = 0u; i < 4u; i++)
-    {
-        hr = ID3D12Device_CreateCommittedResource(context.device, &heap_properties,
-                D3D12_HEAP_FLAG_NONE, &resource_desc[0], D3D12_RESOURCE_STATE_RENDER_TARGET, NULL,
-                &IID_ID3D12Resource, (void**)&rt[i]);
-        ok(hr == S_OK, "Failed to create resource, hr %#x.\n", (int)hr);
-    }
-
-    /* Image with mismatched size */
-    resource_desc[0].Width = 8;
-    resource_desc[0].Height = 8;
-
-    hr = ID3D12Device_CreateCommittedResource(context.device, &heap_properties,
-            D3D12_HEAP_FLAG_NONE, &resource_desc[0], D3D12_RESOURCE_STATE_RENDER_TARGET, NULL,
-            &IID_ID3D12Resource, (void**)&rt[4]);
-    ok(hr == S_OK, "Failed to create resource, hr %#x.\n", (int)hr);
-
-    /* Image with multiple layers */
-    resource_desc[0].Width = 16;
-    resource_desc[0].Height = 16;
-    resource_desc[0].DepthOrArraySize = 4u;
-
-    hr = ID3D12Device_CreateCommittedResource(context.device, &heap_properties,
-            D3D12_HEAP_FLAG_NONE, &resource_desc[0], D3D12_RESOURCE_STATE_RENDER_TARGET, NULL,
-            &IID_ID3D12Resource, (void**)&rt[5]);
-    ok(hr == S_OK, "Failed to create resource, hr %#x.\n", (int)hr);
-
-    for (i = 0u; i < ARRAY_SIZE(rt); i++)
-    {
-        memset(&rtv_desc, 0, sizeof(rtv_desc));
-        rtv_desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DARRAY;
-        rtv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        rtv_desc.Texture2DArray.ArraySize = 1u;
-
-        ID3D12Device_CreateRenderTargetView(context.device, rt[i], &rtv_desc,
-            get_cpu_rtv_handle(&context, rtv_heap, i));
-    }
-
-    rtv_base = get_cpu_rtv_handle(&context, rtv_heap, 0u);
-    rtv_array = get_cpu_rtv_handle(&context, rtv_heap, ARRAY_SIZE(rt));
-
-    memset(&rtv_desc, 0, sizeof(rtv_desc));
-    rtv_desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DARRAY;
-    rtv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    rtv_desc.Texture2DArray.ArraySize = 4u;
-
-    ID3D12Device_CreateRenderTargetView(context.device, rt[5], &rtv_desc, rtv_array);
-
-    rtv_uint = get_cpu_rtv_handle(&context, rtv_heap, ARRAY_SIZE(rt) + 1u);
-
-    memset(&rtv_desc, 0, sizeof(rtv_desc));
-    rtv_desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DARRAY;
-    rtv_desc.Format = DXGI_FORMAT_R8G8B8A8_UINT;
-    rtv_desc.Texture2DArray.ArraySize = 1u;
-
-    ID3D12Device_CreateRenderTargetView(context.device, rt[0], &rtv_desc, rtv_uint);
-
-    /* Depth-stencil image */
-    resource_desc[0].DepthOrArraySize = 1u;
-    resource_desc[0].Format = DXGI_FORMAT_R32G8X24_TYPELESS;
-    resource_desc[0].Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
-
-    hr = ID3D12Device_CreateCommittedResource(context.device, &heap_properties,
-            D3D12_HEAP_FLAG_NONE, &resource_desc[0], D3D12_RESOURCE_STATE_DEPTH_WRITE, NULL,
-            &IID_ID3D12Resource, (void**)&ds);
-    ok(hr == S_OK, "Failed to create resource, hr %#x.\n", (int)hr);
-
-    dsv = get_cpu_dsv_handle(&context, dsv_heap, 0u);
-
-    memset(&dsv_desc, 0, sizeof(dsv_desc));
-    dsv_desc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
-    dsv_desc.Format = DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
-    dsv_desc.Texture2DArray.ArraySize = 1u;
-
-    ID3D12Device_CreateDepthStencilView(context.device, ds, &dsv_desc,
-                get_cpu_dsv_handle(&context, dsv_heap, 0u));
-
-    dsv_desc.Flags = D3D12_DSV_FLAG_READ_ONLY_DEPTH | D3D12_DSV_FLAG_READ_ONLY_STENCIL;
-    ID3D12Device_CreateDepthStencilView(context.device, ds, &dsv_desc,
-                get_cpu_dsv_handle(&context, dsv_heap, 1u));
-
-    /* Test plain clear / discard into draw both before and after OMSetRenderTargets */
-    ID3D12GraphicsCommandList_DiscardResource(context.list, rt[2], NULL);
-    ID3D12GraphicsCommandList_ClearRenderTargetView(context.list,
-        get_cpu_rtv_handle(&context, rtv_heap, 0u), clear_green, 0, NULL);
-    ID3D12GraphicsCommandList_ClearDepthStencilView(context.list, dsv,
-        D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0x80, 0, NULL);
-    ID3D12GraphicsCommandList_OMSetRenderTargets(context.list, 4u, &rtv_base, true, &dsv);
-    ID3D12GraphicsCommandList_ClearRenderTargetView(context.list,
-        get_cpu_rtv_handle(&context, rtv_heap, 1u), clear_red, 0, NULL);
-    ID3D12GraphicsCommandList_ClearRenderTargetView(context.list,
-        get_cpu_rtv_handle(&context, rtv_heap, 3u), clear_blue, 0, NULL);
-
-    memset(&depth, 0, sizeof(depth));
-
-    ID3D12GraphicsCommandList_RSSetViewports(context.list, 1, &context.viewport);
-    ID3D12GraphicsCommandList_RSSetScissorRects(context.list, 1, &context.scissor_rect);
-    ID3D12GraphicsCommandList_SetGraphicsRootSignature(context.list, context.root_signature);
-    ID3D12GraphicsCommandList_SetGraphicsRoot32BitConstant(context.list, 0u, depth.ui, 0u);
-    ID3D12GraphicsCommandList_SetPipelineState(context.list, context.pipeline_state);
-    ID3D12GraphicsCommandList_IASetPrimitiveTopology(context.list, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    ID3D12GraphicsCommandList_OMSetStencilRef(context.list, 0u);
-    ID3D12GraphicsCommandList_DrawInstanced(context.list, 3, 1, 0, 0);
-
-    transition_resource_state(context.list, rt[0], D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    transition_resource_state(context.list, rt[1], D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    transition_resource_state(context.list, rt[3], D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    transition_resource_state(context.list, ds, D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_COPY_SOURCE);
-
-    check_sub_resource_uint(rt[0], 0, context.queue, context.list, 0xff00ff00u, 0u);
-    reset_command_list(context.list, context.allocator);
-    check_sub_resource_uint(rt[1], 0, context.queue, context.list, 0xff0000ffu, 0u);
-    reset_command_list(context.list, context.allocator);
-    check_sub_resource_uint(rt[3], 0, context.queue, context.list, 0xffff0000u, 0u);
-    reset_command_list(context.list, context.allocator);
-    check_sub_resource_float(ds, 0, context.queue, context.list, 1.0f, 0.0f);
-    reset_command_list(context.list, context.allocator);
-
-    transition_resource_state(context.list, rt[0], D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
-    transition_resource_state(context.list, rt[1], D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
-    transition_resource_state(context.list, rt[3], D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
-    transition_resource_state(context.list, ds, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-
-    /* Test clear into barrier */
-    ID3D12GraphicsCommandList_ClearRenderTargetView(context.list,
-        get_cpu_rtv_handle(&context, rtv_heap, 0u), clear_red, 0, NULL);
-
-    transition_resource_state(context.list, rt[0], D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
-
-    check_sub_resource_uint(rt[0], 0, context.queue, context.list, 0xff0000ffu, 0u);
-    reset_command_list(context.list, context.allocator);
-
-    transition_resource_state(context.list, rt[0], D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
-
-    /* Test duplicate clears */
-    ID3D12GraphicsCommandList_OMSetRenderTargets(context.list, 4u, &rtv_base, true, &dsv);
-    ID3D12GraphicsCommandList_ClearRenderTargetView(context.list,
-        get_cpu_rtv_handle(&context, rtv_heap, 0u), clear_blue, 0, NULL);
-    ID3D12GraphicsCommandList_ClearRenderTargetView(context.list,
-        get_cpu_rtv_handle(&context, rtv_heap, 0u), clear_red, 0, NULL);
-
-    ID3D12GraphicsCommandList_RSSetViewports(context.list, 1, &context.viewport);
-    ID3D12GraphicsCommandList_RSSetScissorRects(context.list, 1, &context.scissor_rect);
-    ID3D12GraphicsCommandList_SetGraphicsRootSignature(context.list, context.root_signature);
-    ID3D12GraphicsCommandList_SetGraphicsRoot32BitConstant(context.list, 0u, depth.ui, 0u);
-    ID3D12GraphicsCommandList_SetPipelineState(context.list, context.pipeline_state);
-    ID3D12GraphicsCommandList_IASetPrimitiveTopology(context.list, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    ID3D12GraphicsCommandList_OMSetStencilRef(context.list, 0u);
-    ID3D12GraphicsCommandList_DrawInstanced(context.list, 3, 1, 0, 0);
-
-    transition_resource_state(context.list, rt[0], D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
-
-    check_sub_resource_uint(rt[0], 0, context.queue, context.list, 0xff0000ffu, 0u);
-    reset_command_list(context.list, context.allocator);
-
-    transition_resource_state(context.list, rt[0], D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
-
-    /* Test DSV clear with read-only view */
-    dsv = get_cpu_dsv_handle(&context, dsv_heap, 1u);
-
-    ID3D12GraphicsCommandList_ClearDepthStencilView(context.list, dsv,
-        D3D12_CLEAR_FLAG_STENCIL, 0.0f, 0x96, 0, NULL);
-
-    depth.f = 1.0f;
-
-    ID3D12GraphicsCommandList_OMSetRenderTargets(context.list, 4u, &rtv_base, true, &dsv);
-    ID3D12GraphicsCommandList_RSSetViewports(context.list, 1, &context.viewport);
-    ID3D12GraphicsCommandList_RSSetScissorRects(context.list, 1, &context.scissor_rect);
-    ID3D12GraphicsCommandList_SetGraphicsRootSignature(context.list, context.root_signature);
-    ID3D12GraphicsCommandList_SetGraphicsRoot32BitConstant(context.list, 0u, depth.ui, 0u);
-    ID3D12GraphicsCommandList_SetPipelineState(context.list, context.pipeline_state);
-    ID3D12GraphicsCommandList_IASetPrimitiveTopology(context.list, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    ID3D12GraphicsCommandList_OMSetStencilRef(context.list, 0x96u);
-    ID3D12GraphicsCommandList_DrawInstanced(context.list, 3, 1, 0, 0);
-
-    transition_resource_state(context.list, rt[0], D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
-
-    bug_if(is_amd_vulkan_device(context.device) && !is_radv_device(context.device))
-    check_sub_resource_uint(rt[0], 0, context.queue, context.list, 0xffff00ffu, 0u);
-    reset_command_list(context.list, context.allocator);
-
-    transition_resource_state(context.list, rt[0], D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
-
-    dsv = get_cpu_dsv_handle(&context, dsv_heap, 0u);
-
-    /* Test clear with different format */
-    ID3D12GraphicsCommandList_OMSetRenderTargets(context.list, 4u, &rtv_base, true, &dsv);
-    ID3D12GraphicsCommandList_ClearRenderTargetView(context.list, rtv_uint, clear_uint, 0, NULL);
-
-    ID3D12GraphicsCommandList_RSSetViewports(context.list, 1, &context.viewport);
-    ID3D12GraphicsCommandList_RSSetScissorRects(context.list, 1, &context.scissor_rect);
-    ID3D12GraphicsCommandList_SetGraphicsRootSignature(context.list, context.root_signature);
-    ID3D12GraphicsCommandList_SetGraphicsRoot32BitConstant(context.list, 0u, depth.ui, 0u);
-    ID3D12GraphicsCommandList_SetPipelineState(context.list, context.pipeline_state);
-    ID3D12GraphicsCommandList_IASetPrimitiveTopology(context.list, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    ID3D12GraphicsCommandList_OMSetStencilRef(context.list, 0u);
-    ID3D12GraphicsCommandList_DrawInstanced(context.list, 3, 1, 0, 0);
-
-    transition_resource_state(context.list, rt[0], D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
-
-    check_sub_resource_uint(rt[0], 0, context.queue, context.list, 0xffbf7f3f, 0u);
-    reset_command_list(context.list, context.allocator);
-
-    transition_resource_state(context.list, rt[0], D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
-
-    /* Test separate aspect clears */
-    ID3D12GraphicsCommandList_OMSetRenderTargets(context.list, 4u, &rtv_base, true, &dsv);
-    ID3D12GraphicsCommandList_ClearDepthStencilView(context.list, dsv,
-        D3D12_CLEAR_FLAG_DEPTH, 0.5f, 0xff, 0, NULL);
-    ID3D12GraphicsCommandList_ClearDepthStencilView(context.list, dsv,
-        D3D12_CLEAR_FLAG_STENCIL, 0.0f, 0x40, 0, NULL);
-    ID3D12GraphicsCommandList_ClearRenderTargetView(context.list,
-        get_cpu_rtv_handle(&context, rtv_heap, 0u), clear_red, 0, NULL);
-
-    depth.f = 0.5f;
-
-    ID3D12GraphicsCommandList_RSSetViewports(context.list, 1, &context.viewport);
-    ID3D12GraphicsCommandList_RSSetScissorRects(context.list, 1, &context.scissor_rect);
-    ID3D12GraphicsCommandList_SetGraphicsRootSignature(context.list, context.root_signature);
-    ID3D12GraphicsCommandList_SetGraphicsRoot32BitConstant(context.list, 0u, depth.ui, 0u);
-    ID3D12GraphicsCommandList_SetPipelineState(context.list, context.pipeline_state);
-    ID3D12GraphicsCommandList_IASetPrimitiveTopology(context.list, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    ID3D12GraphicsCommandList_OMSetStencilRef(context.list, 0x40u);
-    ID3D12GraphicsCommandList_DrawInstanced(context.list, 3, 1, 0, 0);
-
-    transition_resource_state(context.list, rt[0], D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
-
-    check_sub_resource_uint(rt[0], 0, context.queue, context.list, 0xffff00ffu, 0u);
-    reset_command_list(context.list, context.allocator);
-
-    transition_resource_state(context.list, rt[0], D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
-
-    /* Test depth-only clear for depth-stencil image */
-    ID3D12GraphicsCommandList_OMSetRenderTargets(context.list, 4u, &rtv_base, true, &dsv);
-    ID3D12GraphicsCommandList_ClearDepthStencilView(context.list, dsv,
-        D3D12_CLEAR_FLAG_DEPTH, 0.25f, 0xff, 0, NULL);
-    ID3D12GraphicsCommandList_ClearRenderTargetView(context.list,
-        get_cpu_rtv_handle(&context, rtv_heap, 0u), clear_red, 0, NULL);
-
-    depth.f = 0.25f;
-
-    ID3D12GraphicsCommandList_RSSetViewports(context.list, 1, &context.viewport);
-    ID3D12GraphicsCommandList_RSSetScissorRects(context.list, 1, &context.scissor_rect);
-    ID3D12GraphicsCommandList_SetGraphicsRootSignature(context.list, context.root_signature);
-    ID3D12GraphicsCommandList_SetGraphicsRoot32BitConstant(context.list, 0u, depth.ui, 0u);
-    ID3D12GraphicsCommandList_SetPipelineState(context.list, context.pipeline_state);
-    ID3D12GraphicsCommandList_IASetPrimitiveTopology(context.list, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    ID3D12GraphicsCommandList_OMSetStencilRef(context.list, 0x40u);
-    ID3D12GraphicsCommandList_DrawInstanced(context.list, 3, 1, 0, 0);
-
-    transition_resource_state(context.list, rt[0], D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
-
-    check_sub_resource_uint(rt[0], 0, context.queue, context.list, 0xffff00ffu, 0u);
-    reset_command_list(context.list, context.allocator);
-
-    transition_resource_state(context.list, rt[0], D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
-
-    /* Test clear with mismatching size */
-    rtv_base = get_cpu_rtv_handle(&context, rtv_heap, 2u);
-
-    ID3D12GraphicsCommandList_OMSetRenderTargets(context.list, 4u, &rtv_base, true, &dsv);
-    ID3D12GraphicsCommandList_ClearDepthStencilView(context.list, dsv,
-        D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 0.0f, 0x0, 0, NULL);
-    ID3D12GraphicsCommandList_ClearRenderTargetView(context.list, rtv_base, clear_green, 0, NULL);
-
-    depth.f = 1.0f;
-
-    ID3D12GraphicsCommandList_RSSetViewports(context.list, 1, &context.viewport);
-    ID3D12GraphicsCommandList_RSSetScissorRects(context.list, 1, &context.scissor_rect);
-    ID3D12GraphicsCommandList_SetGraphicsRootSignature(context.list, context.root_signature);
-    ID3D12GraphicsCommandList_SetGraphicsRoot32BitConstant(context.list, 0u, depth.ui, 0u);
-    ID3D12GraphicsCommandList_SetPipelineState(context.list, context.pipeline_state);
-    ID3D12GraphicsCommandList_IASetPrimitiveTopology(context.list, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    ID3D12GraphicsCommandList_OMSetStencilRef(context.list, 0xffu);
-    ID3D12GraphicsCommandList_DrawInstanced(context.list, 3, 1, 0, 0);
-
-    transition_resource_state(context.list, rt[2], D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
-
-    check_sub_resource_uint(rt[2], 0, context.queue, context.list, 0xff00ff00u, 0u);
-    reset_command_list(context.list, context.allocator);
-
-    transition_resource_state(context.list, rt[2], D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
-
-    /* Test overlapping clears with different views */
-    ID3D12GraphicsCommandList_ClearRenderTargetView(context.list, get_cpu_rtv_handle(&context, rtv_heap, 5u), clear_blue, 0, NULL);
-    ID3D12GraphicsCommandList_ClearRenderTargetView(context.list, rtv_array, clear_red, 0, NULL);
-
-    transition_resource_state(context.list, rt[5], D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
-
-    for (i = 0u; i < 4u; i++)
-    {
-        check_sub_resource_uint(rt[5], i, context.queue, context.list, 0xff0000ffu, 0u);
-        reset_command_list(context.list, context.allocator);
-    }
-
-    transition_resource_state(context.list, rt[5], D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
-
-    /* Test overlap with draw */
-    for (i = 0; i < 3; i++)
-        rtv_desc_array[i] = get_cpu_rtv_handle(&context, rtv_heap, i);
-
-    rtv_desc_array[3u] = get_cpu_rtv_handle(&context, rtv_heap, 5u);
-
-    ID3D12GraphicsCommandList_OMSetRenderTargets(context.list, 4u, rtv_desc_array, false, &dsv);
-    ID3D12GraphicsCommandList_ClearRenderTargetView(context.list, get_cpu_rtv_handle(&context, rtv_heap, 5u), clear_green, 0, NULL);
-    ID3D12GraphicsCommandList_ClearRenderTargetView(context.list, rtv_array, clear_blue, 0, NULL);
-    ID3D12GraphicsCommandList_ClearDepthStencilView(context.list, dsv,
-        D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 0.0f, 0u, 0, NULL);
-
-    depth.f = 0.0f;
-
-    ID3D12GraphicsCommandList_RSSetViewports(context.list, 1, &context.viewport);
-    ID3D12GraphicsCommandList_RSSetScissorRects(context.list, 1, &context.scissor_rect);
-    ID3D12GraphicsCommandList_SetGraphicsRootSignature(context.list, context.root_signature);
-    ID3D12GraphicsCommandList_SetGraphicsRoot32BitConstant(context.list, 0u, depth.ui, 0u);
-    ID3D12GraphicsCommandList_SetPipelineState(context.list, context.pipeline_state);
-    ID3D12GraphicsCommandList_IASetPrimitiveTopology(context.list, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    ID3D12GraphicsCommandList_OMSetStencilRef(context.list, 0u);
-    ID3D12GraphicsCommandList_DrawInstanced(context.list, 3, 1, 0, 0);
-
-    transition_resource_state(context.list, rt[5], D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
-
-    for (i = 0u; i < 4u; i++)
-    {
-        check_sub_resource_uint(rt[5], i, context.queue, context.list, i ? 0xffff0000u : 0xffff00ffu, 0u);
-        reset_command_list(context.list, context.allocator);
-    }
-
-    transition_resource_state(context.list, rt[5], D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
-
-    /* Test clear with overlap inside render pass */
-    ID3D12GraphicsCommandList_OMSetRenderTargets(context.list, 4u, rtv_desc_array, false, &dsv);
-    ID3D12GraphicsCommandList_ClearRenderTargetView(context.list, get_cpu_rtv_handle(&context, rtv_heap, 5u), clear_blue, 0, NULL);
-    ID3D12GraphicsCommandList_ClearDepthStencilView(context.list, dsv,
-        D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 0.0f, 0u, 0, NULL);
-
-    depth.f = 0.0f;
-
-    ID3D12GraphicsCommandList_RSSetViewports(context.list, 1, &context.viewport);
-    ID3D12GraphicsCommandList_RSSetScissorRects(context.list, 1, &context.scissor_rect);
-    ID3D12GraphicsCommandList_SetGraphicsRootSignature(context.list, context.root_signature);
-    ID3D12GraphicsCommandList_SetGraphicsRoot32BitConstant(context.list, 0u, depth.ui, 0u);
-    ID3D12GraphicsCommandList_SetPipelineState(context.list, context.pipeline_state);
-    ID3D12GraphicsCommandList_IASetPrimitiveTopology(context.list, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    ID3D12GraphicsCommandList_OMSetStencilRef(context.list, 0xffu);
-    ID3D12GraphicsCommandList_DrawInstanced(context.list, 3, 1, 0, 0);
-
-    ID3D12GraphicsCommandList_ClearRenderTargetView(context.list, rtv_array, clear_red, 0, NULL);
-    ID3D12GraphicsCommandList_OMSetStencilRef(context.list, 0x0u);
-    ID3D12GraphicsCommandList_DrawInstanced(context.list, 3, 1, 0, 0);
-
-    transition_resource_state(context.list, rt[5], D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
-
-    for (i = 0u; i < 4u; i++)
-    {
-        check_sub_resource_uint(rt[5], i, context.queue, context.list, i ? 0xff0000ffu : 0xffff00ffu, 0u);
-        reset_command_list(context.list, context.allocator);
-    }
-
-    for (i = 0u; i < ARRAY_SIZE(rt); i++)
-        ID3D12Resource_Release(rt[i]);
-
-    ID3D12Resource_Release(ds);
-
-    /* Ensure that aliasing barriers also flush clears */
-    memset(&resource_desc, 0, sizeof(resource_desc));
-    resource_desc[0].Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    resource_desc[0].Alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
-    resource_desc[0].Width = 64;
-    resource_desc[0].Height = 64;
-    resource_desc[0].DepthOrArraySize = 1u;
-    resource_desc[0].MipLevels = 1u;
-    resource_desc[0].SampleDesc.Count = 1u;
-    resource_desc[0].Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    resource_desc[0].Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    resource_desc[0].Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-
-    resource_desc[1].Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    resource_desc[1].Alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
-    resource_desc[1].Width = 64;
-    resource_desc[1].Height = 64;
-    resource_desc[1].DepthOrArraySize = 1u;
-    resource_desc[1].MipLevels = 1u;
-    resource_desc[1].SampleDesc.Count = 1u;
-    resource_desc[1].Format = DXGI_FORMAT_R32_UINT;
-    resource_desc[1].Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    resource_desc[1].Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-
-    alloc_infos[0] = ID3D12Device_GetResourceAllocationInfo(context.device, 0u, 1u, &resource_desc[0]);
-    alloc_infos[1] = ID3D12Device_GetResourceAllocationInfo(context.device, 0u, 1u, &resource_desc[1]);
-
-    memset(&heap_desc, 0, sizeof(heap_desc));
-    heap_desc.Properties.Type = D3D12_HEAP_TYPE_DEFAULT;
-    heap_desc.SizeInBytes = max(alloc_infos[0].SizeInBytes, alloc_infos[1].SizeInBytes);
-    heap_desc.Alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
-
-    hr = ID3D12Device_CreateHeap(context.device, &heap_desc, &IID_ID3D12Heap, (void**)&heap);
-    ok(hr == S_OK, "Failed to create heap, hr %#x.\n", (int)hr);
-
-    for (i = 0u; i < 2u; i++)
-    {
-        hr = ID3D12Device_CreatePlacedResource(context.device, heap, 0, &resource_desc[i],
-            D3D12_RESOURCE_STATE_RENDER_TARGET, NULL, &IID_ID3D12Resource, (void**)&rt[i]);
-        ok(hr == S_OK, "Failed to create resource, hr %#x.\n", (int)hr);
-
-        memset(&rtv_desc, 0, sizeof(rtv_desc));
-        rtv_desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
-        rtv_desc.Format = resource_desc[i].Format;
-
-        ID3D12Device_CreateRenderTargetView(context.device, rt[i], &rtv_desc, get_cpu_rtv_handle(&context, rtv_heap, i));
-    }
-
-    ID3D12GraphicsCommandList_ClearRenderTargetView(context.list, get_cpu_rtv_handle(&context, rtv_heap, 1), clear_red, 0, NULL);
-
-    memset(&barrier, 0, sizeof(barrier));
-    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_ALIASING;
-    barrier.Aliasing.pResourceBefore = rt[1];
-    barrier.Aliasing.pResourceAfter = rt[0];
-    ID3D12GraphicsCommandList_ResourceBarrier(context.list, 1u, &barrier);
-
-    ID3D12GraphicsCommandList_ClearRenderTargetView(context.list, get_cpu_rtv_handle(&context, rtv_heap, 0), clear_green, 0, NULL);
-    transition_resource_state(context.list, rt[0], D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
-
-    check_sub_resource_uint(rt[0], 0, context.queue, context.list, 0xff00ff00u, 0u);
-    reset_command_list(context.list, context.allocator);
-
-    transition_resource_state(context.list, rt[0], D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
-
-    /* Test global aliasing barrier */
-    ID3D12GraphicsCommandList_ClearRenderTargetView(context.list, get_cpu_rtv_handle(&context, rtv_heap, 0), clear_red, 0, NULL);
-
-    memset(&barrier, 0, sizeof(barrier));
-    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_ALIASING;
-    ID3D12GraphicsCommandList_ResourceBarrier(context.list, 1u, &barrier);
-
-    ID3D12GraphicsCommandList_ClearRenderTargetView(context.list, get_cpu_rtv_handle(&context, rtv_heap, 1), clear_uint, 0, NULL);
-
-    transition_resource_state(context.list, rt[1], D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
-
-    check_sub_resource_uint(rt[1], 0, context.queue, context.list, 63u, 0u);
-    reset_command_list(context.list, context.allocator);
-
-    transition_resource_state(context.list, rt[1], D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
-
-    /* Test some less-than-valid aliasing use case where we clear RT1 but transition RT0 */
-    ID3D12GraphicsCommandList_ClearRenderTargetView(context.list, get_cpu_rtv_handle(&context, rtv_heap, 1), clear_red, 0, NULL);
-
-    transition_resource_state(context.list, rt[0], D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
-
-    /* On Adreno the image compression is incompatible between the two render target image formats */
-    bug_if(is_adreno_device(context.device))
-    check_sub_resource_uint(rt[0], 0, context.queue, context.list, 1u, 0u);
-    reset_command_list(context.list, context.allocator);
-
-    for (i = 0u; i < 2u; i++)
-        ID3D12Resource_Release(rt[i]);
-
-    ID3D12Heap_Release(heap);
-
-    ID3D12Device_QueryInterface(context.device, &IID_ID3D12Device10, (void**)&device10);
-    ID3D12GraphicsCommandList_QueryInterface(context.list, &IID_ID3D12GraphicsCommandList7, (void**)&list7);
-
-    if (device10 && list7 && options12.EnhancedBarriersSupported)
-    {
-        /* Test per-resource enhanced barrier */
-        memset(&resource_desc1, 0, sizeof(resource_desc1));
-        resource_desc1.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-        resource_desc1.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        resource_desc1.Width = 16u;
-        resource_desc1.Height = 16u;
-        resource_desc1.DepthOrArraySize = 1u;
-        resource_desc1.MipLevels = 1u;
-        resource_desc1.SampleDesc.Count = 1u;
-        resource_desc1.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-        resource_desc1.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-
-        hr = ID3D12Device10_CreateCommittedResource3(device10, &heap_properties, D3D12_HEAP_FLAG_NONE,
-                &resource_desc1, D3D12_BARRIER_LAYOUT_RENDER_TARGET, NULL, NULL, 0, NULL,
-                &IID_ID3D12Resource, (void**)&rt[0]);
-        ok(hr == S_OK, "Failed to create render target, hr %#x.\n", (int)hr);
-
-        rtv_base = get_cpu_rtv_handle(&context, rtv_heap, 0);
-
-        memset(&rtv_desc, 0, sizeof(rtv_desc));
-        rtv_desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
-        rtv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-
-        ID3D12Device_CreateRenderTargetView(context.device, rt[0], &rtv_desc, rtv_base);
-        ID3D12GraphicsCommandList_ClearRenderTargetView(context.list, rtv_base, clear_blue, 0, NULL);
-
-        memset(&barrier_group, 0, sizeof(barrier_group));
-        barrier_group.Type = D3D12_BARRIER_TYPE_TEXTURE;
-        barrier_group.NumBarriers = 1u;
-        barrier_group.pTextureBarriers = &texture_barrier;
-
-        memset(&texture_barrier, 0, sizeof(texture_barrier));
-        texture_barrier.pResource = rt[0];
-        texture_barrier.SyncBefore = D3D12_BARRIER_SYNC_RENDER_TARGET;
-        texture_barrier.SyncAfter = D3D12_BARRIER_SYNC_COPY;
-        texture_barrier.AccessBefore = D3D12_BARRIER_ACCESS_RENDER_TARGET;
-        texture_barrier.AccessAfter = D3D12_BARRIER_ACCESS_COPY_SOURCE;
-        texture_barrier.LayoutBefore = D3D12_BARRIER_LAYOUT_RENDER_TARGET;
-        texture_barrier.LayoutAfter = D3D12_BARRIER_LAYOUT_COPY_SOURCE;
-        texture_barrier.Subresources.NumArraySlices = 1u;
-        texture_barrier.Subresources.NumMipLevels = 1u;
-        texture_barrier.Subresources.NumPlanes = 1u;
-
-        ID3D12GraphicsCommandList7_Barrier(list7, 1u, &barrier_group);
-
-        check_sub_resource_uint(rt[0], 0, context.queue, context.list, 0xffff0000u, 0u);
-        reset_command_list(context.list, context.allocator);
-
-        ID3D12Resource_Release(rt[0]);
-
-        /* Test depth-stencil with enhanced barriers */
-        memset(&resource_desc1, 0, sizeof(resource_desc1));
-        resource_desc1.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-        resource_desc1.Format = DXGI_FORMAT_R32G8X24_TYPELESS;
-        resource_desc1.Width = 16u;
-        resource_desc1.Height = 16u;
-        resource_desc1.DepthOrArraySize = 1u;
-        resource_desc1.MipLevels = 1u;
-        resource_desc1.SampleDesc.Count = 1u;
-        resource_desc1.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-        resource_desc1.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
-
-        hr = ID3D12Device10_CreateCommittedResource3(device10, &heap_properties, D3D12_HEAP_FLAG_NONE,
-                &resource_desc1, D3D12_BARRIER_LAYOUT_DEPTH_STENCIL_WRITE, NULL, NULL, 0, NULL,
-                &IID_ID3D12Resource, (void**)&ds);
-        ok(hr == S_OK, "Failed to create depth-stencil resource, hr %#x.\n", (int)hr);
-
-        memset(&dsv_desc, 0, sizeof(dsv_desc));
-        dsv_desc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
-        dsv_desc.Format = DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
-
-        ID3D12Device_CreateDepthStencilView(context.device, ds, &dsv_desc, dsv);
-        ID3D12GraphicsCommandList_ClearDepthStencilView(context.list, dsv,
-                D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0u, 0u, NULL);
-
-        memset(&texture_barrier, 0, sizeof(texture_barrier));
-        texture_barrier.pResource = ds;
-        texture_barrier.SyncBefore = D3D12_BARRIER_SYNC_DEPTH_STENCIL;
-        texture_barrier.SyncAfter = D3D12_BARRIER_SYNC_COPY;
-        texture_barrier.AccessBefore = D3D12_BARRIER_ACCESS_DEPTH_STENCIL_WRITE;
-        texture_barrier.AccessAfter = D3D12_BARRIER_ACCESS_COPY_SOURCE;
-        texture_barrier.LayoutBefore = D3D12_BARRIER_LAYOUT_DEPTH_STENCIL_WRITE;
-        texture_barrier.LayoutAfter = D3D12_BARRIER_LAYOUT_COPY_SOURCE;
-        texture_barrier.Subresources.NumArraySlices = 1u;
-        texture_barrier.Subresources.NumMipLevels = 1u;
-        texture_barrier.Subresources.NumPlanes = 1u;
-
-        ID3D12GraphicsCommandList7_Barrier(list7, 1u, &barrier_group);
-
-        check_sub_resource_float(ds, 0, context.queue, context.list, 1.0f, 0.0f);
-        reset_command_list(context.list, context.allocator);
-
-        ID3D12Resource_Release(ds);
-    }
-
-    ID3D12DescriptorHeap_Release(rtv_heap);
-    ID3D12DescriptorHeap_Release(dsv_heap);
-
-    if (device10)
-        ID3D12Device10_Release(device10);
-
-    if (list7)
-        ID3D12GraphicsCommandList7_Release(list7);
-
-    destroy_test_context(&context);
-}
-
-void test_deferred_clears_dsv_layout(void)
-{
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso_desc;
-    D3D12_CPU_DESCRIPTOR_HANDLE ds_handle;
-    struct test_context_desc desc;
-    struct test_context context;
-    ID3D12DescriptorHeap *dsv;
-    ID3D12Resource *ds;
-    unsigned int i, j;
-    D3D12_VIEWPORT vp;
-    D3D12_RECT sci;
-
-    enum dsv_style
-    {
-        LAYER0 = 0,
-        LAYER1,
-        BOTH
-    };
-
-    /* Try to exhaustively test every possible combination that can come up. */
-    static const struct test
-    {
-        enum dsv_style style;
-        bool ro_depth;
-        bool ro_stencil;
-        D3D12_CLEAR_FLAGS clear;
-        float depth;
-        uint8_t stencil;
-        float draw_depth;
-        uint8_t draw_stencil;
-        bool skip_draw;
-    } tests[] = {
-        { BOTH, false, false, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 0.5f, 10, 0.75f, 20 },
-        { BOTH, true, false, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 0.5f, 11, 0.75f, 20 },
-        { BOTH, false, true, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 0.5f, 12, 0.75f, 20 },
-        { BOTH, true, true, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 0.5f, 13, 0.75f, 20 },
-
-        /* Cannot promote fully due to partial subresource. */
-        { LAYER0, false, false, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 0.5f, 30, 0.75f, 20 },
-        { LAYER0, true, false, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 0.5f, 31, 0.75f, 20 },
-        { LAYER0, false, true, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 0.5f, 32, 0.75f, 20 },
-        { LAYER0, true, true, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 0.5f, 33, 0.75f, 20 },
-
-        /* Cannot promote fully due to partial subresource. */
-        { LAYER1, false, false, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 0.5f, 10, 0.75f, 20 },
-        { LAYER1, true, false, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 0.5f, 10, 0.75f, 20 },
-        { LAYER1, false, true, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 0.5f, 10, 0.75f, 20 },
-        { LAYER1, true, true, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 0.5f, 10, 0.75f, 20 },
-
-        /* Partial aspects clear, with and without all subresources active. */
-        { BOTH, false, false, D3D12_CLEAR_FLAG_DEPTH, 0.5f, 10, 0.75f, 20 },
-        { BOTH, false, false, D3D12_CLEAR_FLAG_STENCIL, 0.5f, 10, 0.75f, 20 },
-        { BOTH, false, false, 0, 0.5f, 10, 0.75f, 20 },
-        { BOTH, true, true, D3D12_CLEAR_FLAG_DEPTH, 0.5f, 10, 0.75f, 20 },
-        { BOTH, true, true, D3D12_CLEAR_FLAG_STENCIL, 0.5f, 10, 0.75f, 20 },
-        { BOTH, true, true, 0, 0.5f, 10, 0.75f, 20 },
-
-        { LAYER0, false, false, D3D12_CLEAR_FLAG_DEPTH, 0.5f, 10, 0.75f, 20 },
-        { LAYER1, false, false, D3D12_CLEAR_FLAG_STENCIL, 0.5f, 10, 0.75f, 20 },
-        { LAYER1, false, false, 0, 0.5f, 10, 0.75f, 20 },
-        { LAYER0, true, true, D3D12_CLEAR_FLAG_DEPTH, 0.5f, 10, 0.75f, 20 },
-        { LAYER1, true, true, D3D12_CLEAR_FLAG_STENCIL, 0.5f, 10, 0.75f, 20 },
-        { LAYER1, true, true, 0, 0.5f, 10, 0.75f, 20 },
-
-        /* Skip draws, hit the pure clear path. */
-        { BOTH, false, false, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 0.5f, 10, 0.75f, 20, true },
-        { BOTH, false, false, D3D12_CLEAR_FLAG_DEPTH, 0.5f, 10, 0.75f, 20, true },
-        { BOTH, false, false, D3D12_CLEAR_FLAG_STENCIL, 0.5f, 10, 0.75f, 20, true },
-
-        { LAYER0, false, false, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 0.5f, 10, 0.75f, 20, true },
-        { LAYER0, false, false, D3D12_CLEAR_FLAG_DEPTH, 0.5f, 10, 0.75f, 20, true },
-        { LAYER0, false, false, D3D12_CLEAR_FLAG_STENCIL, 0.5f, 10, 0.75f, 20, true },
-
-        { LAYER1, false, false, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 0.5f, 10, 0.75f, 20, true },
-        { LAYER1, false, false, D3D12_CLEAR_FLAG_DEPTH, 0.5f, 10, 0.75f, 20, true },
-        { LAYER1, false, false, D3D12_CLEAR_FLAG_STENCIL, 0.5f, 10, 0.75f, 20, true },
-    };
-
-#include "shaders/clear/headers/ps_deferred_clear.h"
-#include "shaders/clear/headers/vs_deferred_clear.h"
-
-    memset(&desc, 0, sizeof(desc));
-    desc.no_render_target = true;
-    desc.no_pipeline = true;
-    desc.no_root_signature = true;
-
-    if (!init_test_context(&context, &desc))
-        return;
-
-    dsv = create_cpu_descriptor_heap(context.device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 12);
-
-    /* With multiple subresources, it gets harder to deal with DSV promotion. */
-    ds = create_default_texture2d(context.device, 16, 16, 2, 1,
-            DXGI_FORMAT_D32_FLOAT_S8X24_UINT, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
-            D3D12_RESOURCE_STATE_COPY_SOURCE);
-    context.root_signature = create_32bit_constants_root_signature(context.device, 0, 1, D3D12_SHADER_VISIBILITY_VERTEX);
-
-    init_pipeline_state_desc(&pso_desc, context.root_signature, DXGI_FORMAT_UNKNOWN,
-            &vs_deferred_clear_dxbc, &ps_deferred_clear_dxbc, NULL);
-    pso_desc.DSVFormat = DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
-    pso_desc.DepthStencilState.DepthEnable = TRUE;
-    pso_desc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-    pso_desc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
-    pso_desc.DepthStencilState.StencilEnable = TRUE;
-    pso_desc.DepthStencilState.FrontFace.StencilPassOp = D3D12_STENCIL_OP_REPLACE;
-    pso_desc.DepthStencilState.FrontFace.StencilFailOp = D3D12_STENCIL_OP_KEEP;
-    pso_desc.DepthStencilState.FrontFace.StencilDepthFailOp = D3D12_STENCIL_OP_KEEP;
-    pso_desc.DepthStencilState.FrontFace.StencilFunc = D3D12_COMPARISON_FUNC_ALWAYS;
-    pso_desc.DepthStencilState.BackFace = pso_desc.DepthStencilState.FrontFace;
-    pso_desc.DepthStencilState.StencilReadMask = 0xffu;
-    pso_desc.DepthStencilState.StencilWriteMask = 0xffu;
-
-    ID3D12Device_CreateGraphicsPipelineState(context.device, &pso_desc,
-            &IID_ID3D12PipelineState, (void **)&context.pipeline_state);
-
-    for (j = 0; j < 3; j++)
-    {
-        for (i = 0; i < 4; i++)
-        {
-            D3D12_DEPTH_STENCIL_VIEW_DESC dsv_desc;
-            memset(&dsv_desc, 0, sizeof(dsv_desc));
-            dsv_desc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
-            dsv_desc.Format = DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
-            dsv_desc.Texture2DArray.FirstArraySlice = j & 1;
-            dsv_desc.Texture2DArray.ArraySize = j == 2 ? 2 : 1;
-            if (i & 1)
-                dsv_desc.Flags |= D3D12_DSV_FLAG_READ_ONLY_DEPTH;
-            if (i & 2)
-                dsv_desc.Flags |= D3D12_DSV_FLAG_READ_ONLY_STENCIL;
-
-            ID3D12Device_CreateDepthStencilView(context.device, ds,
-                    &dsv_desc, get_cpu_dsv_handle(&context, dsv, 4 * j + i));
-        }
-    }
-
-    for (i = 0; i < ARRAY_SIZE(tests); i++)
-    {
-        const struct test *test = &tests[i];
-
-        vkd3d_test_set_context("Test %u", i);
-
-        /* Covers both layers. */
-        ds_handle = get_cpu_dsv_handle(&context, dsv, 8);
-
-        /* Clear in a separate command list so we can focus on the tracking we care about. */
-        transition_resource_state(context.list, ds, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-        ID3D12GraphicsCommandList_ClearDepthStencilView(context.list, ds_handle,
-                D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0xff, 0, NULL);
-        ID3D12GraphicsCommandList_Close(context.list);
-        exec_command_list(context.queue, context.list);
-        ID3D12GraphicsCommandList_Reset(context.list, context.allocator, NULL);
-        /* Makes it easier to see where layout bugs happen. */
-        wait_queue_idle(context.device, context.queue);
-
-        begin_debug_region_printf(context.list, "Test %u", i);
-
-        ds_handle = get_cpu_dsv_handle(&context, dsv, test->style * 4 + test->ro_stencil * 2 + test->ro_depth);
-        ID3D12GraphicsCommandList_OMSetRenderTargets(context.list, 0, NULL, TRUE, &ds_handle);
-        if (test->clear)
-        {
-            ID3D12GraphicsCommandList_ClearDepthStencilView(context.list, ds_handle, test->clear,
-                    test->depth, test->stencil, 0, NULL);
-        }
-        ID3D12GraphicsCommandList_SetGraphicsRootSignature(context.list, context.root_signature);
-        ID3D12GraphicsCommandList_SetPipelineState(context.list, context.pipeline_state);
-        ID3D12GraphicsCommandList_IASetPrimitiveTopology(context.list, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        ID3D12GraphicsCommandList_SetGraphicsRoot32BitConstants(context.list, 0, 1, &test->draw_depth, 0);
-        ID3D12GraphicsCommandList_OMSetStencilRef(context.list, test->draw_stencil);
-        set_viewport(&vp, 0, 0, 16, 16, 0, 1);
-        set_rect(&sci, 0, 0, 16, 16);
-        ID3D12GraphicsCommandList_RSSetViewports(context.list, 1, &vp);
-        ID3D12GraphicsCommandList_RSSetScissorRects(context.list, 1, &sci);
-
-        if (!test->skip_draw)
-            ID3D12GraphicsCommandList_DrawInstanced(context.list, 3, 1, 0, 0);
-
-        transition_resource_state(context.list, ds, D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_COPY_SOURCE);
-        end_debug_region(context.list);
-
-        for (j = 0; j < 2; j++)
-        {
-            float expected = 1.0f;
-            if (test->style == BOTH || test->style == j)
-            {
-                if (test->clear & D3D12_CLEAR_FLAG_DEPTH)
-                    expected = test->depth;
-
-                /* We only draw to the base layer. */
-                if (!test->ro_depth && !test->skip_draw && j == (test->style & 1))
-                    expected = test->draw_depth;
-            }
-            check_sub_resource_float(ds, j + 0, context.queue, context.list, expected, 0);
-            reset_command_list(context.list, context.allocator);
-        }
-
-        for (j = 0; j < 2; j++)
-        {
-            uint8_t expected = 0xff;
-            if (test->style == BOTH || test->style == j)
-            {
-                if (test->clear & D3D12_CLEAR_FLAG_STENCIL)
-                    expected = test->stencil;
-                if (!test->ro_stencil && !test->skip_draw && j == (test->style & 1))
-                    expected = test->draw_stencil;
-            }
-            check_sub_resource_uint8(ds, j + 2, context.queue, context.list, expected, 0);
-            reset_command_list(context.list, context.allocator);
-        }
-    }
-    vkd3d_test_set_context(NULL);
-
-    ID3D12Resource_Release(ds);
-    ID3D12DescriptorHeap_Release(dsv);
     destroy_test_context(&context);
 }

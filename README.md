@@ -113,58 +113,6 @@ meson --buildtype release --prefix /your/vkd3d-proton/directory build.86
 ninja -C build.86 install
 ```
 
-#### Cross-compilation build for aarch64
-
-First, setup a distrobox using Steam's runtime for it.
-
-```
-distrobox create --image registry.gitlab.steamos.cloud/steamrt/steamrt4/sdk/arm64-on-amd64 --name aarch64
-distrobox enter aarch64
-# Inside container
-sudo apt install mingw-w64-tools
-meson setup build-aarch64 \
-  --buildtype release \
-  --cross-file /usr/share/meson/cross/aarch64-linux-gnu-gcc.txt \
-  --cross-file ./build-widl.txt \
-  -Denable_extras=true \
-  -Denable_tests=true \
-  --prefix /tmp/vkd3d-proton-aarch64
-ninja -C build-aarch64 install
-cp build-aarch64/tests/d3d12 /tmp/vkd3d-proton-aarch64/bin
-```
-
-#### Building on Windows
-
-NOTE: Building directly on Windows (instead of cross compiling) is only expected to be used for testing and development.
-The primary use case is to develop tests and run them against native drivers, not to run real applications.
-This requires decent debugger support, so MSVC is supported as a compiler,
-although we do not stress test these builds at all.
-
-##### Building with MSVC
-
-This mostly involves installing the dependencies first (except for mingw-w64).
-Then, enter a MSVC development shell (usually called "x64 Native Tools Command Prompt for VS 2022" or something similar. Navigate to vkd3d-proton checkout, and run:
-
-```
-mkdir build
-cd build
-meson .. --backend vs2022 --buildtype release -Denable_tests=true # change as needed
-msbuild.exe vkd3d-proton.sln # or open in Visual Studio
-```
-
-##### Building with mingw (UCRT)
-
-In the ucrt64 shell of msys2, make sure to install ucrt packages of gcc toolchain, meson, glslang, python, ninja, etc.
-
-```
-# The explicit path seems to be important in some cases. It may complain about mismatching python.
-# Unlike cross compilation, do not use a cross file here.
-mkdir build
-cd build
-/ucrt64/bin/meson --buildtype release -Denable_tests=true
-ninja
-```
-
 ## Using vkd3d-proton
 
 The intended way to use vkd3d-proton is as native Win32 DLLs (d3d12.dll and d3d12core.dll).
@@ -236,9 +184,6 @@ commas or semicolons.
  - `VKD3D_TEST_BUG` - set to 0 to disable bug_if() conditions in tests.
  - `VKD3D_PROFILE_PATH` - If profiling is enabled in the build, a profiling block is
    emitted to `${VKD3D_PROFILE_PATH}.${pid}`.
- - `VKD3D_SWAPCHAIN_PRESENT_MODE` - accepts a Vulkan present mode name. Forces the
-   use of the specified present mode if supported. Currently accepts
-   `IMMEDIATE`, `MAILBOX`, `FIFO`, `FIFO_RELAXED`, `FIFO_LATEST_READY`.
 
 ### Frame rate limit
 The `VKD3D_FRAME_RATE` environment variable can be used to limit the frame rate. A value of `0` uncaps the frame rate, while any positive value will limit rendering to the given number of frames per second.

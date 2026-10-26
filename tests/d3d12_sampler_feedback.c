@@ -65,7 +65,7 @@ void test_sampler_feedback_resource_creation(void)
     }
 
     hr = ID3D12Device_QueryInterface(device, &IID_ID3D12Device8, (void **)&device8);
-    ok(SUCCEEDED(hr), "Failed to query Device8, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to query Device8, hr #%x.\n", hr);
 
     memset(&desc, 0, sizeof(desc));
     memset(&heap_props, 0, sizeof(heap_props));
@@ -80,7 +80,7 @@ void test_sampler_feedback_resource_creation(void)
     heap_desc.Properties = heap_props;
     heap_desc.Flags = D3D12_HEAP_FLAG_CREATE_NOT_ZEROED | D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES;
     hr = ID3D12Device_CreateHeap(device, &heap_desc, &IID_ID3D12Heap, (void **)&heap);
-    ok(SUCCEEDED(hr), "Failed to create heap, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create heap, hr #%x.\n", hr);
 
     for (i = 0; i < ARRAY_SIZE(tests); i++)
     {
@@ -96,12 +96,12 @@ void test_sampler_feedback_resource_creation(void)
 
         hr = ID3D12Device8_CreateCommittedResource2(device8, &heap_props, D3D12_HEAP_FLAG_CREATE_NOT_ZEROED,
             &desc, D3D12_RESOURCE_STATE_COMMON, NULL, NULL, &IID_ID3D12Resource, (void **)&resource);
-        ok(hr == tests[i].expected, "Unexpected hr, expected #%x, got #%x.\n", (int)tests[i].expected, (int)hr);
+        ok(hr == tests[i].expected, "Unexpected hr, expected #%x, got #%x.\n", tests[i].expected, hr);
         if (SUCCEEDED(hr))
             ID3D12Resource_Release(resource);
 
         hr = ID3D12Device8_CreatePlacedResource1(device8, heap, 0, &desc, D3D12_RESOURCE_STATE_COMMON, NULL, &IID_ID3D12Resource, (void **)&resource);
-        ok(hr == tests[i].expected, "Unexpected hr, expected #%x, got #%x.\n", (int)tests[i].expected, (int)hr);
+        ok(hr == tests[i].expected, "Unexpected hr, expected #%x, got #%x.\n", tests[i].expected, hr);
         if (SUCCEEDED(hr))
             ID3D12Resource_Release(resource);
 
@@ -109,12 +109,12 @@ void test_sampler_feedback_resource_creation(void)
 
         hr = ID3D12Device8_CreateCommittedResource2(device8, &heap_props, D3D12_HEAP_FLAG_CREATE_NOT_ZEROED,
             &desc, D3D12_RESOURCE_STATE_COMMON, NULL, NULL, &IID_ID3D12Resource, (void **)&resource);
-        ok(hr == tests[i].expected, "Unexpected hr, expected #%x, got #%x.\n", (int)tests[i].expected, (int)hr);
+        ok(hr == tests[i].expected, "Unexpected hr, expected #%x, got #%x.\n", tests[i].expected, hr);
         if (SUCCEEDED(hr))
             ID3D12Resource_Release(resource);
 
         hr = ID3D12Device8_CreatePlacedResource1(device8, heap, 0, &desc, D3D12_RESOURCE_STATE_COMMON, NULL, &IID_ID3D12Resource, (void **)&resource);
-        ok(hr == tests[i].expected, "Unexpected hr, expected #%x, got #%x.\n", (int)tests[i].expected, (int)hr);
+        ok(hr == tests[i].expected, "Unexpected hr, expected #%x, got #%x.\n", tests[i].expected, hr);
         if (SUCCEEDED(hr))
             ID3D12Resource_Release(resource);
 
@@ -161,7 +161,7 @@ void test_sampler_feedback_format_features(void)
         format.Support2 = UINT32_MAX;
 
         hr = ID3D12Device_CheckFeatureSupport(device, D3D12_FEATURE_FORMAT_SUPPORT, &format, sizeof(format));
-        ok(SUCCEEDED(hr), "Failed to query for format features, hr #%x.\n", (int)hr);
+        ok(SUCCEEDED(hr), "Failed to query for format features, hr #%x.\n", hr);
 
         ok(format.Support1 == (D3D12_FORMAT_SUPPORT1_TEXTURE2D | D3D12_FORMAT_SUPPORT1_MIP), "Unexpected feature support #%x.\n", format.Support1);
         ok(format.Support2 == D3D12_FORMAT_SUPPORT2_SAMPLER_FEEDBACK, "Unexpected feature support #%x.\n", format.Support2);
@@ -427,9 +427,9 @@ static void test_sampler_feedback_min_mip_level_inner(bool arrayed)
     }
 
     hr = ID3D12Device_QueryInterface(context.device, &IID_ID3D12Device8, (void **)&device8);
-    ok(SUCCEEDED(hr), "Failed to query Device8, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to query Device8, hr #%x.\n", hr);
     hr = ID3D12GraphicsCommandList_QueryInterface(context.list, &IID_ID3D12GraphicsCommandList1, (void **)&list1);
-    ok(SUCCEEDED(hr), "Failed to query GraphicsCommandList1, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to query GraphicsCommandList1, hr #%x.\n", hr);
 
     memset(&rs_desc, 0, sizeof(rs_desc));
     memset(desc_range, 0, sizeof(desc_range));
@@ -485,9 +485,9 @@ static void test_sampler_feedback_min_mip_level_inner(bool arrayed)
     desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     desc.Format = DXGI_FORMAT_SAMPLER_FEEDBACK_MIN_MIP_OPAQUE;
     hr = ID3D12Device8_CreateCommittedResource2(device8, &heap_props, D3D12_HEAP_FLAG_CREATE_NOT_ZEROED, &desc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, NULL, NULL, &IID_ID3D12Resource, (void **)&feedback);
-    ok(SUCCEEDED(hr), "Failed to create resource, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create resource, hr #%x.\n", hr);
     hr = ID3D12Device8_CreateCommittedResource2(device8, &heap_props, D3D12_HEAP_FLAG_CREATE_NOT_ZEROED, &desc, D3D12_RESOURCE_STATE_COPY_DEST, NULL, NULL, &IID_ID3D12Resource, (void **)&feedback_copy);
-    ok(SUCCEEDED(hr), "Failed to create resource, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create resource, hr #%x.\n", hr);
 
     ID3D12Device8_CreateSamplerFeedbackUnorderedAccessView(device8, resource, feedback, ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(desc_heap));
     ID3D12Device8_CreateSamplerFeedbackUnorderedAccessView(device8, resource, feedback, ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(desc_heap_cpu));
@@ -713,9 +713,9 @@ void test_sampler_feedback_npot_min_mip_level(void)
     }
 
     hr = ID3D12Device_QueryInterface(context.device, &IID_ID3D12Device8, (void **)&device8);
-    ok(SUCCEEDED(hr), "Failed to query Device8, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to query Device8, hr #%x.\n", hr);
     hr = ID3D12GraphicsCommandList_QueryInterface(context.list, &IID_ID3D12GraphicsCommandList1, (void **)&list1);
-    ok(SUCCEEDED(hr), "Failed to query GraphicsCommandList1, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to query GraphicsCommandList1, hr #%x.\n", hr);
 
     memset(&rs_desc, 0, sizeof(rs_desc));
     memset(desc_range, 0, sizeof(desc_range));
@@ -772,7 +772,7 @@ void test_sampler_feedback_npot_min_mip_level(void)
     desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     desc.Format = DXGI_FORMAT_SAMPLER_FEEDBACK_MIN_MIP_OPAQUE;
     hr = ID3D12Device8_CreateCommittedResource2(device8, &heap_props, D3D12_HEAP_FLAG_CREATE_NOT_ZEROED, &desc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, NULL, NULL, &IID_ID3D12Resource, (void **)&feedback);
-    ok(SUCCEEDED(hr), "Failed to create resource, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create resource, hr #%x.\n", hr);
 
     ID3D12Device8_CreateSamplerFeedbackUnorderedAccessView(device8, resource, feedback, ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(desc_heap));
     ID3D12Device8_CreateSamplerFeedbackUnorderedAccessView(device8, resource, feedback, ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(desc_heap_cpu));
@@ -874,7 +874,6 @@ void test_sampler_feedback_decode_encode_min_mip(void)
     struct test_context_desc context_desc;
     ID3D12GraphicsCommandList1 *list1;
     D3D12_HEAP_PROPERTIES heap_props;
-    ID3D12DescriptorHeap *desc_heap;
     struct test_context context;
     struct resource_readback rb;
     ID3D12Resource *resolve_tex;
@@ -905,11 +904,9 @@ void test_sampler_feedback_decode_encode_min_mip(void)
     }
 
     hr = ID3D12Device_QueryInterface(context.device, &IID_ID3D12Device8, (void **)&device8);
-    ok(SUCCEEDED(hr), "Failed to query Device8, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to query Device8, hr #%x.\n", hr);
     hr = ID3D12GraphicsCommandList_QueryInterface(context.list, &IID_ID3D12GraphicsCommandList1, (void **)&list1);
-    ok(SUCCEEDED(hr), "Failed to query GraphicsCommandList1, hr #%x.\n", (int)hr);
-
-    desc_heap = create_gpu_descriptor_heap(context.device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1);
+    ok(SUCCEEDED(hr), "Failed to query GraphicsCommandList1, hr #%x.\n", hr);
 
     memset(&desc, 0, sizeof(desc));
     memset(&heap_props, 0, sizeof(heap_props));
@@ -930,12 +927,12 @@ void test_sampler_feedback_decode_encode_min_mip(void)
     desc.DepthOrArraySize = LAYERS;
     hr = ID3D12Device8_CreateCommittedResource2(device8, &heap_props, D3D12_HEAP_FLAG_CREATE_NOT_ZEROED,
             &desc, D3D12_RESOURCE_STATE_RESOLVE_DEST, NULL, NULL, &IID_ID3D12Resource, (void **)&feedback_min_mip_array);
-    ok(SUCCEEDED(hr), "Failed to create resource, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create resource, hr #%x.\n", hr);
 
     desc.DepthOrArraySize = 1;
     hr = ID3D12Device8_CreateCommittedResource2(device8, &heap_props, D3D12_HEAP_FLAG_CREATE_NOT_ZEROED,
             &desc, D3D12_RESOURCE_STATE_RESOLVE_DEST, NULL, NULL, &IID_ID3D12Resource, (void **)&feedback_min_mip_single);
-    ok(SUCCEEDED(hr), "Failed to create resource, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create resource, hr #%x.\n", hr);
 
     resolve = create_default_buffer(context.device, MIP_REGIONS_FLAT, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_RESOLVE_DEST);
     resolve_tex = create_default_texture2d(context.device, MIP_REGIONS_X, MIP_REGIONS_Y, LAYERS, 1, DXGI_FORMAT_R8_UINT, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -951,7 +948,6 @@ void test_sampler_feedback_decode_encode_min_mip(void)
 
         /* DstX/Y for buffers are ignored on NV, but not AMD. Inherit NV behavior here, it's the only one that makes some kind of sense ... */
         /* SrcRect is ignored on NV (spec says it's not allowed for MIN_MIP), but not AMD. Inherit NV behavior here. */
-        ID3D12GraphicsCommandList_SetDescriptorHeaps(context.list, 1, &desc_heap);
         ID3D12GraphicsCommandList1_ResolveSubresourceRegion(list1, feedback_min_mip_single, UINT_MAX, 0, 0, upload, 0, NULL, DXGI_FORMAT_R8_UINT, D3D12_RESOLVE_MODE_ENCODE_SAMPLER_FEEDBACK);
         transition_resource_state(context.list, feedback_min_mip_single, D3D12_RESOURCE_STATE_RESOLVE_DEST, D3D12_RESOURCE_STATE_RESOLVE_SOURCE);
         ID3D12GraphicsCommandList1_ResolveSubresourceRegion(list1, resolve, 0, 0, 0, feedback_min_mip_single, UINT_MAX, NULL, DXGI_FORMAT_R8_UINT, D3D12_RESOLVE_MODE_DECODE_SAMPLER_FEEDBACK);
@@ -1010,7 +1006,6 @@ void test_sampler_feedback_decode_encode_min_mip(void)
         }
 
         transition_resource_state(context.list, upload_tex, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_RESOLVE_SOURCE);
-        ID3D12GraphicsCommandList_SetDescriptorHeaps(context.list, 1, &desc_heap);
 
         /* On ENCODE, dst subresource is always -1, and source subresource index is the slice to resolve.
          * This implies two rules: We can only resolve layer N to layer N, and layer size of source and dest must be the same. */
@@ -1095,7 +1090,6 @@ void test_sampler_feedback_decode_encode_min_mip(void)
     }
 
     ID3D12GraphicsCommandList1_Release(list1);
-    ID3D12DescriptorHeap_Release(desc_heap);
     ID3D12Resource_Release(feedback_min_mip_single);
     ID3D12Resource_Release(feedback_min_mip_array);
     ID3D12Resource_Release(upload_tex);
@@ -1129,7 +1123,6 @@ void test_sampler_feedback_decode_encode_mip_used(void)
     struct test_context_desc context_desc;
     ID3D12GraphicsCommandList1 *list1;
     D3D12_HEAP_PROPERTIES heap_props;
-    ID3D12DescriptorHeap *desc_heap;
     struct test_context context;
     struct resource_readback rb;
     ID3D12Resource *resolve_tex;
@@ -1157,12 +1150,10 @@ void test_sampler_feedback_decode_encode_mip_used(void)
         return;
     }
 
-    desc_heap = create_gpu_descriptor_heap(context.device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1);
-
     hr = ID3D12Device_QueryInterface(context.device, &IID_ID3D12Device8, (void **)&device8);
-    ok(SUCCEEDED(hr), "Failed to query Device8, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to query Device8, hr #%x.\n", hr);
     hr = ID3D12GraphicsCommandList_QueryInterface(context.list, &IID_ID3D12GraphicsCommandList1, (void **)&list1);
-    ok(SUCCEEDED(hr), "Failed to query GraphicsCommandList1, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to query GraphicsCommandList1, hr #%x.\n", hr);
 
     memset(&desc, 0, sizeof(desc));
     memset(&heap_props, 0, sizeof(heap_props));
@@ -1181,7 +1172,7 @@ void test_sampler_feedback_decode_encode_mip_used(void)
     desc.DepthOrArraySize = LAYERS;
     hr = ID3D12Device8_CreateCommittedResource2(device8, &heap_props, D3D12_HEAP_FLAG_CREATE_NOT_ZEROED,
             &desc, D3D12_RESOURCE_STATE_RESOLVE_DEST, NULL, NULL, &IID_ID3D12Resource, (void **)&feedback);
-    ok(SUCCEEDED(hr), "Failed to create resource, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create resource, hr #%x.\n", hr);
 
     /* Add padding so we can test offsets. */
     resolve_tex = create_default_texture2d(context.device, MIP_REGIONS_X * 4, MIP_REGIONS_Y * 4, LAYERS, LEVELS, DXGI_FORMAT_R8_UINT, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -1215,7 +1206,6 @@ void test_sampler_feedback_decode_encode_mip_used(void)
 
     transition_resource_state(context.list, upload_tex, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_RESOLVE_SOURCE);
 
-    ID3D12GraphicsCommandList_SetDescriptorHeaps(context.list, 1, &desc_heap);
     ID3D12GraphicsCommandList1_ResolveSubresourceRegion(list1, feedback, UINT_MAX, 0, 0, upload_tex, UINT_MAX, NULL, DXGI_FORMAT_R8_UINT, D3D12_RESOLVE_MODE_ENCODE_SAMPLER_FEEDBACK);
 
     transition_resource_state(context.list, feedback, D3D12_RESOURCE_STATE_RESOLVE_DEST, D3D12_RESOURCE_STATE_RESOLVE_SOURCE);
@@ -1248,7 +1238,6 @@ void test_sampler_feedback_decode_encode_mip_used(void)
     {
         /* Target Layer = 1, Level = 1 with Level = 0, Layer = 0 as source. This should not work, but it does.
          * Now DstX/Y works. */
-        ID3D12GraphicsCommandList_SetDescriptorHeaps(context.list, 1, &desc_heap);
         ID3D12GraphicsCommandList1_ResolveSubresourceRegion(list1, feedback, LEVELS + 1, 1, 2, upload_tex, 0, NULL, DXGI_FORMAT_R8_UINT, D3D12_RESOLVE_MODE_ENCODE_SAMPLER_FEEDBACK);
         transition_resource_state(context.list, resolve_tex, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RESOLVE_DEST);
         transition_resource_state(context.list, feedback, D3D12_RESOURCE_STATE_RESOLVE_DEST, D3D12_RESOURCE_STATE_RESOLVE_SOURCE);
@@ -1280,7 +1269,6 @@ void test_sampler_feedback_decode_encode_mip_used(void)
     {
         D3D12_RECT decode_rect = { 1, 2, 9, 10 };
         D3D12_RECT encode_rect = { 4, 0, 5, 1 };
-        ID3D12GraphicsCommandList_SetDescriptorHeaps(context.list, 1, &desc_heap);
         ID3D12GraphicsCommandList1_ResolveSubresourceRegion(list1, feedback, 0, decode_rect.left, decode_rect.top, upload_tex, 0, &encode_rect, DXGI_FORMAT_R8_UINT, D3D12_RESOLVE_MODE_ENCODE_SAMPLER_FEEDBACK);
         transition_resource_state(context.list, resolve_tex, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RESOLVE_DEST);
         transition_resource_state(context.list, feedback, D3D12_RESOURCE_STATE_RESOLVE_DEST, D3D12_RESOURCE_STATE_RESOLVE_SOURCE);
@@ -1316,7 +1304,6 @@ void test_sampler_feedback_decode_encode_mip_used(void)
     /* With MIP_USED region both dst and src subresource matters. */
 
     ID3D12GraphicsCommandList1_Release(list1);
-    ID3D12DescriptorHeap_Release(desc_heap);
     ID3D12Resource_Release(feedback);
     ID3D12Resource_Release(upload_tex);
     ID3D12Resource_Release(resolve_tex);
@@ -1488,9 +1475,9 @@ void test_sampler_feedback_mip_used_region_level(void)
     }
 
     hr = ID3D12Device_QueryInterface(context.device, &IID_ID3D12Device8, (void **)&device8);
-    ok(SUCCEEDED(hr), "Failed to query Device8, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to query Device8, hr #%x.\n", hr);
     hr = ID3D12GraphicsCommandList_QueryInterface(context.list, &IID_ID3D12GraphicsCommandList1, (void **)&list1);
-    ok(SUCCEEDED(hr), "Failed to query GraphicsCommandList1, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to query GraphicsCommandList1, hr #%x.\n", hr);
 
     memset(&rs_desc, 0, sizeof(rs_desc));
     memset(desc_range, 0, sizeof(desc_range));
@@ -1546,7 +1533,7 @@ void test_sampler_feedback_mip_used_region_level(void)
     desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     desc.Format = DXGI_FORMAT_SAMPLER_FEEDBACK_MIP_REGION_USED_OPAQUE;
     hr = ID3D12Device8_CreateCommittedResource2(device8, &heap_props, D3D12_HEAP_FLAG_CREATE_NOT_ZEROED, &desc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, NULL, NULL, &IID_ID3D12Resource, (void **)&feedback);
-    ok(SUCCEEDED(hr), "Failed to create resource, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create resource, hr #%x.\n", hr);
 
     ID3D12Device8_CreateSamplerFeedbackUnorderedAccessView(device8, resource, feedback, ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(desc_heap));
     ID3D12Device8_CreateSamplerFeedbackUnorderedAccessView(device8, resource, feedback, ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(desc_heap_cpu));
@@ -1665,9 +1652,9 @@ void test_sampler_feedback_npot_used_region(void)
     }
 
     hr = ID3D12Device_QueryInterface(context.device, &IID_ID3D12Device8, (void **)&device8);
-    ok(SUCCEEDED(hr), "Failed to query Device8, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to query Device8, hr #%x.\n", hr);
     hr = ID3D12GraphicsCommandList_QueryInterface(context.list, &IID_ID3D12GraphicsCommandList1, (void **)&list1);
-    ok(SUCCEEDED(hr), "Failed to query GraphicsCommandList1, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to query GraphicsCommandList1, hr #%x.\n", hr);
 
     memset(&rs_desc, 0, sizeof(rs_desc));
     memset(desc_range, 0, sizeof(desc_range));
@@ -1811,7 +1798,7 @@ void test_sampler_feedback_npot_used_region(void)
         desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
         desc.Format = DXGI_FORMAT_SAMPLER_FEEDBACK_MIP_REGION_USED_OPAQUE;
         hr = ID3D12Device8_CreateCommittedResource2(device8, &heap_props, D3D12_HEAP_FLAG_CREATE_NOT_ZEROED, &desc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, NULL, NULL, &IID_ID3D12Resource, (void **)&feedback);
-        ok(SUCCEEDED(hr), "Failed to create resource, hr #%x.\n", (int)hr);
+        ok(SUCCEEDED(hr), "Failed to create resource, hr #%x.\n", hr);
 
         ID3D12Device8_CreateSamplerFeedbackUnorderedAccessView(device8, resource, feedback, ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(desc_heap));
         ID3D12Device8_CreateSamplerFeedbackUnorderedAccessView(device8, resource, feedback, ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(desc_heap_cpu));
@@ -2305,9 +2292,9 @@ void test_sampler_feedback_grad(void)
     }
 
     hr = ID3D12Device_QueryInterface(context.device, &IID_ID3D12Device8, (void **)&device8);
-    ok(SUCCEEDED(hr), "Failed to query Device8, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to query Device8, hr #%x.\n", hr);
     hr = ID3D12GraphicsCommandList_QueryInterface(context.list, &IID_ID3D12GraphicsCommandList1, (void **)&list1);
-    ok(SUCCEEDED(hr), "Failed to query GraphicsCommandList1, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to query GraphicsCommandList1, hr #%x.\n", hr);
 
     memset(&rs_desc, 0, sizeof(rs_desc));
     memset(desc_range, 0, sizeof(desc_range));
@@ -2363,10 +2350,10 @@ void test_sampler_feedback_grad(void)
     desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     desc.Format = DXGI_FORMAT_SAMPLER_FEEDBACK_MIP_REGION_USED_OPAQUE;
     hr = ID3D12Device8_CreateCommittedResource2(device8, &heap_props, D3D12_HEAP_FLAG_CREATE_NOT_ZEROED, &desc, D3D12_RESOURCE_STATE_RESOLVE_SOURCE, NULL, NULL, &IID_ID3D12Resource, (void **)&feedback_used);
-    ok(SUCCEEDED(hr), "Failed to create resource, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create resource, hr #%x.\n", hr);
     desc.Format = DXGI_FORMAT_SAMPLER_FEEDBACK_MIN_MIP_OPAQUE;
     hr = ID3D12Device8_CreateCommittedResource2(device8, &heap_props, D3D12_HEAP_FLAG_CREATE_NOT_ZEROED, &desc, D3D12_RESOURCE_STATE_RESOLVE_SOURCE, NULL, NULL, &IID_ID3D12Resource, (void **)&feedback_min);
-    ok(SUCCEEDED(hr), "Failed to create resource, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create resource, hr #%x.\n", hr);
 
     ID3D12Device8_CreateSamplerFeedbackUnorderedAccessView(device8, resource, feedback_used, get_cpu_descriptor_handle(&context, desc_heaps[0], 0));
     ID3D12Device8_CreateSamplerFeedbackUnorderedAccessView(device8, resource, feedback_used, get_cpu_descriptor_handle(&context, desc_heap_cpu, 0));
@@ -2865,9 +2852,9 @@ static void test_sampler_feedback_implicit_lod_inner(bool biased)
     }
 
     hr = ID3D12Device_QueryInterface(context.device, &IID_ID3D12Device8, (void **)&device8);
-    ok(SUCCEEDED(hr), "Failed to query Device8, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to query Device8, hr #%x.\n", hr);
     hr = ID3D12GraphicsCommandList_QueryInterface(context.list, &IID_ID3D12GraphicsCommandList1, (void **)&list1);
-    ok(SUCCEEDED(hr), "Failed to query GraphicsCommandList1, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to query GraphicsCommandList1, hr #%x.\n", hr);
 
     memset(&rs_desc, 0, sizeof(rs_desc));
     memset(desc_range, 0, sizeof(desc_range));
@@ -2905,7 +2892,7 @@ static void test_sampler_feedback_implicit_lod_inner(bool biased)
     pso_desc.DepthStencilState.StencilEnable = FALSE;
     pso_desc.DSVFormat = DXGI_FORMAT_UNKNOWN;
     hr = ID3D12Device_CreateGraphicsPipelineState(context.device, &pso_desc, &IID_ID3D12PipelineState, (void **)&context.pipeline_state);
-    ok(SUCCEEDED(hr), "Failed to create pipeline state, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create pipeline state, hr #%x.\n", hr);
 
     desc_heap = create_gpu_descriptor_heap(context.device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 2);
     desc_heap_cpu = create_cpu_descriptor_heap(context.device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1);
@@ -2929,7 +2916,7 @@ static void test_sampler_feedback_implicit_lod_inner(bool biased)
     desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     desc.Format = DXGI_FORMAT_SAMPLER_FEEDBACK_MIN_MIP_OPAQUE;
     hr = ID3D12Device8_CreateCommittedResource2(device8, &heap_props, D3D12_HEAP_FLAG_CREATE_NOT_ZEROED, &desc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, NULL, NULL, &IID_ID3D12Resource, (void **)&feedback);
-    ok(SUCCEEDED(hr), "Failed to create resource, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create resource, hr #%x.\n", hr);
 
     ID3D12Device8_CreateSamplerFeedbackUnorderedAccessView(device8, resource, feedback, ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(desc_heap));
     ID3D12Device8_CreateSamplerFeedbackUnorderedAccessView(device8, resource, feedback, ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(desc_heap_cpu));
@@ -3289,9 +3276,9 @@ void test_sampler_feedback_implicit_lod_aniso(void)
     }
 
     hr = ID3D12Device_QueryInterface(context.device, &IID_ID3D12Device8, (void **)&device8);
-    ok(SUCCEEDED(hr), "Failed to query Device8, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to query Device8, hr #%x.\n", hr);
     hr = ID3D12GraphicsCommandList_QueryInterface(context.list, &IID_ID3D12GraphicsCommandList1, (void **)&list1);
-    ok(SUCCEEDED(hr), "Failed to query GraphicsCommandList1, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to query GraphicsCommandList1, hr #%x.\n", hr);
 
     memset(&rs_desc, 0, sizeof(rs_desc));
     memset(desc_range, 0, sizeof(desc_range));
@@ -3330,7 +3317,7 @@ void test_sampler_feedback_implicit_lod_aniso(void)
     pso_desc.DepthStencilState.StencilEnable = FALSE;
     pso_desc.DSVFormat = DXGI_FORMAT_UNKNOWN;
     hr = ID3D12Device_CreateGraphicsPipelineState(context.device, &pso_desc, &IID_ID3D12PipelineState, (void **)&context.pipeline_state);
-    ok(SUCCEEDED(hr), "Failed to create pipeline state, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create pipeline state, hr #%x.\n", hr);
 
     desc_heap = create_gpu_descriptor_heap(context.device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 2);
     desc_heap_cpu = create_cpu_descriptor_heap(context.device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1);
@@ -3354,7 +3341,7 @@ void test_sampler_feedback_implicit_lod_aniso(void)
     desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     desc.Format = DXGI_FORMAT_SAMPLER_FEEDBACK_MIP_REGION_USED_OPAQUE;
     hr = ID3D12Device8_CreateCommittedResource2(device8, &heap_props, D3D12_HEAP_FLAG_CREATE_NOT_ZEROED, &desc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, NULL, NULL, &IID_ID3D12Resource, (void **)&feedback);
-    ok(SUCCEEDED(hr), "Failed to create resource, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create resource, hr #%x.\n", hr);
 
     ID3D12Device8_CreateSamplerFeedbackUnorderedAccessView(device8, resource, feedback, ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(desc_heap));
     ID3D12Device8_CreateSamplerFeedbackUnorderedAccessView(device8, resource, feedback, ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(desc_heap_cpu));

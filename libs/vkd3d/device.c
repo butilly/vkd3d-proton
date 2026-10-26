@@ -42,25 +42,25 @@ struct vkd3d_optional_extension_info
 {
     const char *extension_name;
     ptrdiff_t vulkan_info_offset;
-    union vkd3d_config_flags enable_config_flags;
-    union vkd3d_config_flags disable_config_flags;
+    uint64_t enable_config_flags;
+    uint64_t disable_config_flags;
     uint32_t minimum_spec_version;
 };
 
 #define VK_EXTENSION(name, member) \
-        {VK_ ## name ## _EXTENSION_NAME, offsetof(struct vkd3d_vulkan_info, member), VKD3D_CONFIG_FLAGS_NONE, VKD3D_CONFIG_FLAGS_NONE}
+        {VK_ ## name ## _EXTENSION_NAME, offsetof(struct vkd3d_vulkan_info, member), 0, 0}
 
 #define VK_EXTENSION_COND(name, member, required_flags) \
-        {VK_ ## name ## _EXTENSION_NAME, offsetof(struct vkd3d_vulkan_info, member), required_flags, VKD3D_CONFIG_FLAGS_NONE}
+        {VK_ ## name ## _EXTENSION_NAME, offsetof(struct vkd3d_vulkan_info, member), required_flags, 0}
 #define VK_EXTENSION_DISABLE_COND(name, member, disable_flags) \
-        {VK_ ## name ## _EXTENSION_NAME, offsetof(struct vkd3d_vulkan_info, member), VKD3D_CONFIG_FLAGS_NONE, disable_flags, 0}
+        {VK_ ## name ## _EXTENSION_NAME, offsetof(struct vkd3d_vulkan_info, member), 0, disable_flags, 0}
 #define VK_EXTENSION_VERSION(name, member, spec_version) \
-        {VK_ ## name ## _EXTENSION_NAME, offsetof(struct vkd3d_vulkan_info, member), VKD3D_CONFIG_FLAGS_NONE, VKD3D_CONFIG_FLAGS_NONE, spec_version}
+        {VK_ ## name ## _EXTENSION_NAME, offsetof(struct vkd3d_vulkan_info, member), 0, 0, spec_version}
 
 static const struct vkd3d_optional_extension_info optional_instance_extensions[] =
 {
     /* EXT extensions */
-    VK_EXTENSION_COND(EXT_DEBUG_UTILS, EXT_debug_utils, VKD3D_CONFIG_FLAG_INIT_STATIC(.DEBUG_UTILS = 1, .FAULT = 1)),
+    VK_EXTENSION_COND(EXT_DEBUG_UTILS, EXT_debug_utils, VKD3D_CONFIG_FLAG_DEBUG_UTILS | VKD3D_CONFIG_FLAG_FAULT),
 };
 
 static const struct vkd3d_optional_extension_info optional_device_extensions[] =
@@ -68,45 +68,29 @@ static const struct vkd3d_optional_extension_info optional_device_extensions[] =
     /* KHR extensions */
     VK_EXTENSION(KHR_PUSH_DESCRIPTOR, KHR_push_descriptor),
     VK_EXTENSION(KHR_PIPELINE_LIBRARY, KHR_pipeline_library),
-    VK_EXTENSION_DISABLE_COND(KHR_RAY_TRACING_PIPELINE, KHR_ray_tracing_pipeline, VKD3D_CONFIG_FLAG_STATIC(NO_DXR)),
-    VK_EXTENSION_DISABLE_COND(KHR_ACCELERATION_STRUCTURE, KHR_acceleration_structure, VKD3D_CONFIG_FLAG_STATIC(NO_DXR)),
-    VK_EXTENSION_DISABLE_COND(KHR_DEFERRED_HOST_OPERATIONS, KHR_deferred_host_operations, VKD3D_CONFIG_FLAG_STATIC(NO_DXR)),
-    VK_EXTENSION_DISABLE_COND(KHR_RAY_QUERY, KHR_ray_query, VKD3D_CONFIG_FLAG_STATIC(NO_DXR)),
-    VK_EXTENSION_DISABLE_COND(KHR_RAY_TRACING_MAINTENANCE_1, KHR_ray_tracing_maintenance1, VKD3D_CONFIG_FLAG_STATIC(NO_DXR)),
+    VK_EXTENSION_DISABLE_COND(KHR_RAY_TRACING_PIPELINE, KHR_ray_tracing_pipeline, VKD3D_CONFIG_FLAG_NO_DXR),
+    VK_EXTENSION_DISABLE_COND(KHR_ACCELERATION_STRUCTURE, KHR_acceleration_structure, VKD3D_CONFIG_FLAG_NO_DXR),
+    VK_EXTENSION_DISABLE_COND(KHR_DEFERRED_HOST_OPERATIONS, KHR_deferred_host_operations, VKD3D_CONFIG_FLAG_NO_DXR),
+    VK_EXTENSION_DISABLE_COND(KHR_RAY_QUERY, KHR_ray_query, VKD3D_CONFIG_FLAG_NO_DXR),
+    VK_EXTENSION_DISABLE_COND(KHR_RAY_TRACING_MAINTENANCE_1, KHR_ray_tracing_maintenance1, VKD3D_CONFIG_FLAG_NO_DXR),
     VK_EXTENSION(KHR_FRAGMENT_SHADING_RATE, KHR_fragment_shading_rate),
     VK_EXTENSION(KHR_FRAGMENT_SHADER_BARYCENTRIC, KHR_fragment_shader_barycentric),
-    VK_EXTENSION(KHR_PRESENT_MODE_FIFO_LATEST_READY, KHR_present_mode_fifo_latest_ready),
     VK_EXTENSION(KHR_PRESENT_ID, KHR_present_id),
     VK_EXTENSION(KHR_PRESENT_WAIT, KHR_present_wait),
     VK_EXTENSION(KHR_MAINTENANCE_5, KHR_maintenance5),
     VK_EXTENSION(KHR_MAINTENANCE_6, KHR_maintenance6),
     VK_EXTENSION(KHR_MAINTENANCE_7, KHR_maintenance7),
     VK_EXTENSION(KHR_MAINTENANCE_8, KHR_maintenance8),
-    VK_EXTENSION(KHR_MAINTENANCE_9, KHR_maintenance9),
-    VK_EXTENSION(KHR_MAINTENANCE_10, KHR_maintenance10),
-    VK_EXTENSION(KHR_MAINTENANCE_11, KHR_maintenance11),
     VK_EXTENSION(KHR_SHADER_MAXIMAL_RECONVERGENCE, KHR_shader_maximal_reconvergence),
     VK_EXTENSION(KHR_SHADER_QUAD_CONTROL, KHR_shader_quad_control),
     VK_EXTENSION(KHR_COMPUTE_SHADER_DERIVATIVES, KHR_compute_shader_derivatives),
     VK_EXTENSION(KHR_CALIBRATED_TIMESTAMPS, KHR_calibrated_timestamps),
     VK_EXTENSION(KHR_COOPERATIVE_MATRIX, KHR_cooperative_matrix),
     VK_EXTENSION(KHR_UNIFIED_IMAGE_LAYOUTS, KHR_unified_image_layouts),
-    VK_EXTENSION(KHR_PRESENT_ID_2, KHR_present_id2),
-    VK_EXTENSION(KHR_PRESENT_WAIT_2, KHR_present_wait2),
-    VK_EXTENSION(EXT_PRESENT_TIMING, EXT_present_timing),
-    VK_EXTENSION(KHR_DEVICE_ADDRESS_COMMANDS, KHR_device_address_commands),
-    VK_EXTENSION_DISABLE_COND(KHR_OPACITY_MICROMAP, KHR_opacity_micromap, VKD3D_CONFIG_FLAG_STATIC(NO_DXR)),
-    VK_EXTENSION(KHR_SHADER_UNTYPED_POINTERS, KHR_shader_untyped_pointers),
 #ifdef _WIN32
     VK_EXTENSION(KHR_EXTERNAL_MEMORY_WIN32, KHR_external_memory_win32),
     VK_EXTENSION(KHR_EXTERNAL_SEMAPHORE_WIN32, KHR_external_semaphore_win32),
 #endif
-    VK_EXTENSION(KHR_INDEX_TYPE_UINT8, KHR_index_type_uint8),
-    VK_EXTENSION(KHR_SHADER_FLOAT_CONTROLS_2, KHR_shader_float_controls2),
-    VK_EXTENSION_COND(KHR_DYNAMIC_RENDERING_LOCAL_READ, KHR_dynamic_rendering_local_read, VKD3D_CONFIG_FLAG_STATIC(REQUIRE_INPUT_ATTACHMENTS)),
-    VK_EXTENSION_COND(KHR_DEVICE_FAULT, KHR_device_fault, VKD3D_CONFIG_FLAG_STATIC(FAULT)),
-    VK_EXTENSION_COND(KHR_SHADER_ABORT, KHR_shader_abort, VKD3D_CONFIG_FLAG_STATIC(FAULT)),
-    VK_EXTENSION_COND(KHR_SHADER_CONSTANT_DATA, KHR_shader_constant_data, VKD3D_CONFIG_FLAG_STATIC(FAULT)),
     /* EXT extensions */
     VK_EXTENSION(EXT_CONDITIONAL_RENDERING, EXT_conditional_rendering),
     VK_EXTENSION(EXT_CONSERVATIVE_RASTERIZATION, EXT_conservative_rasterization),
@@ -127,7 +111,7 @@ static const struct vkd3d_optional_extension_info optional_device_extensions[] =
     VK_EXTENSION(EXT_HDR_METADATA, EXT_hdr_metadata),
     VK_EXTENSION(EXT_SHADER_MODULE_IDENTIFIER, EXT_shader_module_identifier),
     VK_EXTENSION(EXT_DESCRIPTOR_BUFFER, EXT_descriptor_buffer),
-    VK_EXTENSION_DISABLE_COND(EXT_PIPELINE_LIBRARY_GROUP_HANDLES, EXT_pipeline_library_group_handles, VKD3D_CONFIG_FLAG_STATIC(NO_DXR)),
+    VK_EXTENSION_DISABLE_COND(EXT_PIPELINE_LIBRARY_GROUP_HANDLES, EXT_pipeline_library_group_handles, VKD3D_CONFIG_FLAG_NO_DXR),
     VK_EXTENSION(EXT_IMAGE_SLICED_VIEW_OF_3D, EXT_image_sliced_view_of_3d),
     VK_EXTENSION(EXT_GRAPHICS_PIPELINE_LIBRARY, EXT_graphics_pipeline_library),
     VK_EXTENSION(EXT_FRAGMENT_SHADER_INTERLOCK, EXT_fragment_shader_interlock),
@@ -136,48 +120,42 @@ static const struct vkd3d_optional_extension_info optional_device_extensions[] =
     VK_EXTENSION(EXT_DYNAMIC_RENDERING_UNUSED_ATTACHMENTS, EXT_dynamic_rendering_unused_attachments),
     VK_EXTENSION(EXT_LINE_RASTERIZATION, EXT_line_rasterization),
     VK_EXTENSION(EXT_IMAGE_COMPRESSION_CONTROL, EXT_image_compression_control),
+    VK_EXTENSION_COND(EXT_DEVICE_FAULT, EXT_device_fault, VKD3D_CONFIG_FLAG_FAULT),
     VK_EXTENSION(EXT_MEMORY_BUDGET, EXT_memory_budget),
-    VK_EXTENSION_COND(EXT_DEVICE_ADDRESS_BINDING_REPORT, EXT_device_address_binding_report, VKD3D_CONFIG_FLAG_STATIC(FAULT)),
+    VK_EXTENSION_COND(EXT_DEVICE_ADDRESS_BINDING_REPORT, EXT_device_address_binding_report, VKD3D_CONFIG_FLAG_FAULT),
     VK_EXTENSION(EXT_DEPTH_BIAS_CONTROL, EXT_depth_bias_control),
     VK_EXTENSION(EXT_ZERO_INITIALIZE_DEVICE_MEMORY, EXT_zero_initialize_device_memory),
+    VK_EXTENSION_COND(EXT_OPACITY_MICROMAP, EXT_opacity_micromap, VKD3D_CONFIG_FLAG_DXR_1_2),
     VK_EXTENSION(EXT_SHADER_FLOAT8, EXT_shader_float8),
-    VK_EXTENSION_COND(EXT_DESCRIPTOR_HEAP, EXT_descriptor_heap, VKD3D_CONFIG_FLAG_STATIC(DESCRIPTOR_HEAP)),
-    VK_EXTENSION_DISABLE_COND(EXT_RAY_TRACING_INVOCATION_REORDER, EXT_ray_tracing_invocation_reorder, VKD3D_CONFIG_FLAG_STATIC(NO_DXR)),
-    VK_EXTENSION(EXT_SHADER_LONG_VECTOR, EXT_shader_long_vector),
-    VK_EXTENSION(EXT_SHADER_ATOMIC_FLOAT, EXT_shader_atomic_float),
     /* AMD extensions */
     VK_EXTENSION(AMD_BUFFER_MARKER, AMD_buffer_marker),
     VK_EXTENSION(AMD_DEVICE_COHERENT_MEMORY, AMD_device_coherent_memory),
     VK_EXTENSION(AMD_SHADER_CORE_PROPERTIES, AMD_shader_core_properties),
     VK_EXTENSION(AMD_SHADER_CORE_PROPERTIES_2, AMD_shader_core_properties2),
     VK_EXTENSION(AMD_ANTI_LAG, AMD_anti_lag),
-    VK_EXTENSION(AMD_SHADER_EXPLICIT_VERTEX_PARAMETER, AMD_shader_explicit_vertex_parameter),
     /* NV extensions */
     VK_EXTENSION(NV_OPTICAL_FLOW, NV_optical_flow),
     VK_EXTENSION(NV_SHADER_SM_BUILTINS, NV_shader_sm_builtins),
-    VK_EXTENSION_DISABLE_COND(NVX_BINARY_IMPORT, NVX_binary_import, VKD3D_CONFIG_FLAG_STATIC(NO_NVX)),
-    VK_EXTENSION_DISABLE_COND(NVX_IMAGE_VIEW_HANDLE, NVX_image_view_handle, VKD3D_CONFIG_FLAG_STATIC(NO_NVX)),
+    VK_EXTENSION(NVX_BINARY_IMPORT, NVX_binary_import),
+    VK_EXTENSION(NVX_IMAGE_VIEW_HANDLE, NVX_image_view_handle),
+    VK_EXTENSION(NV_FRAGMENT_SHADER_BARYCENTRIC, NV_fragment_shader_barycentric),
     VK_EXTENSION(NV_COMPUTE_SHADER_DERIVATIVES, NV_compute_shader_derivatives),
-    VK_EXTENSION_COND(NV_DEVICE_DIAGNOSTIC_CHECKPOINTS, NV_device_diagnostic_checkpoints, VKD3D_CONFIG_FLAG_INIT_STATIC(.BREADCRUMBS = 1, .BREADCRUMBS_TRACE = 1)),
+    VK_EXTENSION_COND(NV_DEVICE_DIAGNOSTIC_CHECKPOINTS, NV_device_diagnostic_checkpoints, VKD3D_CONFIG_FLAG_BREADCRUMBS | VKD3D_CONFIG_FLAG_BREADCRUMBS_TRACE),
+    VK_EXTENSION(NV_DEVICE_GENERATED_COMMANDS, NV_device_generated_commands),
     VK_EXTENSION(NV_SHADER_SUBGROUP_PARTITIONED, NV_shader_subgroup_partitioned),
     VK_EXTENSION(NV_MEMORY_DECOMPRESSION, NV_memory_decompression),
+    VK_EXTENSION(NV_DEVICE_GENERATED_COMMANDS_COMPUTE, NV_device_generated_commands_compute),
     VK_EXTENSION_VERSION(NV_LOW_LATENCY_2, NV_low_latency2, 2),
     VK_EXTENSION(NV_RAW_ACCESS_CHAINS, NV_raw_access_chains),
     VK_EXTENSION(NV_COOPERATIVE_MATRIX_2, NV_cooperative_matrix2),
-    VK_EXTENSION_DISABLE_COND(NV_RAY_TRACING_INVOCATION_REORDER, NV_ray_tracing_invocation_reorder, VKD3D_CONFIG_FLAG_STATIC(NO_DXR)),
-    VK_EXTENSION(NV_SHADER_ATOMIC_FLOAT16_VECTOR, NV_shader_atomic_float16_vector),
     /* VALVE extensions */
     VK_EXTENSION(VALVE_MUTABLE_DESCRIPTOR_TYPE, VALVE_mutable_descriptor_type),
-    VK_EXTENSION(VALVE_SHADER_MIXED_FLOAT_DOT_PRODUCT, VALVE_shader_mixed_float_dot_product),
-    VK_EXTENSION(VALVE_BUFFER_DEVICE_ADDRESS_ALLOCATION_ALIGNMENT, VALVE_buffer_device_address_allocation_alignment),
     /* MESA extensions */
     VK_EXTENSION(MESA_IMAGE_ALIGNMENT_CONTROL, MESA_image_alignment_control),
 };
 
 static const struct vkd3d_optional_extension_info optional_extensions_user[] =
 {
-    VK_EXTENSION(KHR_SURFACE_MAINTENANCE_1, KHR_surface_maintenance1),
-    VK_EXTENSION(KHR_SWAPCHAIN_MAINTENANCE_1, KHR_swapchain_maintenance1),
     VK_EXTENSION(EXT_SURFACE_MAINTENANCE_1, EXT_surface_maintenance1),
     VK_EXTENSION(EXT_SWAPCHAIN_MAINTENANCE_1, EXT_swapchain_maintenance1),
 };
@@ -244,19 +222,16 @@ static unsigned int vkd3d_check_extensions(const VkExtensionProperties *extensio
 
     for (i = 0; i < optional_extension_count; ++i)
     {
-        union vkd3d_config_flags disable_flags = optional_extensions[i].disable_config_flags;
-        union vkd3d_config_flags enable_flags = optional_extensions[i].enable_config_flags;
-        uint32_t minimum_spec_version = optional_extensions[i].minimum_spec_version;
+        uint64_t disable_flags = optional_extensions[i].disable_config_flags;
         const char *extension_name = optional_extensions[i].extension_name;
+        uint64_t enable_flags = optional_extensions[i].enable_config_flags;
+        uint32_t minimum_spec_version = optional_extensions[i].minimum_spec_version;
         ptrdiff_t offset = optional_extensions[i].vulkan_info_offset;
         bool *supported = (void *)((uintptr_t)vulkan_info + offset);
 
-        if (vkd3d_config_flag_is_nonzero(enable_flags) &&
-            !vkd3d_config_flag_overlaps(vkd3d_config_flags, enable_flags))
+        if (enable_flags && !(vkd3d_config_flags & enable_flags))
             continue;
-
-        if (vkd3d_config_flag_is_nonzero(disable_flags) &&
-            vkd3d_config_flag_overlaps(vkd3d_config_flags, disable_flags))
+        if (disable_flags && (vkd3d_config_flags & disable_flags))
             continue;
 
         if ((*supported = has_extension(extensions, count, extension_name, minimum_spec_version)))
@@ -403,8 +378,8 @@ static bool vkd3d_disable_nvx_extensions(struct d3d12_device *device, const char
 
     static const struct vkd3d_optional_extension_info nvx_extensions[] =
     {
-        VK_EXTENSION_DISABLE_COND(NVX_BINARY_IMPORT, NVX_binary_import, VKD3D_CONFIG_FLAG_STATIC(NO_NVX)),
-        VK_EXTENSION_DISABLE_COND(NVX_IMAGE_VIEW_HANDLE, NVX_image_view_handle, VKD3D_CONFIG_FLAG_STATIC(NO_NVX)),
+        VK_EXTENSION(NVX_BINARY_IMPORT, NVX_binary_import),
+        VK_EXTENSION(NVX_IMAGE_VIEW_HANDLE, NVX_image_view_handle),
     };
 
     for (i = 0; i < ARRAY_SIZE(nvx_extensions); ++i)
@@ -479,8 +454,6 @@ bool vkd3d_debug_control_mute_message_id(const char *vuid);
 bool vkd3d_debug_control_is_test_suite(void);
 bool vkd3d_debug_control_explode_on_vvl_error(void);
 
-static uint32_t vkd3d_vvl_debug_sentinel_error_count;
-
 static VkBool32 VKAPI_PTR vkd3d_debug_messenger_callback(
         VkDebugUtilsMessageSeverityFlagBitsEXT message_severity,
         VkDebugUtilsMessageTypeFlagsEXT message_types,
@@ -492,17 +465,8 @@ static VkBool32 VKAPI_PTR vkd3d_debug_messenger_callback(
     if (message_severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
     {
         if (callback_data->pMessageIdName)
-        {
-            /* Sentinel to check if validation is loaded properly. */
-            if (strcmp(callback_data->pMessageIdName, "VUID-VkDebugUtilsMessengerCallbackDataEXT-pNext-pNext") == 0)
-            {
-                vkd3d_atomic_uint32_increment(&vkd3d_vvl_debug_sentinel_error_count, vkd3d_memory_order_relaxed);
-                return VK_TRUE;
-            }
-
             if (vkd3d_debug_control_mute_message_id(callback_data->pMessageIdName))
                 return VK_FALSE;
-        }
 
         ERR("%s: %s\n", callback_data->pMessageIdName, callback_data->pMessage);
 
@@ -521,8 +485,6 @@ static VkBool32 VKAPI_PTR vkd3d_debug_messenger_callback(
     }
     else if (message_severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
         WARN("%s\n", callback_data->pMessage);
-    else if (message_severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT)
-        INFO("%s\n", callback_data->pMessage);
 
     (void)userdata;
     (void)message_types;
@@ -532,19 +494,15 @@ static VkBool32 VKAPI_PTR vkd3d_debug_messenger_callback(
 static void vkd3d_init_debug_messenger_callback(struct vkd3d_instance *instance)
 {
     const struct vkd3d_vk_instance_procs *vk_procs = &instance->vk_procs;
-    VkDebugUtilsMessengerCallbackDataEXT callback_data;
     VkDebugUtilsMessengerCreateInfoEXT callback_info;
     VkInstance vk_instance = instance->vk_instance;
     VkDebugUtilsMessengerEXT callback;
-    uint32_t old_count, new_count;
-    VkBaseInStructure dummy_pnext;
     VkResult vr;
 
     callback_info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
     callback_info.pNext = NULL;
     callback_info.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT |
-            VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
-            VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT;
+                                    VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT;
     callback_info.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT;
     callback_info.pfnUserCallback = vkd3d_debug_messenger_callback;
     callback_info.pUserData = NULL;
@@ -555,47 +513,675 @@ static void vkd3d_init_debug_messenger_callback(struct vkd3d_instance *instance)
         return;
     }
 
-    memset(&dummy_pnext, 0, sizeof(dummy_pnext));
-    dummy_pnext.sType = VK_STRUCTURE_TYPE_MAX_ENUM;
-
-    memset(&callback_data, 0, sizeof(callback_data));
-    callback_data.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CALLBACK_DATA_EXT;
-    callback_data.flags = 0;
-    callback_data.pMessage = "Self-inserted message to check if we're getting messages. "
-            "This should be skipped if VVL is working as intended.";
-    callback_data.pNext = &dummy_pnext; /* Pass in benign pnext that we expect VVL to catch if it's working. */
-
-    INFO("Attempting to send invalid call to VVL to verify that it's active ...\n");
-
-    old_count = vkd3d_atomic_uint32_load_explicit(&vkd3d_vvl_debug_sentinel_error_count, vkd3d_memory_order_relaxed);
-    VK_CALL(vkSubmitDebugUtilsMessageEXT(vk_instance, VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT,
-            VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT, &callback_data));
-    new_count = vkd3d_atomic_uint32_load_explicit(&vkd3d_vvl_debug_sentinel_error_count, vkd3d_memory_order_relaxed);
-
-    if (old_count != new_count)
-    {
-        INFO("Validation layers seem to be loaded correctly.\n");
-    }
-    else
-    {
-        ERR("Validation layers do not seem to be loaded correctly.\n"
-            "When vkd3d-proton is run through Wine/Proton, help from environment variables is required.\n"
-            "Use VKD3D_CONFIG=vk_debug VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation instead!\n"
-            "If this still does not work, VK_LOADER_DEBUG=layer can be used to debug why it's not loaded.\n");
-    }
-
     instance->vk_debug_callback = callback;
+}
+
+/* Could be a flag style enum if needed. */
+enum vkd3d_application_feature_override
+{
+    VKD3D_APPLICATION_FEATURE_OVERRIDE_NONE = 0,
+    VKD3D_APPLICATION_FEATURE_NO_DEFAULT_DXR_ON_DECK,
+    VKD3D_APPLICATION_FEATURE_LIMIT_DXR_1_0,
+    VKD3D_APPLICATION_FEATURE_DISABLE_NV_REFLEX,
+    VKD3D_APPLICATION_FEATURE_MESH_SHADER_WITHOUT_BARYCENTRICS,
+    VKD3D_APPLICATION_FEATURE_DISABLE_ANTI_LAG,
+};
+
+static enum vkd3d_application_feature_override vkd3d_application_feature_override;
+uint64_t vkd3d_config_flags;
+struct vkd3d_shader_quirk_info vkd3d_shader_quirk_info;
+
+struct vkd3d_instance_application_meta
+{
+    enum vkd3d_string_compare_mode mode;
+    const char *name;
+    uint64_t global_flags_add;
+    uint64_t global_flags_remove;
+    enum vkd3d_application_feature_override override;
+};
+static const struct vkd3d_instance_application_meta application_override[] = {
+    /* MSVC fails to compile empty array. */
+    { VKD3D_STRING_COMPARE_EXACT, "GravityMark.exe", VKD3D_CONFIG_FLAG_FORCE_MINIMUM_SUBGROUP_SIZE, 0 },
+    /* Halo Infinite (1240440).
+     * Game relies on NON_ZEROED committed UAVs to be cleared to zero on allocation.
+     * This works okay with zerovram on first game boot, but not later, since this memory is guaranteed to be recycled.
+     * Game also relies on indirectly modifying CBV root descriptors, which means we are forced to rely on RAW_VA_CBV.
+     * It also relies on multi-dispatch indirect with state updates which is ... ye.
+     * Need another config flag to workaround that as well.
+     * Poor loading times and performance with ReBar on some devices.
+     */
+    { VKD3D_STRING_COMPARE_EXACT, "HaloInfinite.exe",
+            VKD3D_CONFIG_FLAG_FORCE_RAW_VA_CBV |
+            VKD3D_CONFIG_FLAG_USE_HOST_IMPORT_FALLBACK | VKD3D_CONFIG_FLAG_PREALLOCATE_SRV_MIP_CLAMPS |
+            VKD3D_CONFIG_FLAG_REQUIRES_COMPUTE_INDIRECT_TEMPLATES | VKD3D_CONFIG_FLAG_NO_UPLOAD_HVV |
+            VKD3D_CONFIG_FLAG_DISABLE_DGCC, 0 },
+    /* (1182900) Workaround amdgpu kernel bug with host memory import and concurrent submissions. */
+    { VKD3D_STRING_COMPARE_EXACT, "APlagueTaleRequiem_x64.exe",
+            VKD3D_CONFIG_FLAG_USE_HOST_IMPORT_FALLBACK | VKD3D_CONFIG_FLAG_DISABLE_UAV_COMPRESSION, 0 },
+    /* Shadow of the Tomb Raider (750920).
+     * Invariant workarounds actually cause more issues than they resolve on NV.
+     * RADV already has workarounds by default.
+     * FIXME: The proper workaround will be a workaround which force-emits mul + add + precise. The vertex shaders
+     * are broken enough that normal invariance is not enough. */
+    { VKD3D_STRING_COMPARE_EXACT, "SOTTR.exe", VKD3D_CONFIG_FLAG_FORCE_NO_INVARIANT_POSITION, 0 },
+    /* Elden Ring (1245620).
+     * Game is really churny on committed memory allocations, and does not use NOT_ZEROED. Clearing works causes bubbles.
+     * It seems to work just fine however to skip the clears. */
+    { VKD3D_STRING_COMPARE_EXACT, "eldenring.exe",
+            VKD3D_CONFIG_FLAG_MEMORY_ALLOCATOR_SKIP_CLEAR | VKD3D_CONFIG_FLAG_PIPELINE_LIBRARY_IGNORE_MISMATCH_DRIVER |
+            VKD3D_CONFIG_FLAG_RECYCLE_COMMAND_POOLS, 0 },
+    /* Serious Sam 4 (257420).
+     * Invariant workarounds cause graphical glitches when rendering foliage on NV. */
+    { VKD3D_STRING_COMPARE_EXACT, "Sam4.exe", VKD3D_CONFIG_FLAG_FORCE_NO_INVARIANT_POSITION | VKD3D_CONFIG_FLAG_SMALL_VRAM_REBAR, 0 },
+    /* Cyberpunk 2077 (1091500). For whatever reason, anti-lag is always used if it is supported (impossible to disable),
+     * leading to bad performance in some cases. Currently only affects Proton-GE which ships amdxc64.dll shim by default. */
+    { VKD3D_STRING_COMPARE_EXACT, "Cyberpunk2077.exe", VKD3D_CONFIG_FLAG_ALLOW_SBT_COLLECTION, 0, VKD3D_APPLICATION_FEATURE_DISABLE_ANTI_LAG },
+    /* Control (870780). Control fails to detect DXR if 1.1 is exposed. */
+    { VKD3D_STRING_COMPARE_EXACT, "Control_DX12.exe", 0, 0, VKD3D_APPLICATION_FEATURE_LIMIT_DXR_1_0 },
+    /* Hellblade: Senua's Sacrifice (414340). Enables RT by default if supported which is ... jarring and particularly jarring on Deck. */
+    { VKD3D_STRING_COMPARE_EXACT, "HellbladeGame-Win64-Shipping.exe", 0, 0, VKD3D_APPLICATION_FEATURE_NO_DEFAULT_DXR_ON_DECK },
+    /* Lost Judgment (2058190) */
+    { VKD3D_STRING_COMPARE_EXACT, "LostJudgment.exe", VKD3D_CONFIG_FLAG_FORCE_INITIAL_TRANSITION, 0 },
+    /* Marvel's Spider-Man Remastered (1817070). DCC stores causes glitches when RT is enabled with RADV. */
+    { VKD3D_STRING_COMPARE_EXACT, "Spider-Man.exe", VKD3D_CONFIG_FLAG_FORCE_INITIAL_TRANSITION | VKD3D_CONFIG_FLAG_DISABLE_UAV_COMPRESSION, 0 },
+    /* Marvel’s Spider-Man: Miles Morales (1817190) */
+    { VKD3D_STRING_COMPARE_EXACT, "MilesMorales.exe", VKD3D_CONFIG_FLAG_FORCE_INITIAL_TRANSITION, 0 },
+    /* Deus Ex: Mankind United (337000) */
+    { VKD3D_STRING_COMPARE_EXACT, "DXMD.exe", VKD3D_CONFIG_FLAG_FORCE_INITIAL_TRANSITION, 0 },
+    /* Dead Space (2023) (1693980) */
+    { VKD3D_STRING_COMPARE_EXACT, "Dead Space.exe", VKD3D_CONFIG_FLAG_FORCE_DEDICATED_IMAGE_ALLOCATION, 0 },
+    /* Witcher 3 (2023) (292030) */
+    { VKD3D_STRING_COMPARE_EXACT, "witcher3.exe", VKD3D_CONFIG_FLAG_DISABLE_SIMULTANEOUS_UAV_COMPRESSION, 0 },
+    /* Age of Wonders 4 (1669000). Extremely stuttery performance with ReBAR. */
+    { VKD3D_STRING_COMPARE_EXACT, "AOW4.exe", VKD3D_CONFIG_FLAG_NO_UPLOAD_HVV, 0 },
+    /* Red Dead Redemption (2668510). Inconsistent performance with ReBAR at cutscenes of the game. */
+    { VKD3D_STRING_COMPARE_EXACT, "RDR.exe", VKD3D_CONFIG_FLAG_NO_UPLOAD_HVV, 0 },
+    /* Horizon Forbidden West (2420110). Work around RADV 23.3.1 that ships on stableOS at time of making WAR. */
+    { VKD3D_STRING_COMPARE_EXACT, "HorizonForbiddenWest.exe", VKD3D_CONFIG_FLAG_DRIVER_VERSION_SENSITIVE_SHADERS, 0 },
+    /* Starfield (1716740) */
+    { VKD3D_STRING_COMPARE_EXACT, "Starfield.exe",
+            VKD3D_CONFIG_FLAG_REQUIRES_COMPUTE_INDIRECT_TEMPLATES | VKD3D_CONFIG_FLAG_REJECT_PADDED_SMALL_RESOURCE_ALIGNMENT, 0 },
+    /* Persona 3 Reload (2161700). Enables RT by default on Deck and does not run acceptably for a verified title. */
+    { VKD3D_STRING_COMPARE_EXACT, "P3R.exe", 0, 0, VKD3D_APPLICATION_FEATURE_NO_DEFAULT_DXR_ON_DECK },
+    /* Basically never bothers doing initial transitions.
+     * GPU hang observed on RDNA1 cards at least during intro cutscene.
+     * Game does not use UAV barrier between ClearUAV and GDeflate shader.
+     * NVIDIA does not hit that particular hazard since it uses metacommand, but ClearUAV barrier
+     * still works around sync issues. */
+    { VKD3D_STRING_COMPARE_STARTS_WITH, "ffxvi", VKD3D_CONFIG_FLAG_FORCE_INITIAL_TRANSITION, 0 },
+    /* World of Warcraft retail. Broken MSAA code where it renders to multi-sampled target with single sampled PSO. */
+    { VKD3D_STRING_COMPARE_EXACT, "Wow.exe", VKD3D_CONFIG_FLAG_FORCE_DYNAMIC_MSAA, 0 },
+    /* The Last of Us Part I (1888930). Submits hundreds of command buffers per frame.
+     * Some of the lighting shaders are extremely sensitive to tiling layouts, and using thin tiling for 3D UAVs has profound
+     * performance effects. */
+    { VKD3D_STRING_COMPARE_STARTS_WITH, "tlou-i",
+            VKD3D_CONFIG_FLAG_NO_STAGGERED_SUBMIT | VKD3D_CONFIG_FLAG_PREFER_THIN_UAV_TILING, 0 },
+    /* Skull and Bones (2853730). Seems to require unsupported dcomp when reflex is enabled for some reason *shrug */
+    { VKD3D_STRING_COMPARE_EXACT, "skullandbones.exe", 0, 0, VKD3D_APPLICATION_FEATURE_DISABLE_NV_REFLEX },
+    /* Star Wars Outlaws (2842040). Attempt to workaround a possible NV driver bug. */
+    { VKD3D_STRING_COMPARE_EXACT, "Outlaws.exe", VKD3D_CONFIG_FLAG_ONE_TIME_SUBMIT, 0 },
+    { VKD3D_STRING_COMPARE_EXACT, "Outlaws_Plus.exe", VKD3D_CONFIG_FLAG_ONE_TIME_SUBMIT, 0 },
+    /* FFVII Rebirth (2909400).
+     * Game can destroy PSOs while they are in-flight.
+     * Also, add no-staggered since this is a UE title without the common workaround,
+     * although that only seems to matter when FSR/DLSS injectors are used. */
+    { VKD3D_STRING_COMPARE_EXACT, "ff7rebirth_.exe",
+            VKD3D_CONFIG_FLAG_RETAIN_PSOS | VKD3D_CONFIG_FLAG_NO_STAGGERED_SUBMIT, 0,
+            VKD3D_APPLICATION_FEATURE_MESH_SHADER_WITHOUT_BARYCENTRICS },
+    /* There aren't many games that use mesh shaders outside of UE5 Nanite fallbacks.
+     * UE5 is broken w.r.t. feature checks, so we have to do opt-in instead :( */
+    { VKD3D_STRING_COMPARE_EXACT, "AlanWake2.exe", 0, 0, VKD3D_APPLICATION_FEATURE_MESH_SHADER_WITHOUT_BARYCENTRICS },
+    /* Monster Hunter Wilds (2246340).
+     * There is an impossible amdgpu bug with PRT sparse.
+     * No upload HVV as a performance opt since it's very CPU intensive, and there's no obvious GPU uplift from this. */
+    { VKD3D_STRING_COMPARE_EXACT, "MonsterHunterWilds.exe",
+        VKD3D_CONFIG_FLAG_SKIP_NULL_SPARSE_TILES | VKD3D_CONFIG_FLAG_NO_UPLOAD_HVV, 0 },
+    /* Wreckfest 2 (1203190). Aliases block-compressed textures with color images on the
+     * same heap and expects image data to be interpreted consistently. */
+    { VKD3D_STRING_COMPARE_EXACT, "Wreckfest2.exe", VKD3D_CONFIG_FLAG_PLACED_TEXTURE_ALIASING, 0 },
+    /* Eve online. Uses DGC with CBV updates. Kinda questionable exename ... */
+    { VKD3D_STRING_COMPARE_EXACT, "exefile.exe", VKD3D_CONFIG_FLAG_FORCE_RAW_VA_CBV, 0 },
+    /* Unreal Engine catch-all. ReBAR is a massive uplift on RX 7600 for example in Wukong.
+     * AMD windows drivers also seem to have some kind of general app-opt for UE titles.
+     * Use no-staggered-submit by default on UE. We've only observed issues in Wukong here, but
+     * unless we see proof that UE titles want staggered,
+     * we'll disable for now to be defensive and de-risk any large scale regressions. */
+    { VKD3D_STRING_COMPARE_ENDS_WITH, "-Win64-Shipping.exe",
+            VKD3D_CONFIG_FLAG_SMALL_VRAM_REBAR | VKD3D_CONFIG_FLAG_NO_STAGGERED_SUBMIT, 0 },
+    /* Borderlands 4. Also UE, but uses different name. */
+    { VKD3D_STRING_COMPARE_EXACT, "Borderlands4.exe",
+            VKD3D_CONFIG_FLAG_SMALL_VRAM_REBAR | VKD3D_CONFIG_FLAG_NO_STAGGERED_SUBMIT, 0 },
+    /* Rise of the Tomb Raider. Game renders and samples a texture at the same time */
+    { VKD3D_STRING_COMPARE_EXACT, "ROTTR.exe", VKD3D_CONFIG_FLAG_DISABLE_COLOR_COMPRESSION, 0 },
+    /* Death Stranding (Director's Cut and original). Massive CPU overhead due to reading from HVV in certain scenarios. */
+    /* EGS alias as well. */
+    { VKD3D_STRING_COMPARE_EXACT, "ds.exe", VKD3D_CONFIG_FLAG_NO_UPLOAD_HVV, 0 },
+    { VKD3D_STRING_COMPARE_EXACT, "DeathStranding.exe", VKD3D_CONFIG_FLAG_NO_UPLOAD_HVV, 0 },
+    /* AC: Valhalla (2208920). Very ugly use-after-free in some cases. The main culprit seems a sparse resource. */
+    { VKD3D_STRING_COMPARE_EXACT, "ACValhalla.exe", VKD3D_CONFIG_FLAG_DEFER_RESOURCE_DESTRUCTION, 0 },
+    { VKD3D_STRING_COMPARE_NEVER, NULL, 0, 0 }
+};
+
+struct vkd3d_shader_quirk_meta
+{
+    enum vkd3d_string_compare_mode mode;
+    const char *name;
+    const struct vkd3d_shader_quirk_info *info;
+};
+
+static const struct vkd3d_shader_quirk_hash ue4_hashes[] = {
+    { 0x08a323ee81c1e393ull, VKD3D_SHADER_QUIRK_FORCE_EXPLICIT_LOD_IN_CONTROL_FLOW },
+    { 0x75dcbd76ee898815ull, VKD3D_SHADER_QUIRK_FORCE_EXPLICIT_LOD_IN_CONTROL_FLOW },
+    { 0x6c37b5a66059b751ull, VKD3D_SHADER_QUIRK_FORCE_EXPLICIT_LOD_IN_CONTROL_FLOW },
+    { 0xaf6d07d7b56a3effull, VKD3D_SHADER_QUIRK_FORCE_EXPLICIT_LOD_IN_CONTROL_FLOW },
+    { 0xa48ead2a618e12d8ull, VKD3D_SHADER_QUIRK_FORCE_EXPLICIT_LOD_IN_CONTROL_FLOW },
+    { 0xebfd864995d3fc07ull, VKD3D_SHADER_QUIRK_FORCE_EXPLICIT_LOD_IN_CONTROL_FLOW },
+    { 0xcca7b582db60199cull, VKD3D_SHADER_QUIRK_FORCE_EXPLICIT_LOD_IN_CONTROL_FLOW },
+};
+
+static const struct vkd3d_shader_quirk_info ue4_quirks = {
+    ue4_hashes, ARRAY_SIZE(ue4_hashes), 0,
+};
+
+static const struct vkd3d_shader_quirk_info f1_2019_2020_quirks = {
+    NULL, 0, VKD3D_SHADER_QUIRK_FORCE_TGSM_BARRIERS,
+};
+
+static const struct vkd3d_shader_quirk_hash borderlands3_hashes[] = {
+    /* Shader breaks due to floor(a / exp(x)) being refactored to floor(a * exp(-x))
+     * and shader does not expect this.
+     * See https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/19910. */
+    { 0xbf0af7db6a7fb86bull, VKD3D_SHADER_QUIRK_FORCE_NOCONTRACT_MATH },
+};
+
+static const struct vkd3d_shader_quirk_info borderlands3_quirks = {
+    borderlands3_hashes, ARRAY_SIZE(borderlands3_hashes), 0,
+};
+
+/* Terrain is rendered with extreme tessellation factors. Limit it to something more reasonable. */
+static const struct vkd3d_shader_quirk_info team_ninja_quirks = {
+    NULL, 0, VKD3D_SHADER_QUIRK_LIMIT_TESS_FACTORS_8,
+};
+
+/* More over-tessellated terrain, but base geometry is more coarse */
+static const struct vkd3d_shader_quirk_info atelier_yumia_quirks = {
+    NULL, 0, VKD3D_SHADER_QUIRK_LIMIT_TESS_FACTORS_16,
+};
+
+/* The subgroup check in CACAO shader is botched and does not handle Wave64 properly.
+ * Just pretend the subgroup size is non-sensical to use the normal FFX CACAO code path. */
+static const struct vkd3d_shader_quirk_hash re_hashes[] = {
+    /* RE4 */
+    { 0xa100b53736f9c1bfull, VKD3D_SHADER_QUIRK_FORCE_SUBGROUP_SIZE_1 },
+    /* RE2 and RE7 */
+    { 0x1c4c8782b75c498bull, VKD3D_SHADER_QUIRK_FORCE_SUBGROUP_SIZE_1 },
+    /* Temporary driver workaround for RADV. See https://gitlab.freedesktop.org/mesa/mesa/-/issues/9852. */
+    /* This shader trips on Mesa 23.0.3. */
+    { 0xdb1593ced60da3f1ull, VKD3D_SHADER_QUIRK_REWRITE_GRAD_TO_BIAS },
+    /* This shader hangs on Mesa main. */
+    { 0x5784e9e2f7a76819ull, VKD3D_SHADER_QUIRK_REWRITE_GRAD_TO_BIAS },
+    /* This shader hangs on RDNA1 */
+    { 0x7b3cec4ba6d32cacull, VKD3D_SHADER_QUIRK_REWRITE_GRAD_TO_BIAS },
+};
+
+static const struct vkd3d_shader_quirk_info re_quirks = {
+    re_hashes, ARRAY_SIZE(re_hashes), 0,
+};
+
+/* There are lots of shaders which cause random flicker due to bad 16-bit behavior.
+ * These shaders really need 32-bit it seems to render properly, so just do that. */
+static const struct vkd3d_shader_quirk_info re4_quirks = {
+    re_hashes, ARRAY_SIZE(re_hashes), VKD3D_SHADER_QUIRK_FORCE_MIN16_AS_32BIT,
+};
+
+static const struct vkd3d_shader_quirk_hash mhr_hashes[] = {
+    /* Shader is extremely sensitive to nocontract behavior.
+     * There some places where catastrophic cancellation occurs
+     * and one ULP difference is the difference between blown out bloom and not. */
+    { 0xd892f8024f52d3ca, VKD3D_SHADER_QUIRK_FORCE_NOCONTRACT_MATH },
+};
+
+static const struct vkd3d_shader_quirk_info mhr_quirks = {
+    mhr_hashes, ARRAY_SIZE(mhr_hashes), 0,
+};
+
+static const struct vkd3d_shader_quirk_hash witcher3_hashes[] = {
+    /* In DXR path, the game will write VBO data in a CS which is then followed
+     * by a VS -> tess -> geom pass that writes out data to a UAV in the GS.
+     * There appears to be missing synchronization here by game (no UAV -> VBO barrier) and
+     * forcing barriers fixes a ton of glitches on both NV and RADV. */
+    { 0x2c16686e5d9b04a8, VKD3D_SHADER_QUIRK_FORCE_COMPUTE_BARRIER },
+};
+
+static const struct vkd3d_shader_quirk_info witcher3_quirks = {
+    witcher3_hashes, ARRAY_SIZE(witcher3_hashes), 0,
+};
+
+static const struct vkd3d_shader_quirk_info heap_robustness_quirks = {
+    NULL, 0, VKD3D_SHADER_QUIRK_DESCRIPTOR_HEAP_ROBUSTNESS,
+};
+
+static const struct vkd3d_shader_quirk_hash ac_mirage_hashes[] = {
+    /* There is a write-after-read hazard.
+     * Index buffer is being read from, and there is a compute shader afterwards
+     * that writes to that index buffer without a barrier. */
+    { 0x0cb130fa374982e3, VKD3D_SHADER_QUIRK_FORCE_PRE_RASTERIZATION_BARRIER },
+};
+
+static const struct vkd3d_shader_quirk_info ac_mirage_quirks = {
+    ac_mirage_hashes, ARRAY_SIZE(ac_mirage_hashes), 0,
+};
+
+static const struct vkd3d_shader_quirk_hash ffxvi_hashes[] = {
+    /* On RADV 24.1.6 RDNA3, we seem to be plagued with a compiler bug/hardware quirk.
+     * It works on main, but only by chance.
+     * https://gitlab.freedesktop.org/mesa/mesa/-/issues/11738. */
+    { 0xa98606e01cdd5924, VKD3D_SHADER_QUIRK_DISABLE_OPTIMIZATIONS },
+};
+
+static const struct vkd3d_shader_quirk_info ffxvi_quirks = {
+    ffxvi_hashes, ARRAY_SIZE(ffxvi_hashes),
+};
+
+/* Some shaders use precise, some don't, leading to invariance issues. */
+static const struct vkd3d_shader_quirk_info hunt_quirks = {
+    NULL, 0, VKD3D_SHADER_QUIRK_FORCE_NOCONTRACT_MATH_VS,
+};
+
+/* Hair strand shaders write to a UAV, then read it back in the same workgroup, but misses a device memory barrier in places,
+ * leading to GPU hang. */
+static const struct vkd3d_shader_quirk_info veilguard_quirks = {
+    NULL, 0, VKD3D_SHADER_QUIRK_FORCE_DEVICE_MEMORY_BARRIER_THREAD_GROUP_COHERENCY,
+};
+
+static const struct vkd3d_shader_quirk_hash tfd_hashes[] = {
+    /* ReflectionCaptureFilteredImportanceSamplingCS is somewhat broken as it assumes
+     * that the lowest res mips are valid, but they are never written to by ReflectionCaptureGenerateMipmapCS.
+     * It stops at 8x8 (the workgroup size). The workaround just clamps the explicit LOD to whatever mips is 8x8. */
+    { 0x74b8eaf23e3d166c, VKD3D_SHADER_QUIRK_ASSUME_BROKEN_SUB_8x8_CUBE_MIPS },
+};
+
+static const struct vkd3d_shader_quirk_info tfd_quirks = {
+    tfd_hashes, ARRAY_SIZE(tfd_hashes), 0,
+};
+
+/* Game loads a CBV array into alloca(), but then proceeds to access said alloca() array OOB. */
+static const struct vkd3d_shader_quirk_info gzw_quirks = {
+    NULL, 0, VKD3D_SHADER_QUIRK_FORCE_ROBUST_PHYSICAL_CBV_LOAD_FORWARDING,
+};
+
+static const struct vkd3d_shader_quirk_info starfield_quirks = {
+    NULL, 0, VKD3D_SHADER_QUIRK_AGGRESSIVE_NONUNIFORM,
+};
+
+static const struct vkd3d_shader_quirk_hash rebirth_hashes[] = {
+    /* GenerateMassiveEnvironmentBatchedNodesCS(). Missing barrier after a CS based clear.
+     * Exactly same bug as before, but then it was ComputeBatchedMeshletOffsetsCS(). */
+    { 0xe6cb9c843fa1bd18, VKD3D_SHADER_QUIRK_FORCE_PRE_COMPUTE_BARRIER },
+    /* 1.003 update. Hash changed, but didn't fix the bug. */
+    { 0xf047c7f2f4f32111, VKD3D_SHADER_QUIRK_FORCE_PRE_COMPUTE_BARRIER },
+};
+
+static const struct vkd3d_shader_quirk_info rebirth_quirks = {
+    rebirth_hashes, ARRAY_SIZE(rebirth_hashes), 0,
+};
+
+/* Game misses a transition from color to resource before FSR3.
+ * The shader hash is FSR3-PREPARE-INPUTS. */
+static const struct vkd3d_shader_quirk_hash satisfactory_hashes[] = {
+    { 0x1bc3c90cfe16ad1e, VKD3D_SHADER_QUIRK_FORCE_GRAPHICS_BARRIER },
+};
+
+static const struct vkd3d_shader_quirk_info satisfactory_quirks = {
+    satisfactory_hashes, ARRAY_SIZE(satisfactory_hashes), 0,
+};
+
+static const struct vkd3d_shader_quirk_hash deadspace_hashes[] = {
+    /* Shader calculates derivatives in non-uniform control flow,
+     * leading to NaN pixels on Nvidia GPUs. */
+    { 0x8b981fdafe14b649, VKD3D_SHADER_QUIRK_HOIST_DERIVATIVES },
+};
+
+static const struct vkd3d_shader_quirk_info deadspace_quirks = {
+    deadspace_hashes, ARRAY_SIZE(deadspace_hashes), 0,
+};
+
+static const struct vkd3d_shader_quirk_hash death_stranding_hashes[] = {
+    /* Game forgets to transition RENDER_TARGET to PIXEL_SHADER_RESOURCE. */
+    { 0x014fa51aaa3f3139, VKD3D_SHADER_QUIRK_FORCE_GRAPHICS_BARRIER_BEFORE_RENDER_PASS },
+};
+
+static const struct vkd3d_shader_quirk_info death_stranding_quirks = {
+    death_stranding_hashes, ARRAY_SIZE(death_stranding_hashes), 0,
+};
+
+static const struct vkd3d_shader_quirk_hash wuthering_waves_hashes[] = {
+    /* LightGridInjectionCS. Forgets to UAV barrier after ClearCS. */
+    { 0x513ffbb9ffc55d06, VKD3D_SHADER_QUIRK_FORCE_PRE_COMPUTE_BARRIER },
+};
+
+static const struct vkd3d_shader_quirk_info wuthering_waves_quirks = {
+    wuthering_waves_hashes, ARRAY_SIZE(wuthering_waves_hashes), 0,
+};
+
+static const struct vkd3d_shader_quirk_info dune_quirks = {
+    NULL, 0, VKD3D_SHADER_QUIRK_FIXUP_LOOP_HEADER_UNDEF_PHIS,
+};
+
+static const struct vkd3d_shader_quirk_hash bl4_hashes[] = {
+    /* See Mesa issue 13981. Impossible looking HW bug on RDNA2 specifically
+     * caused by NSA image_sample_d. */
+    { 0x3b9937c41027ca73, VKD3D_SHADER_QUIRK_DISABLE_OPTIMIZATIONS },
+    { 0x0bf58981278d2126, VKD3D_SHADER_QUIRK_DISABLE_OPTIMIZATIONS },
+};
+
+static const struct vkd3d_shader_quirk_info bl4_quirks = {
+    bl4_hashes, ARRAY_SIZE(bl4_hashes), 0,
+};
+
+static const struct vkd3d_shader_quirk_hash control_hashes[] = {
+    /* A closest hit shader is doing x / sqrt(dot(x, x)) where X is 0.
+     * It's fetching positions from a buffer from SBT root descriptors, so
+     * this doesn't 100% prove a game bug, but it's overwhelmingly likely. */
+    { 0xdb22fce4505969f2, VKD3D_SHADER_QUIRK_FIXUP_RSQRT_INF_NAN },
+};
+
+static const struct vkd3d_shader_quirk_info control_quirks = {
+    control_hashes, ARRAY_SIZE(control_hashes), 0,
+};
+
+static const struct vkd3d_shader_quirk_meta application_shader_quirks[] = {
+    /* F1 2020 (1080110) */
+    { VKD3D_STRING_COMPARE_EXACT, "F1_2020_dx12.exe", &f1_2019_2020_quirks },
+    /* F1 2019 (928600) */
+    { VKD3D_STRING_COMPARE_EXACT, "F1_2019_dx12.exe", &f1_2019_2020_quirks },
+    /* Borderlands 3 (397540) */
+    { VKD3D_STRING_COMPARE_EXACT, "Borderlands3.exe", &borderlands3_quirks },
+    /* Wo Long: Fallen Dynasty (2285240) */
+    { VKD3D_STRING_COMPARE_EXACT, "WoLong.exe", &team_ninja_quirks },
+    /* Rise of the Ronin (1340990) */
+    { VKD3D_STRING_COMPARE_EXACT, "Ronin.exe", &team_ninja_quirks },
+    /* Resident Evil 2 (883710) */
+    { VKD3D_STRING_COMPARE_EXACT, "re2.exe", &re_quirks },
+    /* Resident Evil 7 (418370) */
+    { VKD3D_STRING_COMPARE_EXACT, "re7.exe", &re_quirks },
+    /* Resident Evil 4 (2050650) */
+    { VKD3D_STRING_COMPARE_EXACT, "re4.exe", &re4_quirks },
+    /* Monster Hunter Rise (1446780) */
+    { VKD3D_STRING_COMPARE_EXACT, "MonsterHunterRise.exe", &mhr_quirks },
+    /* Witcher 3 (2023) (292030) */
+    { VKD3D_STRING_COMPARE_EXACT, "witcher3.exe", &witcher3_quirks },
+    /* Pioneers of Pagonia (2155180) */
+    { VKD3D_STRING_COMPARE_EXACT, "Pioneers of Pagonia.exe", &heap_robustness_quirks },
+    /* AC: Mirage */
+    { VKD3D_STRING_COMPARE_EXACT, "ACMirage.exe", &ac_mirage_quirks },
+    { VKD3D_STRING_COMPARE_EXACT, "ACMirage_plus.exe", &ac_mirage_quirks },
+    /* FF XVI. */
+    { VKD3D_STRING_COMPARE_STARTS_WITH, "ffxvi", &ffxvi_quirks },
+    /* Hunt: Showdown 1896 (594650) */
+    { VKD3D_STRING_COMPARE_EXACT, "HuntGame.exe", &hunt_quirks },
+    /* Dragon Age: The Veilguard (1845910) */
+    { VKD3D_STRING_COMPARE_EXACT, "Dragon Age The Veilguard.exe", &veilguard_quirks },
+    /* The First Descendant (2074920) */
+    { VKD3D_STRING_COMPARE_EXACT, "M1-Win64-Shipping.exe", &tfd_quirks },
+    /* Gray Zone Warfare (2479810) */
+    { VKD3D_STRING_COMPARE_EXACT, "GZWClientSteam-Win64-Shipping.exe", &gzw_quirks },
+    /* Starfield (1716740) */
+    { VKD3D_STRING_COMPARE_EXACT, "Starfield.exe", &starfield_quirks },
+    /* FFVII Rebirth (2909400). */
+    { VKD3D_STRING_COMPARE_EXACT, "ff7rebirth_.exe", &rebirth_quirks },
+    /* Atelier Yumia (3123410) */
+    { VKD3D_STRING_COMPARE_EXACT, "Atelier_Yumia.exe", &atelier_yumia_quirks },
+    /* Monster Hunter Wilds (2246340).
+     * As a follow-up for SKIP_NULL_SPARSE, it seems possible that application
+     * can end up loading bogus bindless indices from pages which should have been NULL.
+     * Chasing through UMR wave dumps and captures,
+     * we observe that a faulting index depends on a load from a sparse buffer.
+     * This hasn't been confirmed to be a game bug or indirect vkd3d-proton bug,
+     * but it's plausible enough to be caused by SKIP_NULL_SPARSE that we can justify this hack
+     * until a proper fix is in place. */
+    { VKD3D_STRING_COMPARE_EXACT, "MonsterHunterWilds.exe", &heap_robustness_quirks },
+    /* Satisfactory (526870). */
+    { VKD3D_STRING_COMPARE_EXACT, "FactoryGameSteam-Win64-Shipping.exe", &satisfactory_quirks },
+    { VKD3D_STRING_COMPARE_EXACT, "FactoryGameEGS-Win64-Shipping.exe", &satisfactory_quirks },
+    /* Wuthering Waves */
+    { VKD3D_STRING_COMPARE_EXACT, "Client-Win64-Shipping.exe", &wuthering_waves_quirks },
+    /* Dead Space (2023) */
+    { VKD3D_STRING_COMPARE_ENDS_WITH, "Dead Space.exe", &deadspace_quirks },
+    /* Death Stranding  */
+    { VKD3D_STRING_COMPARE_EXACT, "ds.exe", &death_stranding_quirks },
+    { VKD3D_STRING_COMPARE_EXACT, "DeathStranding.exe", &death_stranding_quirks },
+    { VKD3D_STRING_COMPARE_EXACT, "3DMarkPortRoyal.exe", &heap_robustness_quirks },
+    /* Dune: Awakening (1172710) */
+    { VKD3D_STRING_COMPARE_STARTS_WITH, "DuneSandbox", &dune_quirks },
+    /* Borderlands 4 (1285190) */
+    { VKD3D_STRING_COMPARE_EXACT, "Borderlands4.exe", &bl4_quirks },
+    /* Control (870780). */
+    { VKD3D_STRING_COMPARE_EXACT, "Control_DX12.exe", &control_quirks },
+    /* Unreal Engine 4 */
+    { VKD3D_STRING_COMPARE_ENDS_WITH, "-Shipping.exe", &ue4_quirks },
+    /* MSVC fails to compile empty array. */
+    { VKD3D_STRING_COMPARE_NEVER, NULL, NULL },
+};
+
+static void vkd3d_instance_apply_application_workarounds(void)
+{
+    char app[VKD3D_PATH_MAX];
+    size_t i;
+    if (!vkd3d_get_program_name(app))
+        return;
+
+    INFO("Program name: \"%s\" (hash: %016"PRIx64")\n", app, hash_fnv1_iterate_string(hash_fnv1_init(), app));
+
+    for (i = 0; i < ARRAY_SIZE(application_override); i++)
+    {
+        if (vkd3d_string_compare(application_override[i].mode, app, application_override[i].name))
+        {
+            vkd3d_config_flags |= application_override[i].global_flags_add;
+            vkd3d_config_flags &= ~application_override[i].global_flags_remove;
+            INFO("Detected game %s, adding config 0x%"PRIx64", removing masks 0x%"PRIx64".\n",
+                 app, application_override[i].global_flags_add, application_override[i].global_flags_remove);
+            vkd3d_application_feature_override = application_override[i].override;
+            break;
+        }
+    }
+
+    for (i = 0; i < ARRAY_SIZE(application_shader_quirks); i++)
+    {
+        if (vkd3d_string_compare(application_shader_quirks[i].mode, app, application_shader_quirks[i].name))
+        {
+            vkd3d_shader_quirk_info = *application_shader_quirks[i].info;
+            INFO("Detected game %s, adding shader quirks for specific shaders.\n", app);
+            break;
+        }
+    }
+}
+
+static void vkd3d_instance_deduce_config_flags_from_environment(void)
+{
+    char env[VKD3D_PATH_MAX];
+
+    if (vkd3d_get_env_var("VKD3D_SHADER_OVERRIDE", env, sizeof(env)) ||
+            vkd3d_get_env_var("VKD3D_SHADER_DUMP_PATH", env, sizeof(env)) ||
+            vkd3d_get_env_var("VKD3D_QA_HASHES", env, sizeof(env)))
+    {
+        INFO("VKD3D_SHADER_OVERRIDE, VKD3D_SHADER_DUMP_PATH or VKD3D_QA_HASHES is used, pipeline_library_ignore_spirv option is enforced.\n");
+        vkd3d_config_flags |= VKD3D_CONFIG_FLAG_PIPELINE_LIBRARY_IGNORE_SPIRV;
+    }
+
+    if (vkd3d_get_env_var("FOSSILIZE", env, sizeof(env)) && strcmp(env, "1") == 0 &&
+            vkd3d_get_env_var("FOSSILIZE_DUMP_PATH", env, sizeof(env)))
+    {
+        INFO("Fossilize is enabled. pipeline_library_ignore_spirv option is enforced.\n");
+        vkd3d_config_flags |= VKD3D_CONFIG_FLAG_PIPELINE_LIBRARY_IGNORE_SPIRV;
+    }
+
+    vkd3d_get_env_var("VKD3D_SHADER_CACHE_PATH", env, sizeof(env));
+    if (strcmp(env, "0") == 0)
+    {
+        INFO("Shader cache is explicitly disabled, relying solely on application caches.\n");
+        vkd3d_config_flags |= VKD3D_CONFIG_FLAG_PIPELINE_LIBRARY_APP_CACHE_ONLY;
+    }
+
+    /* If we're using a global shader cache, it's meaningless to use PSO caches. */
+    if (!(vkd3d_config_flags & VKD3D_CONFIG_FLAG_PIPELINE_LIBRARY_APP_CACHE_ONLY))
+    {
+        INFO("shader_cache is used, global_pipeline_cache is enforced.\n");
+        vkd3d_config_flags |= VKD3D_CONFIG_FLAG_GLOBAL_PIPELINE_CACHE;
+    }
+
+    /* Normally, we would use VK_EXT_tooling_info for this, but we don't observe layers across the winevulkan layer.
+     * The global env-var on the other hand, does ... */
+    if (vkd3d_get_env_var("ENABLE_VULKAN_RENDERDOC_CAPTURE", env, sizeof(env)) &&
+            strcmp(env, "1") == 0)
+    {
+        INFO("RenderDoc capture is enabled. Forcing HOST CACHED memory types and disabling pipeline caching completely.\n");
+        vkd3d_config_flags |= VKD3D_CONFIG_FLAG_FORCE_HOST_CACHED |
+                VKD3D_CONFIG_FLAG_PIPELINE_LIBRARY_APP_CACHE_ONLY |
+                VKD3D_CONFIG_FLAG_GLOBAL_PIPELINE_CACHE |
+                VKD3D_CONFIG_FLAG_PIPELINE_LIBRARY_NO_SERIALIZE_SPIRV |
+                VKD3D_CONFIG_FLAG_PIPELINE_LIBRARY_IGNORE_SPIRV;
+        vkd3d_config_flags |= VKD3D_CONFIG_FLAG_DEBUG_UTILS;
+        vkd3d_config_flags |= VKD3D_CONFIG_FLAG_EXTENDED_DEBUG_UTILS;
+    }
+
+    /* RADV_THREAD_TRACE_xxx are deprecated and will be removed at some point. */
+    if (vkd3d_get_env_var("RADV_THREAD_TRACE", env, sizeof(env)) ||
+            vkd3d_get_env_var("RADV_THREAD_TRACE_TRIGGER", env, sizeof(env)) ||
+            (vkd3d_get_env_var("MESA_VK_TRACE", env, sizeof(env)) &&
+                strcmp(env, "rgp") == 0))
+    {
+        INFO("RADV thread trace is enabled. Forcing debug utils to be enabled for labels.\n");
+        /* Disable caching so we can get full debug information when emitting labels. */
+        vkd3d_config_flags |= VKD3D_CONFIG_FLAG_DEBUG_UTILS |
+                VKD3D_CONFIG_FLAG_GLOBAL_PIPELINE_CACHE |
+                VKD3D_CONFIG_FLAG_PIPELINE_LIBRARY_APP_CACHE_ONLY |
+                VKD3D_CONFIG_FLAG_PIPELINE_LIBRARY_NO_SERIALIZE_SPIRV |
+                VKD3D_CONFIG_FLAG_PIPELINE_LIBRARY_IGNORE_SPIRV;
+    }
+}
+
+static void vkd3d_instance_apply_global_shader_quirks(void)
+{
+    unsigned int level;
+    char env[64];
+
+    struct override
+    {
+        uint64_t config;
+        uint32_t quirk;
+        bool negative;
+    };
+
+    static const struct override overrides[] =
+    {
+        { VKD3D_CONFIG_FLAG_FORCE_NO_INVARIANT_POSITION, VKD3D_SHADER_QUIRK_INVARIANT_POSITION, true },
+    };
+    uint64_t eq_test;
+    unsigned int i;
+
+    for (i = 0; i < ARRAY_SIZE(overrides); i++)
+    {
+        eq_test = overrides[i].negative ? 0 : overrides[i].config;
+        if ((vkd3d_config_flags & overrides[i].config) == eq_test)
+            vkd3d_shader_quirk_info.global_quirks |= overrides[i].quirk;
+    }
+
+    if (vkd3d_get_env_var("VKD3D_LIMIT_TESS_FACTORS", env, sizeof(env)))
+    {
+        static const struct
+        {
+            unsigned int level;
+            uint32_t quirk;
+        } mapping[] = {
+            { 4, VKD3D_SHADER_QUIRK_LIMIT_TESS_FACTORS_4 },
+            { 8, VKD3D_SHADER_QUIRK_LIMIT_TESS_FACTORS_8 },
+            { 12, VKD3D_SHADER_QUIRK_LIMIT_TESS_FACTORS_12 },
+            { 16, VKD3D_SHADER_QUIRK_LIMIT_TESS_FACTORS_16 },
+            { 32, VKD3D_SHADER_QUIRK_LIMIT_TESS_FACTORS_32 },
+        };
+
+        /* Override what any app profile did. */
+        vkd3d_shader_quirk_info.global_quirks &= ~(VKD3D_SHADER_QUIRK_LIMIT_TESS_FACTORS_4 |
+                VKD3D_SHADER_QUIRK_LIMIT_TESS_FACTORS_8 |
+                VKD3D_SHADER_QUIRK_LIMIT_TESS_FACTORS_12 |
+                VKD3D_SHADER_QUIRK_LIMIT_TESS_FACTORS_16 |
+                VKD3D_SHADER_QUIRK_LIMIT_TESS_FACTORS_32);
+
+        level = strtoul(env, NULL, 0);
+        INFO("Attempting to limit tessellation factors to %ux.\n", level);
+
+        for (i = 0; i < ARRAY_SIZE(mapping); i++)
+        {
+            if (level <= mapping[i].level)
+            {
+                INFO("Limiting tessellation factors to %ux.\n", mapping[i].level);
+                vkd3d_shader_quirk_info.global_quirks |= mapping[i].quirk;
+                break;
+            }
+        }
+    }
 }
 
 static const struct vkd3d_debug_option vkd3d_config_options[] =
 {
-#define VKD3D_DECL_CONFIG(name, flag) { name, VKD3D_CONFIG_FLAG_STATIC(flag) },
-#define VKD3D_DECL_CONFIG_PLAIN(flag)
-#include "config_flag_decl.h"
-    {"breadcrumbs_sync", VKD3D_CONFIG_FLAG_INIT_STATIC(.BREADCRUMBS = 1, .BREADCRUMBS_SYNC = 1)},
-    {"breadcrumbs_trace", VKD3D_CONFIG_FLAG_INIT_STATIC(.BREADCRUMBS = 1, .BREADCRUMBS_TRACE = 1)},
-#undef VKD3D_DECL_CONFIG
-#undef VKD3D_DECL_CONFIG_PLAIN
+    /* Enable Vulkan debug extensions. */
+    {"vk_debug", VKD3D_CONFIG_FLAG_VULKAN_DEBUG},
+    {"skip_application_workarounds", VKD3D_CONFIG_FLAG_SKIP_APPLICATION_WORKAROUNDS},
+    {"debug_utils", VKD3D_CONFIG_FLAG_DEBUG_UTILS},
+    {"force_static_cbv", VKD3D_CONFIG_FLAG_FORCE_STATIC_CBV},
+    {"dxr", VKD3D_CONFIG_FLAG_DXR},
+    {"dxr12", VKD3D_CONFIG_FLAG_DXR_1_2},
+    {"nodxr", VKD3D_CONFIG_FLAG_NO_DXR},
+    {"single_queue", VKD3D_CONFIG_FLAG_SINGLE_QUEUE},
+    {"descriptor_qa_checks", VKD3D_CONFIG_FLAG_DESCRIPTOR_QA_CHECKS},
+    {"no_upload_hvv", VKD3D_CONFIG_FLAG_NO_UPLOAD_HVV},
+    {"log_memory_budget", VKD3D_CONFIG_FLAG_LOG_MEMORY_BUDGET},
+    {"force_host_cached", VKD3D_CONFIG_FLAG_FORCE_HOST_CACHED},
+    {"no_invariant_position", VKD3D_CONFIG_FLAG_FORCE_NO_INVARIANT_POSITION},
+    {"global_pipeline_cache", VKD3D_CONFIG_FLAG_GLOBAL_PIPELINE_CACHE},
+    {"pipeline_library_no_serialize_spirv", VKD3D_CONFIG_FLAG_PIPELINE_LIBRARY_NO_SERIALIZE_SPIRV},
+    {"pipeline_library_sanitize_spirv", VKD3D_CONFIG_FLAG_PIPELINE_LIBRARY_SANITIZE_SPIRV},
+    {"pipeline_library_log", VKD3D_CONFIG_FLAG_PIPELINE_LIBRARY_LOG},
+    {"pipeline_library_ignore_spirv", VKD3D_CONFIG_FLAG_PIPELINE_LIBRARY_IGNORE_SPIRV},
+    {"mutable_single_set", VKD3D_CONFIG_FLAG_MUTABLE_SINGLE_SET},
+    {"memory_allocator_skip_clear", VKD3D_CONFIG_FLAG_MEMORY_ALLOCATOR_SKIP_CLEAR},
+    {"memory_allocator_skip_image_heap_clear", VKD3D_CONFIG_FLAG_MEMORY_ALLOCATOR_SKIP_IMAGE_HEAP_CLEAR},
+    {"recycle_command_pools", VKD3D_CONFIG_FLAG_RECYCLE_COMMAND_POOLS},
+    {"pipeline_library_ignore_mismatch_driver", VKD3D_CONFIG_FLAG_PIPELINE_LIBRARY_IGNORE_MISMATCH_DRIVER},
+    {"breadcrumbs", VKD3D_CONFIG_FLAG_BREADCRUMBS},
+    {"breadcrumbs_sync", VKD3D_CONFIG_FLAG_BREADCRUMBS | VKD3D_CONFIG_FLAG_BREADCRUMBS_SYNC},
+    {"fault", VKD3D_CONFIG_FLAG_FAULT},
+    {"pipeline_library_app_cache", VKD3D_CONFIG_FLAG_PIPELINE_LIBRARY_APP_CACHE_ONLY},
+    {"shader_cache_sync", VKD3D_CONFIG_FLAG_SHADER_CACHE_SYNC},
+    {"force_raw_va_cbv", VKD3D_CONFIG_FLAG_FORCE_RAW_VA_CBV},
+    {"allow_sbt_collection", VKD3D_CONFIG_FLAG_ALLOW_SBT_COLLECTION},
+    {"host_import_fallback", VKD3D_CONFIG_FLAG_USE_HOST_IMPORT_FALLBACK},
+    {"preallocate_srv_mip_clamps", VKD3D_CONFIG_FLAG_PREALLOCATE_SRV_MIP_CLAMPS},
+    {"force_initial_transition", VKD3D_CONFIG_FLAG_FORCE_INITIAL_TRANSITION},
+    {"breadcrumbs_trace", VKD3D_CONFIG_FLAG_BREADCRUMBS | VKD3D_CONFIG_FLAG_BREADCRUMBS_TRACE},
+    {"requires_compute_indirect_templates", VKD3D_CONFIG_FLAG_REQUIRES_COMPUTE_INDIRECT_TEMPLATES},
+    {"skip_driver_workarounds", VKD3D_CONFIG_FLAG_SKIP_DRIVER_WORKAROUNDS},
+    {"enable_experimental_features", VKD3D_CONFIG_FLAG_ENABLE_EXPERIMENTAL_FEATURES},
+    {"reject_padded_small_resource_alignment", VKD3D_CONFIG_FLAG_REJECT_PADDED_SMALL_RESOURCE_ALIGNMENT},
+    {"disable_simultaneous_uav_compression", VKD3D_CONFIG_FLAG_DISABLE_SIMULTANEOUS_UAV_COMPRESSION},
+    {"disable_uav_compression", VKD3D_CONFIG_FLAG_DISABLE_UAV_COMPRESSION},
+    {"disable_depth_compression", VKD3D_CONFIG_FLAG_DISABLE_DEPTH_COMPRESSION},
+    {"disable_color_compression", VKD3D_CONFIG_FLAG_DISABLE_COLOR_COMPRESSION},
+    {"app_debug_marker_only", VKD3D_CONFIG_FLAG_APP_DEBUG_MARKER_ONLY},
+    {"small_vram_rebar", VKD3D_CONFIG_FLAG_SMALL_VRAM_REBAR},
+    {"no_staggered_submit", VKD3D_CONFIG_FLAG_NO_STAGGERED_SUBMIT},
+    {"no_clear_uav_sync", VKD3D_CONFIG_FLAG_NO_CLEAR_UAV_SYNC},
+    {"force_dynamic_msaa", VKD3D_CONFIG_FLAG_FORCE_DYNAMIC_MSAA},
+    {"instruction_qa_checks", VKD3D_CONFIG_FLAG_INSTRUCTION_QA_CHECKS},
+    {"transfer_queue", VKD3D_CONFIG_FLAG_TRANSFER_QUEUE},
+    {"no_gpu_upload_heap", VKD3D_CONFIG_FLAG_NO_GPU_UPLOAD_HEAP},
+    {"one_time_submit", VKD3D_CONFIG_FLAG_ONE_TIME_SUBMIT},
+    {"skip_null_sparse_tiles", VKD3D_CONFIG_FLAG_SKIP_NULL_SPARSE_TILES},
+    {"queue_profile_extra", VKD3D_CONFIG_FLAG_QUEUE_PROFILE_EXTRA},
+    {"damage_not_zeroed_allocations", VKD3D_CONFIG_FLAG_DAMAGE_NOT_ZEROED_ALLOCATIONS},
+    {"defer_resource_destruction", VKD3D_CONFIG_FLAG_DEFER_RESOURCE_DESTRUCTION},
+    {"prefer_thin_uav_tiling", VKD3D_CONFIG_FLAG_PREFER_THIN_UAV_TILING},
 };
 
 static void vkd3d_config_flags_init_once(void)
@@ -605,17 +1191,18 @@ static void vkd3d_config_flags_init_once(void)
     vkd3d_get_env_var("VKD3D_CONFIG", config, sizeof(config));
     vkd3d_config_flags = vkd3d_parse_debug_options(config, vkd3d_config_options, ARRAY_SIZE(vkd3d_config_options));
 
-    if (!VKD3D_CONFIG_FLAG_IS_SET(SKIP_APPLICATION_WORKAROUNDS))
+    if (!(vkd3d_config_flags & VKD3D_CONFIG_FLAG_SKIP_APPLICATION_WORKAROUNDS))
         vkd3d_instance_apply_application_workarounds();
 
     vkd3d_instance_deduce_config_flags_from_environment();
     vkd3d_instance_apply_global_shader_quirks();
 
     /* If we're going to use vk_debug, make sure we can get debug callbacks. */
-    if (VKD3D_CONFIG_FLAG_IS_SET(VULKAN_DEBUG))
-        vkd3d_config_flag_global_add(VKD3D_CONFIG_FLAG(DEBUG_UTILS));
+    if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_VULKAN_DEBUG)
+        vkd3d_config_flags |= VKD3D_CONFIG_FLAG_DEBUG_UTILS;
 
-    INFO("VKD3D_CONFIG='%s'.\n", config);
+    if (vkd3d_config_flags)
+        INFO("VKD3D_CONFIG='%s'.\n", config);
 }
 
 static pthread_once_t vkd3d_config_flags_once = PTHREAD_ONCE_INIT;
@@ -652,7 +1239,7 @@ static HRESULT vkd3d_instance_init(struct vkd3d_instance *instance,
 
     if (FAILED(hr = vkd3d_init_vk_global_procs(instance, create_info->pfn_vkGetInstanceProcAddr)))
     {
-        ERR("Failed to initialize Vulkan global procs, hr %#x.\n", (int)hr);
+        ERR("Failed to initialize Vulkan global procs, hr %#x.\n", hr);
         return hr;
     }
 
@@ -703,13 +1290,6 @@ static HRESULT vkd3d_instance_init(struct vkd3d_instance *instance,
     if (vkd3d_get_program_name(application_name))
         application_info.pApplicationName = application_name;
 
-    /* Used to signal to implementations which engine is being used.
-     * Drivers (in Linux) which have no easy means to detect the engine type themselves,
-     * since they cannot spelunk into the Windows .exe for version information, etc.
-     * Drivers can care can correlate this with vkd3d_application_version_engine
-     * and apply global engine workarounds as desired. */
-    application_info.applicationVersion = vkd3d_get_instance_application_version();
-
     TRACE("Application: %s.\n", debugstr_a(application_info.pApplicationName));
 
     if (!(extensions = vkd3d_calloc(extension_count, sizeof(*extensions))))
@@ -739,7 +1319,7 @@ static HRESULT vkd3d_instance_init(struct vkd3d_instance *instance,
     instance_info.ppEnabledExtensionNames = extensions;
     vkd3d_free(user_extension_supported);
 
-    if (VKD3D_CONFIG_FLAG_IS_SET(VULKAN_DEBUG))
+    if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_VULKAN_DEBUG)
     {
         layers = NULL;
 
@@ -759,6 +1339,11 @@ static HRESULT vkd3d_instance_init(struct vkd3d_instance *instance,
             }
         }
 
+        if (instance_info.enabledLayerCount == 0)
+        {
+            ERR("Failed to enumerate instance layers, will not use VK_LAYER_KHRONOS_validation directly.\n"
+                "Use VKD3D_CONFIG=vk_debug VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation instead!\n");
+        }
         vkd3d_free(layers);
     }
 
@@ -772,7 +1357,7 @@ static HRESULT vkd3d_instance_init(struct vkd3d_instance *instance,
 
     if (FAILED(hr = vkd3d_load_vk_instance_procs(&instance->vk_procs, vk_global_procs, vk_instance)))
     {
-        ERR("Failed to load instance procs, hr %#x.\n", (int)hr);
+        ERR("Failed to load instance procs, hr %#x.\n", hr);
         vkd3d_free((void *)extensions);
         if (instance->vk_procs.vkDestroyInstance)
             instance->vk_procs.vkDestroyInstance(vk_instance, NULL);
@@ -792,7 +1377,7 @@ static HRESULT vkd3d_instance_init(struct vkd3d_instance *instance,
     instance->refcount = 1;
 
     instance->vk_debug_callback = VK_NULL_HANDLE;
-    if (instance->vk_info.EXT_debug_utils && VKD3D_CONFIG_FLAG_IS_SET(VULKAN_DEBUG))
+    if (instance->vk_info.EXT_debug_utils && (vkd3d_config_flags & VKD3D_CONFIG_FLAG_VULKAN_DEBUG))
         vkd3d_init_debug_messenger_callback(instance);
 
 #ifdef VKD3D_ENABLE_RENDERDOC
@@ -873,7 +1458,7 @@ static void vkd3d_destroy_instance(struct vkd3d_instance *instance)
 
 ULONG vkd3d_instance_incref(struct vkd3d_instance *instance)
 {
-    unsigned int refcount = InterlockedIncrement(&instance->refcount);
+    ULONG refcount = InterlockedIncrement(&instance->refcount);
 
     TRACE("%p increasing refcount to %u.\n", instance, refcount);
 
@@ -882,7 +1467,7 @@ ULONG vkd3d_instance_incref(struct vkd3d_instance *instance)
 
 ULONG vkd3d_instance_decref(struct vkd3d_instance *instance)
 {
-    unsigned int refcount;
+    ULONG refcount;
 
     /* The device singleton is more advanced, since it uses a CAS loop.
      * Device references are lowered constantly, but instance references only release
@@ -943,9 +1528,6 @@ static uint32_t vkd3d_physical_device_get_time_domains(struct d3d12_device *devi
             case VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_KHR:
                 result |= VKD3D_TIME_DOMAIN_QPC;
                 break;
-            case VK_TIME_DOMAIN_CLOCK_MONOTONIC_KHR:
-                result |= VKD3D_TIME_DOMAIN_CLOCK_MONOTONIC;
-                break;
             default:
                 break;
         }
@@ -960,6 +1542,12 @@ bool d3d12_device_supports_ray_tracing_tier_1_0(const struct d3d12_device *devic
     return device->device_info.acceleration_structure_features.accelerationStructure &&
             device->device_info.ray_tracing_pipeline_features.rayTracingPipeline &&
             device->d3d12_caps.options5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_0;
+}
+
+bool d3d12_device_supports_ray_tracing_tier_1_2(const struct d3d12_device *device)
+{
+    return device->device_info.opacity_micromap_features.micromap &&
+            device->d3d12_caps.options5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_2;
 }
 
 bool d3d12_device_supports_variable_shading_rate_tier_1(struct d3d12_device *device)
@@ -995,15 +1583,6 @@ bool d3d12_device_supports_variable_shading_rate_tier_2(struct d3d12_device *dev
 {
     const struct vkd3d_physical_device_info *info = &device->device_info;
 
-    /* Mesa RADV forgot to implement fragmentShadingRateWithShaderSampleMask even if HW can do it.
-     * There is lots of content that relies on TIER_2, so force the fallback path for now
-     * until RADV implements it as intended. RADV is also bugged if sample mask is set.
-     * Normally, driver is expected to force (1, 1) rate, but it doesn't do it correctly
-     * for sample mask exports.
-     * We can do it for them like for writing depth stencil.
-     * Just allow non-compliant VRS for now. There is risk of breaking
-     * other GPUs too that don't expose this property.
-     */
     return info->fragment_shading_rate_properties.fragmentShadingRateNonTrivialCombinerOps &&
             info->fragment_shading_rate_features.attachmentFragmentShadingRate &&
             info->fragment_shading_rate_features.primitiveFragmentShadingRate &&
@@ -1013,12 +1592,7 @@ bool d3d12_device_supports_variable_shading_rate_tier_2(struct d3d12_device *dev
 static D3D12_VARIABLE_SHADING_RATE_TIER d3d12_device_determine_variable_shading_rate_tier(struct d3d12_device *device)
 {
     if (!d3d12_device_supports_variable_shading_rate_tier_1(device))
-    {
-        if (d3d12_device_allow_emulated_vrs_tier_2(device))
-            return D3D12_VARIABLE_SHADING_RATE_TIER_2;
-        else
-            return D3D12_VARIABLE_SHADING_RATE_TIER_NOT_SUPPORTED;
-    }
+        return D3D12_VARIABLE_SHADING_RATE_TIER_NOT_SUPPORTED;
 
     if (!d3d12_device_supports_variable_shading_rate_tier_2(device))
         return D3D12_VARIABLE_SHADING_RATE_TIER_1;
@@ -1098,122 +1672,71 @@ bool d3d12_device_supports_required_subgroup_size_for_stage(
     return (device->device_info.vulkan_1_3_properties.requiredSubgroupSizeStages & stage) != 0;
 }
 
-static void vkd3d_physical_device_info_init_maint9(struct vkd3d_physical_device_info *info, struct d3d12_device *device)
+static bool d3d12_device_is_steam_deck(const struct d3d12_device *device)
 {
-    /* The ownership mask is maximum uint32_t, so it's unreasonable to check for more queue families. */
-    const struct vkd3d_vk_instance_procs *vk_procs = &device->vkd3d_instance->vk_procs;
-    VkQueueFamilyOwnershipTransferPropertiesKHR ownership_props[32];
-    uint32_t cross_queue_supported = UINT32_MAX;
-    VkQueueFamilyProperties2 props[32];
-    unsigned int i;
-    uint32_t count;
-
-    static const VkQueueFlags relevant_families =
-        VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT;
-
-    memset(props, 0, sizeof(props));
-    memset(ownership_props, 0, sizeof(ownership_props));
-
-    for (i = 0; i < ARRAY_SIZE(props); i++)
-    {
-        props[i].sType = VK_STRUCTURE_TYPE_QUEUE_FAMILY_PROPERTIES_2;
-        ownership_props[i].sType = VK_STRUCTURE_TYPE_QUEUE_FAMILY_OWNERSHIP_TRANSFER_PROPERTIES_KHR;
-        props[i].pNext = &ownership_props[i];
-    }
-
-    count = ARRAY_SIZE(props);
-    VK_CALL(vkGetPhysicalDeviceQueueFamilyProperties2(device->vk_physical_device, &count, props));
-
-    /* If all queue families can elide QFOT with eachother, we can drop CONCURRENT for any non-RTV/DSV images. */
-    for (i = 0; i < count; i++)
-        if (props[i].queueFamilyProperties.queueFlags & relevant_families)
-            cross_queue_supported &= ownership_props[i].optimalImageTransferToQueueFamilies;
-
-    for (i = 0; i < count; i++)
-    {
-        if (props[i].queueFamilyProperties.queueFlags & relevant_families)
-        {
-            if (!(cross_queue_supported & (1u << i)))
-            {
-                INFO("Implementation does not support eliding QFOT for non-compressed optimal images.\n");
-                return;
-            }
-        }
-    }
-
-    INFO("Implementation supports eliding QFOT for non-compressed optimal images.\n");
-    info->non_compressed_implicit_concurrent_supported = true;
+    return device->device_info.vulkan_1_2_properties.driverID == VK_DRIVER_ID_MESA_RADV &&
+            device->device_info.properties2.properties.vendorID == 0x1002 &&
+            (device->device_info.properties2.properties.deviceID == 0x163f ||
+             device->device_info.properties2.properties.deviceID == 0x1435);
 }
 
-static void vkd3d_physical_device_info_init_maint10(struct vkd3d_physical_device_info *info, struct d3d12_device *device)
+static void vkd3d_physical_device_info_apply_workarounds(struct vkd3d_physical_device_info *info,
+        struct d3d12_device *device)
 {
-    const struct vkd3d_vk_instance_procs *vk_procs = &device->vkd3d_instance->vk_procs;
-    VkFormatProperties2 props2;
-    VkFormatProperties3 props3;
-    unsigned int i;
+    /* A performance workaround for NV.
+     * The 16 byte offset is a lie, as that is only actually required when we
+     * use vectorized load-stores. When we emit vectorized load-store ops,
+     * the storage buffer must be aligned properly, so this is fine in practice
+     * and is a nice speed boost. */
+    if (info->vulkan_1_2_properties.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY)
+        info->properties2.properties.limits.minStorageBufferOffsetAlignment = 4;
 
-    static const struct
+    /* UE5 is broken and assumes that if mesh shaders are supported, barycentrics are also supported.
+     * This happens to be the case on RDNA2+ and Turing+ on Windows, but Mesa landed barycentrics long
+     * after mesh shaders, so Mesa 23.1 will often fail on boot for practically all UE5 content.
+     * The reasonable workaround is to disable mesh shaders unless barys are also supported.
+     * Nanite can work without mesh shaders.
+     * Unfortunately, we don't know of a robust way to detect UE5, so have to apply this globally.
+     * Similarly, Intel Arc does not expose barycentrics, but does expose mesh shaders ...
+     * Unclear if that will ever be resolved. */
+    if (vkd3d_application_feature_override != VKD3D_APPLICATION_FEATURE_MESH_SHADER_WITHOUT_BARYCENTRICS &&
+            !device->vk_info.KHR_fragment_shader_barycentric && device->vk_info.EXT_mesh_shader)
     {
-        VkFormat format;
-        VkImageAspectFlags aspect;
-    } formats[] = {
-        { VK_FORMAT_D16_UNORM, VK_IMAGE_ASPECT_DEPTH_BIT },
-        { VK_FORMAT_D24_UNORM_S8_UINT, VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT },
-        { VK_FORMAT_X8_D24_UNORM_PACK32, VK_IMAGE_ASPECT_DEPTH_BIT },
-        { VK_FORMAT_D32_SFLOAT, VK_IMAGE_ASPECT_DEPTH_BIT },
-        { VK_FORMAT_D32_SFLOAT_S8_UINT, VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT },
-    };
-
-    memset(&props3, 0, sizeof(props3));
-    memset(&props2, 0, sizeof(props2));
-    props2.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2;
-    props2.pNext = &props3;
-    props3.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3;
-
-    device->device_info.depth_aspect_copy_on_compute = true;
-    device->device_info.stencil_aspect_copy_on_compute = true;
-    device->device_info.depth_aspect_copy_on_transfer = true;
-    device->device_info.stencil_aspect_copy_on_transfer = true;
-
-    for (i = 0; i < ARRAY_SIZE(formats); i++)
-    {
-        VK_CALL(vkGetPhysicalDeviceFormatProperties2(device->vk_physical_device, formats[i].format, &props2));
-        if (!(props3.optimalTilingFeatures & VK_FORMAT_FEATURE_2_DEPTH_STENCIL_ATTACHMENT_BIT))
-            continue;
-
-        if ((formats[i].aspect & VK_IMAGE_ASPECT_DEPTH_BIT) &&
-            !(props3.optimalTilingFeatures & VK_FORMAT_FEATURE_2_DEPTH_COPY_ON_COMPUTE_QUEUE_BIT_KHR))
-        {
-            device->device_info.depth_aspect_copy_on_compute = false;
-        }
-
-        if ((formats[i].aspect & VK_IMAGE_ASPECT_DEPTH_BIT) &&
-            !(props3.optimalTilingFeatures & VK_FORMAT_FEATURE_2_DEPTH_COPY_ON_TRANSFER_QUEUE_BIT_KHR))
-        {
-            device->device_info.depth_aspect_copy_on_transfer = false;
-        }
-
-        if ((formats[i].aspect & VK_IMAGE_ASPECT_STENCIL_BIT) &&
-            !(props3.optimalTilingFeatures & VK_FORMAT_FEATURE_2_STENCIL_COPY_ON_COMPUTE_QUEUE_BIT_KHR))
-        {
-            device->device_info.stencil_aspect_copy_on_compute = false;
-        }
-
-        if ((formats[i].aspect & VK_IMAGE_ASPECT_STENCIL_BIT) &&
-            !(props3.optimalTilingFeatures & VK_FORMAT_FEATURE_2_STENCIL_COPY_ON_TRANSFER_QUEUE_BIT_KHR))
-        {
-            device->device_info.stencil_aspect_copy_on_transfer = false;
-        }
+        WARN("Mesh shaders are supported, but not barycentrics. Disabling mesh shaders as a global UE5 workaround.\n");
+        device->vk_info.EXT_mesh_shader = false;
+        device->device_info.mesh_shader_features.meshShader = VK_FALSE;
+        device->device_info.mesh_shader_features.taskShader = VK_FALSE;
+        device->device_info.mesh_shader_features.primitiveFragmentShadingRateMeshShader = VK_FALSE;
+        device->device_info.mesh_shader_features.meshShaderQueries = VK_FALSE;
+        device->device_info.mesh_shader_features.multiviewMeshShader = VK_FALSE;
     }
 
-    if (device->device_info.depth_aspect_copy_on_compute)
-        INFO("Implementation can copy depth aspect on compute queue.\n");
-    if (device->device_info.depth_aspect_copy_on_transfer)
-        INFO("Implementation can copy depth aspect on transfer queue.\n");
-    if (device->device_info.stencil_aspect_copy_on_compute)
-        INFO("Implementation can copy stencil aspect on compute queue.\n");
-    if (device->device_info.stencil_aspect_copy_on_transfer)
-        INFO("Implementation can copy stencil aspect on transfer queue.\n");
+    if (!(vkd3d_config_flags & VKD3D_CONFIG_FLAG_SKIP_DRIVER_WORKAROUNDS))
+    {
+        if (info->vulkan_1_2_properties.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY &&
+                device->vk_info.NV_device_generated_commands_compute &&
+                (vkd3d_config_flags & VKD3D_CONFIG_FLAG_DISABLE_DGCC))
+        {
+            device->vk_info.NV_device_generated_commands_compute = false;
+            device->vk_info.EXT_device_generated_commands = false;
+            device->device_info.device_generated_commands_compute_features_nv.deviceGeneratedCompute = VK_FALSE;
+            device->device_info.device_generated_commands_features_ext.deviceGeneratedCommands = VK_FALSE;
+            WARN("Disabling DGCC due to config flag.\n");
+        }
+
+        /* Two known bugs in the wild:
+         * - presentID = 0 handling when toggling present mode is broken.
+         * - swapchain fence is not enough to avoid DEVICE_LOST when resizing swapchain.
+         */
+        if (info->vulkan_1_2_properties.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY &&
+                info->swapchain_maintenance1_features.swapchainMaintenance1 &&
+                info->properties2.properties.driverVersion <= VKD3D_DRIVER_VERSION_MAKE_NV(550, 40, 7))
+        {
+            WARN("Disabling VK_EXT_swapchain_maintenance1 on NV due to driver bugs.\n");
+            device->device_info.swapchain_maintenance1_features.swapchainMaintenance1 = VK_FALSE;
+            device->vk_info.EXT_swapchain_maintenance1 = false;
+        }
+    }
 }
 
 static void vkd3d_physical_device_info_init(struct vkd3d_physical_device_info *info, struct d3d12_device *device)
@@ -1282,12 +1805,12 @@ static void vkd3d_physical_device_info_init(struct vkd3d_physical_device_info *i
 
     if (vulkan_info->EXT_device_generated_commands)
     {
-        info->device_generated_commands_features.sType =
+        info->device_generated_commands_features_ext.sType =
                 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_FEATURES_EXT;
-        info->device_generated_commands_properties.sType =
+        info->device_generated_commands_properties_ext.sType =
                 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_PROPERTIES_EXT;
-        vk_prepend_struct(&info->features2, &info->device_generated_commands_features);
-        vk_prepend_struct(&info->properties2, &info->device_generated_commands_properties);
+        vk_prepend_struct(&info->features2, &info->device_generated_commands_features_ext);
+        vk_prepend_struct(&info->properties2, &info->device_generated_commands_properties_ext);
     }
 
     if (vulkan_info->EXT_robustness2)
@@ -1395,11 +1918,35 @@ static void vkd3d_physical_device_info_init(struct vkd3d_physical_device_info *i
         vk_prepend_struct(&info->features2, &info->fragment_shading_rate_features);
     }
 
+    if (vulkan_info->NV_fragment_shader_barycentric && !vulkan_info->KHR_fragment_shader_barycentric)
+    {
+        info->barycentric_features_nv.sType =
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_BARYCENTRIC_FEATURES_NV;
+        vk_prepend_struct(&info->features2, &info->barycentric_features_nv);
+    }
+
     if (vulkan_info->KHR_fragment_shader_barycentric)
     {
         info->barycentric_features_khr.sType =
                 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_BARYCENTRIC_FEATURES_KHR;
         vk_prepend_struct(&info->features2, &info->barycentric_features_khr);
+    }
+
+    if (vulkan_info->NV_device_generated_commands)
+    {
+        info->device_generated_commands_features_nv.sType =
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_FEATURES_NV;
+        info->device_generated_commands_properties_nv.sType =
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_PROPERTIES_NV;
+        vk_prepend_struct(&info->features2, &info->device_generated_commands_features_nv);
+        vk_prepend_struct(&info->properties2, &info->device_generated_commands_properties_nv);
+    }
+
+    if (vulkan_info->NV_device_generated_commands_compute)
+    {
+        info->device_generated_commands_compute_features_nv.sType =
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_COMPUTE_FEATURES_NV;
+        vk_prepend_struct(&info->features2, &info->device_generated_commands_compute_features_nv);
     }
 
     if (vulkan_info->EXT_shader_image_atomic_int64)
@@ -1438,12 +1985,6 @@ static void vkd3d_physical_device_info_init(struct vkd3d_physical_device_info *i
     {
         info->present_id_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR;
         vk_prepend_struct(&info->features2, &info->present_id_features);
-    }
-
-    if (vulkan_info->KHR_present_mode_fifo_latest_ready)
-    {
-        info->present_mode_fifo_latest_ready_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_MODE_FIFO_LATEST_READY_FEATURES_KHR;
-        vk_prepend_struct(&info->features2, &info->present_mode_fifo_latest_ready_features);
     }
 
     if (vulkan_info->KHR_present_wait)
@@ -1499,29 +2040,6 @@ static void vkd3d_physical_device_info_init(struct vkd3d_physical_device_info *i
     {
         info->maintenance_8_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_8_FEATURES_KHR;
         vk_prepend_struct(&info->features2, &info->maintenance_8_features);
-    }
-
-    if (vulkan_info->KHR_maintenance9)
-    {
-        info->maintenance_9_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_9_FEATURES_KHR;
-        vk_prepend_struct(&info->features2, &info->maintenance_9_features);
-        vkd3d_physical_device_info_init_maint9(info, device);
-    }
-
-    if (vulkan_info->KHR_maintenance10)
-    {
-        info->maintenance_10_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_10_FEATURES_KHR;
-        vk_prepend_struct(&info->features2, &info->maintenance_10_features);
-
-        info->maintenance_10_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_10_PROPERTIES_KHR;
-        vk_prepend_struct(&info->properties2, &info->maintenance_10_properties);
-        vkd3d_physical_device_info_init_maint10(info, device);
-    }
-
-    if (vulkan_info->KHR_maintenance11)
-    {
-        info->maintenance_11_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_11_FEATURES_KHR;
-        vk_prepend_struct(&info->features2, &info->maintenance_11_features);
     }
 
     if (vulkan_info->KHR_shader_maximal_reconvergence)
@@ -1612,15 +2130,6 @@ static void vkd3d_physical_device_info_init(struct vkd3d_physical_device_info *i
                 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_UNUSED_ATTACHMENTS_FEATURES_EXT;
         vk_prepend_struct(&info->features2, &info->dynamic_rendering_unused_attachments_features);
     }
-    else
-    {
-        /* This extension was intended to be part of dynamic rendering in the first place, but was carved out
-         * due to some requirements for IHVs vkd3d-proton does not cater to.
-         * If this is not supported, simply assume that the driver is just a bit old.
-         * No need to fail device creation here.
-         * Every driver we are known to run on supports this just fine. */
-        WARN("VK_EXT_dynamic_rendering_unused_attachments not supported. The functionality in this EXT is required for correct operation.\n");
-    }
 
     if (vulkan_info->EXT_line_rasterization)
     {
@@ -1645,27 +2154,15 @@ static void vkd3d_physical_device_info_init(struct vkd3d_physical_device_info *i
         vk_prepend_struct(&info->properties2, &info->memory_decompression_properties);
     }
 
-    if (vulkan_info->KHR_device_fault)
+    if (vulkan_info->EXT_device_fault)
     {
-        info->fault_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_KHR;
+        info->fault_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT;
         vk_prepend_struct(&info->features2, &info->fault_features);
     }
 
-    if (vulkan_info->KHR_shader_abort)
+    if (vulkan_info->EXT_swapchain_maintenance1)
     {
-        info->shader_abort_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ABORT_FEATURES_KHR;
-        vk_prepend_struct(&info->features2, &info->shader_abort_features);
-    }
-
-    if (vulkan_info->KHR_shader_constant_data)
-    {
-        info->shader_constant_data_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_CONSTANT_DATA_FEATURES_KHR;
-        vk_prepend_struct(&info->features2, &info->shader_constant_data_features);
-    }
-
-    if (vulkan_info->KHR_swapchain_maintenance1 || vulkan_info->EXT_swapchain_maintenance1)
-    {
-        info->swapchain_maintenance1_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR;
+        info->swapchain_maintenance1_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT;
         vk_prepend_struct(&info->features2, &info->swapchain_maintenance1_features);
     }
 
@@ -1716,23 +2213,10 @@ static void vkd3d_physical_device_info_init(struct vkd3d_physical_device_info *i
         vk_prepend_struct(&info->features2, &info->zero_initialize_device_memory_features);
     }
 
-    if (vulkan_info->KHR_device_address_commands)
+    if (vulkan_info->EXT_opacity_micromap)
     {
-        info->device_address_commands_features.sType =
-                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_ADDRESS_COMMANDS_FEATURES_KHR;
-        vk_prepend_struct(&info->features2, &info->device_address_commands_features);
-    }
-
-    if (vulkan_info->KHR_opacity_micromap)
-    {
-        info->opacity_micromap_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_KHR;
+        info->opacity_micromap_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_EXT;
         vk_prepend_struct(&info->features2, &info->opacity_micromap_features);
-    }
-
-    if (vulkan_info->KHR_index_type_uint8)
-    {
-        info->index_type_uint8_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_KHR;
-        vk_prepend_struct(&info->features2, &info->index_type_uint8_features);
     }
 
     if (vulkan_info->EXT_shader_float8)
@@ -1761,105 +2245,8 @@ static void vkd3d_physical_device_info_init(struct vkd3d_physical_device_info *i
         vk_prepend_struct(&info->features2, &info->unified_image_layouts_features);
     }
 
-    if (vulkan_info->VALVE_shader_mixed_float_dot_product)
-    {
-        info->shader_mixed_float_dot_product_features.sType =
-            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_MIXED_FLOAT_DOT_PRODUCT_FEATURES_VALVE;
-        vk_prepend_struct(&info->features2, &info->shader_mixed_float_dot_product_features);
-    }
-
-    if (vulkan_info->KHR_present_id2)
-    {
-        info->present_id2_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_2_FEATURES_KHR;
-        vk_prepend_struct(&info->features2, &info->present_id2_features);
-    }
-
-    if (vulkan_info->KHR_present_wait2)
-    {
-        info->present_wait2_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_2_FEATURES_KHR;
-        vk_prepend_struct(&info->features2, &info->present_wait2_features);
-    }
-
-    if (vulkan_info->EXT_present_timing)
-    {
-        info->present_timing_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_TIMING_FEATURES_EXT;
-        vk_prepend_struct(&info->features2, &info->present_timing_features);
-    }
-
-    if (vulkan_info->NV_ray_tracing_invocation_reorder)
-    {
-        info->ray_tracing_invocation_reorder_features_nv.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_INVOCATION_REORDER_FEATURES_NV;
-        vk_prepend_struct(&info->features2, &info->ray_tracing_invocation_reorder_features_nv);
-    }
-
-    if (vulkan_info->EXT_descriptor_heap)
-    {
-        info->descriptor_heap_features.sType =
-                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_FEATURES_EXT;
-        info->descriptor_heap_properties.sType =
-                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_PROPERTIES_EXT;
-        vk_prepend_struct(&info->features2, &info->descriptor_heap_features);
-        vk_prepend_struct(&info->properties2, &info->descriptor_heap_properties);
-    }
-
-    if (vulkan_info->KHR_shader_float_controls2)
-    {
-        info->float_controls2_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT_CONTROLS_2_FEATURES_KHR;
-        vk_prepend_struct(&info->features2, &info->float_controls2_features);
-    }
-
-    if (vulkan_info->KHR_dynamic_rendering_local_read)
-    {
-        info->dynamic_rendering_local_read_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_LOCAL_READ_FEATURES_KHR;
-        vk_prepend_struct(&info->features2, &info->dynamic_rendering_local_read_features);
-    }
-
-    if (vulkan_info->VALVE_buffer_device_address_allocation_alignment)
-    {
-        info->buffer_device_address_allocation_alignment_features.sType =
-            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_ALLOCATION_ALIGNMENT_FEATURES_VALVE;
-        vk_prepend_struct(&info->features2, &info->buffer_device_address_allocation_alignment_features);
-        /* 64 KiB is min-spec, so don't care about properties. */
-    }
-
-    if (vulkan_info->EXT_ray_tracing_invocation_reorder)
-    {
-        info->invocation_reorder_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_INVOCATION_REORDER_FEATURES_EXT;
-        info->invocation_reorder_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_INVOCATION_REORDER_PROPERTIES_EXT;
-        vk_prepend_struct(&info->features2, &info->invocation_reorder_features);
-        vk_prepend_struct(&info->properties2, &info->invocation_reorder_properties);
-    }
-
-    if (vulkan_info->EXT_shader_long_vector)
-    {
-        info->long_vector_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_LONG_VECTOR_FEATURES_EXT;
-        info->long_vector_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_LONG_VECTOR_PROPERTIES_EXT;
-        vk_prepend_struct(&info->features2, &info->long_vector_features);
-        vk_prepend_struct(&info->properties2, &info->long_vector_properties);
-    }
-
-    if (vulkan_info->KHR_shader_untyped_pointers)
-    {
-        info->untyped_pointers_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_UNTYPED_POINTERS_FEATURES_KHR;
-        vk_prepend_struct(&info->features2, &info->untyped_pointers_features);
-    }
-
-    if (vulkan_info->NV_shader_atomic_float16_vector)
-    {
-        info->shader_atomic_float16_vector_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT16_VECTOR_FEATURES_NV;
-        vk_prepend_struct(&info->features2, &info->shader_atomic_float16_vector_features);
-    }
-
-    if (vulkan_info->EXT_shader_atomic_float)
-    {
-        info->shader_atomic_float_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT;
-        vk_prepend_struct(&info->features2, &info->shader_atomic_float_features);
-    }
-
     VK_CALL(vkGetPhysicalDeviceFeatures2(device->vk_physical_device, &info->features2));
     VK_CALL(vkGetPhysicalDeviceProperties2(device->vk_physical_device, &info->properties2));
-
-    info->supports_opacity_micromap = info->opacity_micromap_features.micromap;
 
     /* if nonzero, this is a layered implementation */
     if (real_driver_props.driverID)
@@ -2273,9 +2660,6 @@ static void vkd3d_trace_physical_device_features(const struct vkd3d_physical_dev
     TRACE("  VkPhysicalDeviceLineRasterizationFeaturesEXT:\n");
     TRACE("    rectangularLines: %u\n", info->line_rasterization_features.rectangularLines);
     TRACE("    smoothLines: %u\n", info->line_rasterization_features.smoothLines);
-
-    TRACE("  VkPhysicalDeviceOpacityMicromapFeaturesKHR:\n");
-    TRACE("    micromap: %#x\n", info->opacity_micromap_features.micromap);
 }
 
 static HRESULT vkd3d_init_device_extensions(struct d3d12_device *device,
@@ -2320,10 +2704,6 @@ static HRESULT vkd3d_init_device_extensions(struct d3d12_device *device,
 
     if (get_spec_version(vk_extensions, count, VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME) < 3)
         vulkan_info->EXT_vertex_attribute_divisor = false;
-
-    vulkan_info->supports_cubin_64bit = vulkan_info->NVX_binary_import && vulkan_info->NVX_image_view_handle &&
-            get_spec_version(vk_extensions, count, VK_NVX_BINARY_IMPORT_EXTENSION_NAME) >= 2 &&
-            get_spec_version(vk_extensions, count, VK_NVX_IMAGE_VIEW_HANDLE_EXTENSION_NAME) >= 3;
 
     vkd3d_free(vk_extensions);
     return S_OK;
@@ -2549,7 +2929,6 @@ static HRESULT vkd3d_init_device_caps(struct d3d12_device *device,
     descriptor_buffer = &physical_device_info->descriptor_buffer_features;
     descriptor_buffer->descriptorBufferCaptureReplay = VK_FALSE;
     descriptor_buffer->descriptorBufferImageLayoutIgnored = VK_FALSE;
-    physical_device_info->descriptor_heap_features.descriptorHeapCaptureReplay = VK_FALSE;
 
     /* We only use dynamic rasterization samples. Also Keep the following enabled for 11on12:
      * alphaToCoverage, sampleMask, lineRasterizationMode, depthClipEnable. */
@@ -2598,11 +2977,13 @@ static HRESULT vkd3d_init_device_caps(struct d3d12_device *device,
     physical_device_info->extended_dynamic_state2_features.extendedDynamicState2LogicOp = VK_FALSE;
 
     /* Unneeded. */
-    physical_device_info->device_generated_commands_features.dynamicGeneratedPipelineLayout = VK_FALSE;
+    physical_device_info->device_generated_commands_compute_features_nv.deviceGeneratedComputeCaptureReplay = VK_FALSE;
+    physical_device_info->device_generated_commands_compute_features_nv.deviceGeneratedComputePipelines = VK_FALSE;
+    physical_device_info->device_generated_commands_features_ext.dynamicGeneratedPipelineLayout = VK_FALSE;
 
     {
         const VkShaderStageFlags supported_stages =
-                physical_device_info->device_generated_commands_properties.supportedIndirectCommandsShaderStages;
+                physical_device_info->device_generated_commands_properties_ext.supportedIndirectCommandsShaderStages;
         VkShaderStageFlags required_stages = VK_SHADER_STAGE_ALL_GRAPHICS | VK_SHADER_STAGE_COMPUTE_BIT;
         if (physical_device_info->mesh_shader_features.meshShader)
             required_stages |= VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT;
@@ -2611,9 +2992,15 @@ static HRESULT vkd3d_init_device_caps(struct d3d12_device *device,
         {
             /* Can be relaxed if needed in the wild, but in principle, everything needs to be supported
              * to be D3D12 compliant. */
-            INFO("Not all relevant pipeline stages are supported by EXT_dgc. Skipping.\n");
-            physical_device_info->device_generated_commands_features.deviceGeneratedCommands = VK_FALSE;
+            INFO("Not all relevant pipeline stages are supported by EXT_dgc. Skipping EXT.\n");
+            physical_device_info->device_generated_commands_features_ext.deviceGeneratedCommands = VK_FALSE;
         }
+    }
+
+    if (physical_device_info->device_generated_commands_features_ext.deviceGeneratedCommands)
+    {
+        physical_device_info->device_generated_commands_features_nv.deviceGeneratedCommands = VK_FALSE;
+        physical_device_info->device_generated_commands_compute_features_nv.deviceGeneratedCompute = VK_FALSE;
     }
 
     if (!physical_device_info->vulkan_1_2_properties.robustBufferAccessUpdateAfterBind)
@@ -2661,13 +3048,6 @@ static HRESULT vkd3d_init_device_caps(struct d3d12_device *device,
     if (!vulkan_info->KHR_push_descriptor)
     {
         ERR("Push descriptors are not supported by this implementation. This is required for correct operation.\n");
-        return E_INVALIDARG;
-    }
-
-    if (!physical_device_info->maintenance_5_features.maintenance5 ||
-            !physical_device_info->maintenance_6_features.maintenance6)
-    {
-        ERR("maintenance5 and/or maintenance6 not supported by this implementation. This is required for correct operation.\n");
         return E_INVALIDARG;
     }
 
@@ -2853,13 +3233,11 @@ static HRESULT d3d12_device_create_vkd3d_queues(struct d3d12_device *device,
     HRESULT hr;
 
     device->unique_queue_mask = 0;
-    device->concurrent_queue_family_buffer_count = 0;
-    device->concurrent_queue_family_image_count = 0;
+    device->concurrent_queue_family_count = 0;
     memset(device->queue_families, 0, sizeof(device->queue_families));
     for (i = 0; i < VKD3D_QUEUE_FAMILY_COUNT; i++)
     {
-        device->concurrent_queue_family_indices_buffer[i] = VK_QUEUE_FAMILY_IGNORED;
-        device->concurrent_queue_family_indices_image[i] = VK_QUEUE_FAMILY_IGNORED;
+        device->concurrent_queue_family_indices[i] = VK_QUEUE_FAMILY_IGNORED;
     }
 
     for (i = 0, k = 0; i < VKD3D_QUEUE_FAMILY_COUNT; i++)
@@ -2905,39 +3283,25 @@ static HRESULT d3d12_device_create_vkd3d_queues(struct d3d12_device *device,
                 goto out_destroy_queues;
         }
 
-        if (device->vk_info.NV_low_latency2)
+        if (device->vk_info.NV_low_latency2 && vkd3d_queue_family_needs_out_of_band_queue(i) &&
+                queue_info->vk_properties[i].queueCount > 1)
         {
-            if (vkd3d_queue_family_needs_out_of_band_queue(i) && queue_info->vk_properties[i].queueCount > 1)
-            {
-                /* The low latency out of band queue is always the last queue for the family */
-                if (FAILED((hr = vkd3d_queue_create(device, queue_info->family_index[i],
-                        info->queue_count, &queue_info->vk_properties[i], &info->out_of_band_queue))))
-                    goto out_destroy_queues;
-            }
-            else
-                WARN("Could not allocate an out of band queue for queue family %u. All out of band work will happen on the in band queue.\n", i);
+            /* The low latency out of band queue is always the last queue for the family */
+            if (FAILED((hr = vkd3d_queue_create(device, queue_info->family_index[i],
+                    info->queue_count, &queue_info->vk_properties[i], &info->out_of_band_queue))))
+                goto out_destroy_queues;
         }
+        else
+            WARN("Could not allocate an out of band queue for queue family %u. All out of band work will happen on the in band queue.\n", i);
 
         info->vk_family_index = queue_info->family_index[i];
         info->vk_queue_flags = queue_info->vk_properties[i].queueFlags;
         info->timestamp_bits = queue_info->vk_properties[i].timestampValidBits;
-        info->transfer_granularity = queue_info->vk_properties[i].minImageTransferGranularity;
 
         device->queue_families[i] = info;
 
         if (i != VKD3D_QUEUE_FAMILY_SPARSE_BINDING)
-        {
-            bool pure_transfer =
-                (info->vk_queue_flags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT)) == VK_QUEUE_TRANSFER_BIT;
-
-            /* Fallback for when maint9 is not supported. We want to support concurrent transfer for buffers
-             * in this case. */
-            device->concurrent_queue_family_indices_buffer[device->concurrent_queue_family_buffer_count++] = info->vk_family_index;
-
-            /* Pure transfer queues tend to nuke compression. Only allow it for GPUs that are known to work well here. */
-            if (!pure_transfer || device->concurrent_transfer_queue)
-                device->concurrent_queue_family_indices_image[device->concurrent_queue_family_image_count++] = info->vk_family_index;
-        }
+            device->concurrent_queue_family_indices[device->concurrent_queue_family_count++] = info->vk_family_index;
 
         if (info->queue_count && i != VKD3D_QUEUE_FAMILY_INTERNAL_COMPUTE)
             device->unique_queue_mask |= 1u << i;
@@ -2964,40 +3328,11 @@ static uint32_t vkd3d_find_queue(unsigned int count, const VkQueueFamilyProperti
 
     for (i = 0; i < count; i++)
     {
-        /* (0, 0, 0) means full mip only transfers.
-         * We're at too high risk to require fallbacks, and it's not going to work
-         * with sparse usage patterns at all, so just ignore these implementations.
-         * No known drivers should be reporting this in 2026 ... */
-        if ((properties[i].queueFlags & VK_QUEUE_TRANSFER_BIT) &&
-            (properties[i].minImageTransferGranularity.width == 0 ||
-             properties[i].minImageTransferGranularity.height == 0 ||
-             properties[i].minImageTransferGranularity.depth == 0))
-            continue;
-
         if ((properties[i].queueFlags & mask) == flags)
             return i;
     }
 
     return VK_QUEUE_FAMILY_IGNORED;
-}
-
-static bool d3d12_device_has_fast_concurrent_transfer_queue(struct d3d12_device *device)
-{
-    switch (device->device_info.vulkan_1_2_properties.driverID)
-    {
-        case VK_DRIVER_ID_NVIDIA_PROPRIETARY:
-        case VK_DRIVER_ID_MESA_NVK:
-            return true;
-
-        case VK_DRIVER_ID_MESA_RADV:
-            /* From RDNA2, SDMA supports DCC.
-             * There are also no problems with MSAA on RDNA2 since transfer queue MSAA copies
-             * are done in compute queue. */
-            return device->device_info.mesh_shader_features.meshShader == VK_TRUE;
-
-        default:
-            return false;
-    }
 }
 
 static HRESULT vkd3d_select_queues(const struct d3d12_device *device,
@@ -3011,7 +3346,7 @@ static HRESULT vkd3d_select_queues(const struct d3d12_device *device,
     uint32_t count;
 
     memset(info, 0, sizeof(*info));
-    single_queue = VKD3D_CONFIG_FLAG_IS_SET(SINGLE_QUEUE);
+    single_queue = !!(vkd3d_config_flags & VKD3D_CONFIG_FLAG_SINGLE_QUEUE);
 
     VK_CALL(vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &count, NULL));
     if (!(queue_properties = vkd3d_calloc(count, sizeof(*queue_properties))))
@@ -3047,12 +3382,20 @@ static HRESULT vkd3d_select_queues(const struct d3d12_device *device,
     if (info->family_index[VKD3D_QUEUE_FAMILY_COMPUTE] == VK_QUEUE_FAMILY_IGNORED)
         info->family_index[VKD3D_QUEUE_FAMILY_COMPUTE] = info->family_index[VKD3D_QUEUE_FAMILY_GRAPHICS];
 
-    info->family_index[VKD3D_QUEUE_FAMILY_TRANSFER] = vkd3d_find_queue(count, queue_properties,
-            VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT, VK_QUEUE_TRANSFER_BIT);
+    /* Vulkan transfer queue cannot represent some esoteric edge cases that D3D12 copy queue can. */
+    if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_TRANSFER_QUEUE)
+    {
+        info->family_index[VKD3D_QUEUE_FAMILY_TRANSFER] = vkd3d_find_queue(count, queue_properties,
+                VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT, VK_QUEUE_TRANSFER_BIT);
+    }
+    else
+    {
+        info->family_index[VKD3D_QUEUE_FAMILY_TRANSFER] = info->family_index[VKD3D_QUEUE_FAMILY_COMPUTE];
+    }
 
+    /* Prefer compute queues for transfer. When using concurrent sharing, DMA queue tends to force compression off. */
     if (info->family_index[VKD3D_QUEUE_FAMILY_TRANSFER] == VK_QUEUE_FAMILY_IGNORED)
         info->family_index[VKD3D_QUEUE_FAMILY_TRANSFER] = info->family_index[VKD3D_QUEUE_FAMILY_COMPUTE];
-
     info->family_index[VKD3D_QUEUE_FAMILY_INTERNAL_COMPUTE] = info->family_index[VKD3D_QUEUE_FAMILY_COMPUTE];
 
     if (single_queue)
@@ -3106,10 +3449,6 @@ static HRESULT vkd3d_select_queues(const struct d3d12_device *device,
 
 static void d3d12_device_init_vendor_hacks(struct d3d12_device *device)
 {
-    int rc = vkd3d_nv_shader_init(device);
-    if (rc)
-        ERR("Failed to init NvShader, rc %d.\n", rc);
-
     /* We don't do anything with this library directly, but various AMD provided dlls
      * like FSR and AntiLag check if amdxc64.dll is loaded, then attempt
      * calling into it. On Proton, this DLL is purely a shim intended to forward calls
@@ -3118,39 +3457,87 @@ static void d3d12_device_init_vendor_hacks(struct d3d12_device *device)
      * but the logical thing to do is to load the DLL when the d3d12 device is created,
      * since this is literally the name of the d3d12 driver on Windows.
      * Don't bother with 32-bit since 32-bit d3d12 is not really a thing. */
+    (void)device;
+
 #ifdef _WIN64
-    /* Don't try to load the native amdxc64.dll, that will only crash since AMD's driver will
-     * assume certain things about their own ID3D12Device implementation. */
-    if (GetModuleHandleA("winevulkan.dll") && device->device_info.properties2.properties.vendorID == 0x1002)
+    if (device->device_info.properties2.properties.vendorID == 0x1002)
     {
         device->vendor_hacks.amdxc64 = LoadLibraryA("amdxc64.dll");
         if (device->vendor_hacks.amdxc64)
             INFO("Loaded amdxc64.dll successfully.\n");
-    }
-
-    if (device->device_info.properties2.properties.vendorID == VKD3D_VENDOR_ID_INTEL)
-    {
-        char sysdir[MAX_PATH], path[MAX_PATH];
-        GetSystemDirectoryA(sysdir, sizeof(sysdir));
-        snprintf(path, sizeof(path),
-                "%s\\DriverStore\\FileRepository\\igd_faux.inf_1\\igd10iumd64.dll", sysdir);
-        device->vendor_hacks.igd10iumd64 = LoadLibraryA(path);
-        if (device->vendor_hacks.igd10iumd64)
-            INFO("Loaded igd10iumd64.dll successfully.\n");
     }
 #endif
 }
 
 static void d3d12_device_cleanup_vendor_hacks(struct d3d12_device *device)
 {
-    vkd3d_nv_shader_cleanup(device);
-
 #ifdef _WIN64
     if (device->vendor_hacks.amdxc64)
         FreeLibrary(device->vendor_hacks.amdxc64);
-    if (device->vendor_hacks.igd10iumd64)
-        FreeLibrary(device->vendor_hacks.igd10iumd64);
 #endif
+}
+
+static void d3d12_device_init_workarounds(struct d3d12_device *device)
+{
+    uint32_t major, minor, patch;
+
+    /* IMRs should not have this workaround enabled or else perf will drop.
+     * Technically, this isn't really a workaround as much as a speed hack on IMR. */
+    switch (device->device_info.vulkan_1_2_properties.driverID)
+    {
+        case VK_DRIVER_ID_IMAGINATION_PROPRIETARY:
+        case VK_DRIVER_ID_QUALCOMM_PROPRIETARY:
+        case VK_DRIVER_ID_ARM_PROPRIETARY:
+        case VK_DRIVER_ID_BROADCOM_PROPRIETARY:
+        case VK_DRIVER_ID_MESA_TURNIP:
+        case VK_DRIVER_ID_MESA_V3DV:
+        case VK_DRIVER_ID_MESA_PANVK:
+        case VK_DRIVER_ID_SAMSUNG_PROPRIETARY:
+        case VK_DRIVER_ID_IMAGINATION_OPEN_SOURCE_MESA:
+        case VK_DRIVER_ID_MESA_HONEYKRISP:
+            device->workarounds.tiler_renderpass_barriers = true;
+            break;
+        /* layered implementations are handled transparently */
+        case VK_DRIVER_ID_MOLTENVK:
+        case VK_DRIVER_ID_JUICE_PROPRIETARY:
+        case VK_DRIVER_ID_MESA_VENUS:
+        case VK_DRIVER_ID_MESA_DOZEN:
+        case VK_DRIVER_ID_VULKAN_SC_EMULATION_ON_VULKAN:
+        default:
+            break;
+    }
+
+    if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_SKIP_DRIVER_WORKAROUNDS)
+        return;
+
+    if (device->device_info.properties2.properties.vendorID == 0x1002)
+    {
+        if (vkd3d_get_linux_kernel_version(&major, &minor, &patch))
+        {
+            uint32_t ver;
+
+            /* 6.10 amdgpu kernel changes the clear vram code to do background clears instead
+             * of on-demand clearing. This seems to have bugs, and we have been able to observe
+             * non-zeroed VRAM coming from the affected kernels.
+             * This workaround needs to be in place until we have confirmed a fix in upstream kernel. */
+            INFO("Detected Linux kernel version %u.%u.%u\n", major, minor, patch);
+
+            ver = major * 1000000 + minor * 1000 + patch;
+
+            /* Fixed in kernel 6.15.9 and 6.16+. */
+            if (ver >= 6010000 && ver < 6015009)
+            {
+                INFO("AMDGPU broken kernel detected. Enabling manual memory clearing path.\n");
+                device->workarounds.amdgpu_broken_clearvram = true;
+            }
+        }
+
+        /* AMDGPU seems to have a strange bug where remapping a page to NULL can cause an impossible
+         * page table issue where it's now possible to fault on a PRT page.
+         * It's unknown which kernel version introduced it and when it will be fixed.
+         * Only seems to affect very specific content which does not really rely on the NULL page behavior anyway. */
+        device->workarounds.amdgpu_broken_null_tile_mapping = true;
+    }
 }
 
 static HRESULT vkd3d_create_vk_device(struct d3d12_device *device,
@@ -3219,8 +3606,6 @@ static HRESULT vkd3d_create_vk_device(struct d3d12_device *device,
         return E_OUTOFMEMORY;
     }
 
-    device->concurrent_transfer_queue = d3d12_device_has_fast_concurrent_transfer_queue(device);
-
     if (FAILED(hr = vkd3d_select_queues(device, physical_device, &device_queue_info)))
     {
         vkd3d_free(user_extension_supported);
@@ -3238,15 +3623,6 @@ static HRESULT vkd3d_create_vk_device(struct d3d12_device *device,
             device_queue_info.family_index[VKD3D_QUEUE_FAMILY_SPARSE_BINDING]);
     TRACE("Using queue family %u for optical flow.\n",
             device_queue_info.family_index[VKD3D_QUEUE_FAMILY_OPTICAL_FLOW]);
-
-    if (device_queue_info.family_index[VKD3D_QUEUE_FAMILY_TRANSFER] ==
-        device_queue_info.family_index[VKD3D_QUEUE_FAMILY_COMPUTE] ||
-        device_queue_info.family_index[VKD3D_QUEUE_FAMILY_TRANSFER] ==
-        device_queue_info.family_index[VKD3D_QUEUE_FAMILY_GRAPHICS])
-    {
-        /* If we emulate TRANSFER queue, we're implicitly concurrent. */
-        device->concurrent_transfer_queue = true;
-    }
 
     /* Create device */
     device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -3284,7 +3660,7 @@ static HRESULT vkd3d_create_vk_device(struct d3d12_device *device,
 
     if (FAILED(hr = vkd3d_load_vk_device_procs(&device->vk_procs, vk_procs, vk_device)))
     {
-        ERR("Failed to load device procs, hr %#x.\n", (int)hr);
+        ERR("Failed to load device procs, hr %#x.\n", hr);
         if (device->vk_procs.vkDestroyDevice)
             device->vk_procs.vkDestroyDevice(vk_device, NULL);
         return hr;
@@ -3294,7 +3670,7 @@ static HRESULT vkd3d_create_vk_device(struct d3d12_device *device,
 
     if (FAILED(hr = d3d12_device_create_vkd3d_queues(device, &device_queue_info)))
     {
-        ERR("Failed to create queues, hr %#x.\n", (int)hr);
+        ERR("Failed to create queues, hr %#x.\n", hr);
         device->vk_procs.vkDestroyDevice(vk_device, NULL);
         return hr;
     }
@@ -3401,7 +3777,7 @@ static HRESULT d3d12_device_create_scratch_buffer(struct d3d12_device *device, e
         alloc_info.heap_flags = D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS | D3D12_HEAP_FLAG_CREATE_NOT_ZEROED;
         alloc_info.flags = VKD3D_ALLOCATION_FLAG_GLOBAL_BUFFER | VKD3D_ALLOCATION_FLAG_INTERNAL_SCRATCH;
         alloc_info.vk_memory_priority = vkd3d_convert_to_vk_prio(D3D12_RESIDENCY_PRIORITY_NORMAL);
-        if (device->device_info.device_generated_commands_features.deviceGeneratedCommands)
+        if (device->device_info.device_generated_commands_features_ext.deviceGeneratedCommands)
         {
             /* this flag cannot be used with the existing buffer heaps */
             alloc_info.explicit_global_buffer_usage =
@@ -3626,6 +4002,16 @@ static HRESULT d3d12_device_create_query_pool(struct d3d12_device *device, uint3
             pool_info.queryCount = 128;
             break;
 
+        case VKD3D_QUERY_TYPE_INDEX_OMM_COMPACTED_SIZE:
+            pool_info.queryType = VK_QUERY_TYPE_MICROMAP_COMPACTED_SIZE_EXT;
+            pool_info.queryCount = 128;
+            break;
+
+        case VKD3D_QUERY_TYPE_INDEX_OMM_SERIALIZE_SIZE:
+            pool_info.queryType = VK_QUERY_TYPE_MICROMAP_SERIALIZATION_SIZE_EXT;
+            pool_info.queryCount = 128;
+            break;
+
         default:
             ERR("Unhandled query type %u.\n", type_index);
             return E_INVALIDARG;
@@ -3640,8 +4026,6 @@ static HRESULT d3d12_device_create_query_pool(struct d3d12_device *device, uint3
     pool->type_index = type_index;
     pool->query_count = pool_info.queryCount;
     pool->next_index = 0;
-
-    VK_CALL(vkResetQueryPool(device->vk_device, pool->vk_query_pool, 0, pool->query_count));
     return S_OK;
 }
 
@@ -3656,7 +4040,6 @@ static void d3d12_device_destroy_query_pool(struct d3d12_device *device, const s
 
 HRESULT d3d12_device_get_query_pool(struct d3d12_device *device, uint32_t type_index, struct vkd3d_query_pool *pool)
 {
-    const struct vkd3d_vk_device_procs *vk_procs = &device->vk_procs;
     size_t i;
 
     pthread_mutex_lock(&device->mutex);
@@ -3670,8 +4053,6 @@ HRESULT d3d12_device_get_query_pool(struct d3d12_device *device, uint32_t type_i
             if (--device->query_pool_count != i)
                 device->query_pools[i] = device->query_pools[device->query_pool_count];
             pthread_mutex_unlock(&device->mutex);
-
-            VK_CALL(vkResetQueryPool(device->vk_device, pool->vk_query_pool, 0, pool->query_count));
             return S_OK;
         }
     }
@@ -3725,23 +4106,16 @@ HRESULT STDMETHODCALLTYPE d3d12_device_QueryInterface(d3d12_device_iface *iface,
             || IsEqualGUID(riid, &IID_ID3D12Device10)
             || IsEqualGUID(riid, &IID_ID3D12Device11)
             || IsEqualGUID(riid, &IID_ID3D12Device12)
-            || IsEqualGUID(riid, &IID_ID3D12Device13)
-            || IsEqualGUID(riid, &IID_ID3D12Device14)
-            || IsEqualGUID(riid, &IID_ID3D12Device15)
             || IsEqualGUID(riid, &IID_ID3D12Object)
             || IsEqualGUID(riid, &IID_IUnknown))
     {
-        ID3D12Device15_AddRef(iface);
+        ID3D12Device12_AddRef(iface);
         *object = iface;
         return S_OK;
     }
 
     if (IsEqualGUID(riid, &IID_ID3D12DeviceExt)
-            || IsEqualGUID(riid, &IID_ID3D12DeviceExt1)
-            || IsEqualGUID(riid, &IID_ID3D12DeviceExt2)
-            || IsEqualGUID(riid, &IID_ID3D12DeviceExt3)
-            || IsEqualGUID(riid, &IID_ID3D12DeviceExt4)
-            || IsEqualGUID(riid, &IID_ID3D12DeviceExt5))
+            || IsEqualGUID(riid, &IID_ID3D12DeviceExt1))
     {
         d3d12_device_vkd3d_ext_AddRef(&device->ID3D12DeviceExt_iface);
         *object = &device->ID3D12DeviceExt_iface;
@@ -3750,8 +4124,7 @@ HRESULT STDMETHODCALLTYPE d3d12_device_QueryInterface(d3d12_device_iface *iface,
 
     if (IsEqualGUID(riid, &IID_ID3D12DXVKInteropDevice)
             || IsEqualGUID(riid, &IID_ID3D12DXVKInteropDevice1)
-            || IsEqualGUID(riid, &IID_ID3D12DXVKInteropDevice2)
-            || IsEqualGUID(riid, &IID_ID3D12DXVKInteropDevice3))
+            || IsEqualGUID(riid, &IID_ID3D12DXVKInteropDevice2))
     {
         d3d12_dxvk_interop_device_AddRef(&device->ID3D12DXVKInteropDevice_iface);
         *object = &device->ID3D12DXVKInteropDevice_iface;
@@ -3785,16 +4158,6 @@ HRESULT STDMETHODCALLTYPE d3d12_device_QueryInterface(d3d12_device_iface *iface,
         return S_OK;
     }
 
-    if (IsEqualGUID(riid, &IID_ID3D12DeviceConfiguration) ||
-        IsEqualGUID(riid, &IID_ID3D12DeviceConfiguration1))
-    {
-        /* Unfortunately we cannot safely borrow from a ID3D12DeviceFactory pointer since
-         * tests prove refcounts have to work like COM expects, so need to duplicate stuff :( */
-        ID3D12DeviceConfiguration1_AddRef(&device->ID3D12DeviceConfiguration1_iface);
-        *object = &device->ID3D12DeviceConfiguration1_iface;
-        return S_OK;
-    }
-
     WARN("%s not implemented, returning E_NOINTERFACE.\n", debugstr_guid(riid));
 
     *object = NULL;
@@ -3814,17 +4177,6 @@ ULONG d3d12_device_release_common(struct d3d12_device *device)
 {
     ULONG cur_refcount, cas_refcount;
     bool is_locked = false;
-
-    if (device->independent_device)
-    {
-        cur_refcount = InterlockedDecrement(&device->refcount);
-        if (cur_refcount == 0)
-        {
-            d3d12_device_destroy(device);
-            vkd3d_free_aligned(device);
-        }
-        return cur_refcount;
-    }
 
     cur_refcount = 0;
     cas_refcount = vkd3d_atomic_uint32_load_explicit(&device->refcount, vkd3d_memory_order_relaxed);
@@ -3862,7 +4214,7 @@ ULONG d3d12_device_release_common(struct d3d12_device *device)
 static ULONG STDMETHODCALLTYPE d3d12_device_AddRef(d3d12_device_iface *iface)
 {
     struct d3d12_device *device = impl_from_ID3D12Device(iface);
-    unsigned int refcount = d3d12_device_add_ref_common(device);
+    ULONG refcount = d3d12_device_add_ref_common(device);
     TRACE("%p increasing refcount to %u.\n", device, refcount);
     return refcount;
 }
@@ -3870,7 +4222,7 @@ static ULONG STDMETHODCALLTYPE d3d12_device_AddRef(d3d12_device_iface *iface)
 static ULONG STDMETHODCALLTYPE d3d12_device_Release(d3d12_device_iface *iface)
 {
     struct d3d12_device *device = impl_from_ID3D12Device(iface);
-    unsigned int refcount = d3d12_device_release_common(device);
+    UINT refcount = d3d12_device_release_common(device);
     TRACE("%p decreasing refcount to %u.\n", device, refcount);
     return refcount;
 }
@@ -3931,7 +4283,7 @@ static void d3d12_device_destroy(struct d3d12_device *device)
 #endif
 #ifdef VKD3D_ENABLE_BREADCRUMBS
     vkd3d_breadcrumb_tracer_cleanup_barrier_hashes(&device->breadcrumb_tracer);
-    if (VKD3D_CONFIG_FLAG_IS_SET(BREADCRUMBS))
+    if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_BREADCRUMBS)
         vkd3d_breadcrumb_tracer_cleanup(&device->breadcrumb_tracer, device);
 #endif
     vkd3d_pipeline_library_flush_disk_cache(&device->disk_cache);
@@ -3955,17 +4307,12 @@ static void d3d12_device_destroy(struct d3d12_device *device)
         vkd3d_renderdoc_end_capture(device->vkd3d_instance->vk_instance);
 #endif
 
-    /* Some page faults may not trigger a real fault. Just poll.
-     * It's possible we missed some page faults. This is our last chance.
-     */
-    if (device->device_info.fault_features.deviceFaultReportMasked)
-        d3d12_device_poll_device_faults(device, 0);
-
     vkd3d_free((void *)device->vk_info.extension_names);
     VK_CALL(vkDestroyDevice(device->vk_device, NULL));
     rwlock_destroy(&device->fragment_output_lock);
     rwlock_destroy(&device->vertex_input_lock);
     pthread_mutex_destroy(&device->mutex);
+    pthread_mutex_destroy(&device->global_submission_mutex);
     d3d12_device_close_kmt(device);
     if (device->parent)
         IUnknown_Release(device->parent);
@@ -4218,10 +4565,6 @@ bool d3d12_device_is_uma(struct d3d12_device *device, bool *coherent)
 
     for (i = 0; i < device->memory_properties.memoryTypeCount; ++i)
     {
-		/* Ignore these types. We never use them and they won't be HOST_VISIBLE. */
-		if (device->memory_properties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT)
-			continue;
-
         if (!(device->memory_properties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
             return false;
         if (coherent && !(device->memory_properties.memoryTypes[i].propertyFlags
@@ -4232,8 +4575,17 @@ bool d3d12_device_is_uma(struct d3d12_device *device, bool *coherent)
     return true;
 }
 
+static DXGI_FORMAT d3d12_device_get_typeless_format(struct d3d12_device *device, DXGI_FORMAT format)
+{
+    if (format < device->format_compatibility_list_count)
+        return device->format_compatibility_lists[format].typeless_format;
+
+    return DXGI_FORMAT_UNKNOWN;
+}
+
 static UINT d3d12_device_get_format_displayable_features(struct d3d12_device *device, DXGI_FORMAT format)
 {
+    DXGI_FORMAT typeless_format;
     unsigned int i;
     UINT flags;
 
@@ -4249,20 +4601,18 @@ static UINT d3d12_device_get_format_displayable_features(struct d3d12_device *de
         DXGI_FORMAT_R16G16B16A16_FLOAT,
     };
 
+    typeless_format = d3d12_device_get_typeless_format(device, format);
     flags = 0u;
 
     for (i = 0; i < ARRAY_SIZE(displayable_formats); i++)
     {
         if (displayable_formats[i] == format)
-        {
             flags |= D3D12_FORMAT_SUPPORT1_DISPLAY;
-
-            if (format < device->format_compatibility_list_count && device->format_compatibility_lists[format].format_count > 1)
-                flags |= D3D12_FORMAT_SUPPORT1_BACK_BUFFER_CAST;
-        }
+        else if (typeless_format && d3d12_device_get_typeless_format(device, displayable_formats[i]) == typeless_format)
+            flags |= D3D12_FORMAT_SUPPORT1_BACK_BUFFER_CAST;
     }
 
-    return flags;
+    return (flags & D3D12_FORMAT_SUPPORT1_DISPLAY) ? flags : 0u;
 }
 
 static bool d3d12_format_is_streamout_compatible(DXGI_FORMAT format)
@@ -4297,10 +4647,10 @@ static bool d3d12_format_is_streamout_compatible(DXGI_FORMAT format)
 static HRESULT d3d12_device_get_format_support(struct d3d12_device *device, D3D12_FEATURE_DATA_FORMAT_SUPPORT *data)
 {
     const struct vkd3d_vk_device_procs *vk_procs = &device->vk_procs;
-    const struct vkd3d_format *format, *dsv_format;
     VkPhysicalDeviceImageFormatInfo2 format_info;
     VkImageFormatProperties2 format_properties;
     VkFormatFeatureFlags2 image_features;
+    const struct vkd3d_format *format;
     VkResult vr;
 
     data->Support1 = D3D12_FORMAT_SUPPORT1_NONE;
@@ -4321,10 +4671,8 @@ static HRESULT d3d12_device_get_format_support(struct d3d12_device *device, D3D1
         return S_OK;
     }
 
-    dsv_format = vkd3d_get_format(device, data->Format, true);
-
     if (!(format = vkd3d_get_format(device, data->Format, false)))
-        format = dsv_format;
+        format = vkd3d_get_format(device, data->Format, true);
     if (!format)
         return E_FAIL;
 
@@ -4342,15 +4690,12 @@ static HRESULT d3d12_device_get_format_support(struct d3d12_device *device, D3D1
     else
         image_features = format->vk_format_features;
 
-    if (format->type != VKD3D_FORMAT_TYPE_TYPELESS)
-    {
-        if (format->vk_format_features_buffer)
-            data->Support1 |= D3D12_FORMAT_SUPPORT1_BUFFER;
-        if (format->vk_format_features_buffer & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT)
-            data->Support1 |= D3D12_FORMAT_SUPPORT1_IA_VERTEX_BUFFER;
-        if (data->Format == DXGI_FORMAT_R16_UINT || data->Format == DXGI_FORMAT_R32_UINT)
-            data->Support1 |= D3D12_FORMAT_SUPPORT1_IA_INDEX_BUFFER;
-    }
+    if (format->vk_format_features_buffer)
+        data->Support1 |= D3D12_FORMAT_SUPPORT1_BUFFER;
+    if (format->vk_format_features_buffer & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT)
+        data->Support1 |= D3D12_FORMAT_SUPPORT1_IA_VERTEX_BUFFER;
+    if (data->Format == DXGI_FORMAT_R16_UINT || data->Format == DXGI_FORMAT_R32_UINT)
+        data->Support1 |= D3D12_FORMAT_SUPPORT1_IA_INDEX_BUFFER;
 
     if (d3d12_format_is_streamout_compatible(data->Format))
         data->Support1 |= D3D12_FORMAT_SUPPORT1_SO_BUFFER;
@@ -4361,12 +4706,7 @@ static HRESULT d3d12_device_get_format_support(struct d3d12_device *device, D3D1
 
         /* Planar formats only support 2D textures with one mip */
         if (!(format->vk_aspect_mask & VK_IMAGE_ASPECT_PLANE_0_BIT))
-        {
-            data->Support1 |= D3D12_FORMAT_SUPPORT1_TEXTURECUBE | D3D12_FORMAT_SUPPORT1_MIP;
-
-            if (max(format->block_height, format->block_width) == 1)
-                data->Support1 |= D3D12_FORMAT_SUPPORT1_TEXTURE1D;
-        }
+            data->Support1 |= D3D12_FORMAT_SUPPORT1_TEXTURE1D | D3D12_FORMAT_SUPPORT1_TEXTURECUBE | D3D12_FORMAT_SUPPORT1_MIP;
 
         /* 3D depth-stencil images are not supported */
         if (format->vk_aspect_mask & VK_IMAGE_ASPECT_COLOR_BIT)
@@ -4378,69 +4718,53 @@ static HRESULT d3d12_device_get_format_support(struct d3d12_device *device, D3D1
 
         data->Support1 |= d3d12_device_get_format_displayable_features(device, format->dxgi_format);
     }
-
-    /* Rendering and shader usage features are not set for typeless formats,
-     * but they are reported for video formats for some reason */
-    if (format->type != VKD3D_FORMAT_TYPE_TYPELESS || (format->vk_aspect_mask & VK_IMAGE_ASPECT_PLANE_0_BIT))
+    if (image_features & VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT)
     {
-        bool is_dsv_format = format == dsv_format &&
-            (dsv_format->vk_aspect_mask & VK_IMAGE_ASPECT_DEPTH_BIT) &&
-            ((dsv_format->vk_aspect_mask & VK_IMAGE_ASPECT_STENCIL_BIT) || dsv_format->plane_count < 2);
-
-        if (image_features & VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT)
+        data->Support1 |= D3D12_FORMAT_SUPPORT1_SHADER_LOAD | D3D12_FORMAT_SUPPORT1_MULTISAMPLE_LOAD
+                | D3D12_FORMAT_SUPPORT1_SHADER_GATHER;
+        if (image_features & VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_FILTER_LINEAR_BIT)
         {
-            /* Do not report any shader usage flags for actual depth-stencil view formats */
-            if (!is_dsv_format)
-            {
-                data->Support1 |= D3D12_FORMAT_SUPPORT1_SHADER_LOAD | D3D12_FORMAT_SUPPORT1_SHADER_GATHER;
-
-                if (format->supported_sample_counts != VK_SAMPLE_COUNT_1_BIT)
-                    data->Support1 |= D3D12_FORMAT_SUPPORT1_MULTISAMPLE_LOAD;
-
-                if ((image_features & VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_FILTER_LINEAR_BIT) && (format->vk_aspect_mask != VK_IMAGE_ASPECT_STENCIL_BIT))
-                    data->Support1 |= D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE;
-
-                /* Need to consider all formats here that can be used to read depth */
-                if (dsv_format && dsv_format->vk_aspect_mask == VK_IMAGE_ASPECT_DEPTH_BIT)
-                {
-                    data->Support1 |= D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE_COMPARISON
-                            | D3D12_FORMAT_SUPPORT1_SHADER_GATHER_COMPARISON;
-                }
-            }
+            data->Support1 |= D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE;
         }
-        if (image_features & VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT)
+        if (format->vk_aspect_mask & VK_IMAGE_ASPECT_DEPTH_BIT)
         {
-            data->Support1 |= D3D12_FORMAT_SUPPORT1_RENDER_TARGET | D3D12_FORMAT_SUPPORT1_MULTISAMPLE_RENDERTARGET;
+            data->Support1 |= D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE_COMPARISON
+                    | D3D12_FORMAT_SUPPORT1_SHADER_GATHER_COMPARISON;
+        }
+    }
+    if (image_features & VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT)
+    {
+        data->Support1 |= D3D12_FORMAT_SUPPORT1_RENDER_TARGET | D3D12_FORMAT_SUPPORT1_MULTISAMPLE_RENDERTARGET;
 
-            if (device->device_info.features2.features.logicOp && format->type == VKD3D_FORMAT_TYPE_UINT)
-                data->Support2 |= D3D12_FORMAT_SUPPORT2_OUTPUT_MERGER_LOGIC_OP;
+        if (device->device_info.features2.features.logicOp && format->type == VKD3D_FORMAT_TYPE_UINT)
+            data->Support2 |= D3D12_FORMAT_SUPPORT2_OUTPUT_MERGER_LOGIC_OP;
 
-            /* This bit seems to only indicate support for AVERAGE resolves and is
-             * not reported for integer or depth/stencil formats on native drivers. */
-            if (format->type == VKD3D_FORMAT_TYPE_OTHER)
-                data->Support1 |= D3D12_FORMAT_SUPPORT1_MULTISAMPLE_RESOLVE;
-        }
-        if (image_features & VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BLEND_BIT)
-            data->Support1 |= D3D12_FORMAT_SUPPORT1_BLENDABLE;
-        if ((image_features & VK_FORMAT_FEATURE_2_DEPTH_STENCIL_ATTACHMENT_BIT) && is_dsv_format)
-            data->Support1 |= D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL | D3D12_FORMAT_SUPPORT1_MULTISAMPLE_RENDERTARGET;
-        if ((image_features & VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT) && !is_dsv_format)
-        {
-            data->Support1 |= D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW;
-            if (image_features & VK_FORMAT_FEATURE_2_STORAGE_READ_WITHOUT_FORMAT_BIT)
-                data->Support2 |= D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD;
-            if (image_features & VK_FORMAT_FEATURE_2_STORAGE_WRITE_WITHOUT_FORMAT_BIT)
-                data->Support2 |= D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE;
-        }
-        if ((image_features & VK_FORMAT_FEATURE_2_STORAGE_IMAGE_ATOMIC_BIT) && !is_dsv_format)
-        {
-            data->Support2 |= D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_ADD
-                    | D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_BITWISE_OPS
-                    | D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_COMPARE_STORE_OR_COMPARE_EXCHANGE
-                    | D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_EXCHANGE
-                    | D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_SIGNED_MIN_OR_MAX
-                    | D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_UNSIGNED_MIN_OR_MAX;
-        }
+        /* This bit seems to only indicate support for AVERAGE resolves and is
+         * not reported for integer or depth/stencil formats on native drivers. */
+        if (format->type == VKD3D_FORMAT_TYPE_OTHER)
+            data->Support1 |= D3D12_FORMAT_SUPPORT1_MULTISAMPLE_RESOLVE;
+    }
+    if (image_features & VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BLEND_BIT)
+        data->Support1 |= D3D12_FORMAT_SUPPORT1_BLENDABLE;
+    if (image_features & VK_FORMAT_FEATURE_2_DEPTH_STENCIL_ATTACHMENT_BIT)
+        data->Support1 |= D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL | D3D12_FORMAT_SUPPORT1_MULTISAMPLE_RENDERTARGET;
+    if (image_features & VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT)
+    {
+        data->Support1 |= D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW;
+        if (image_features & VK_FORMAT_FEATURE_2_STORAGE_READ_WITHOUT_FORMAT_BIT)
+            data->Support2 |= D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD;
+        if (image_features & VK_FORMAT_FEATURE_2_STORAGE_WRITE_WITHOUT_FORMAT_BIT)
+            data->Support2 |= D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE;
+    }
+
+    if (image_features & VK_FORMAT_FEATURE_2_STORAGE_IMAGE_ATOMIC_BIT)
+    {
+        data->Support2 |= D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_ADD
+                | D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_BITWISE_OPS
+                | D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_COMPARE_STORE_OR_COMPARE_EXCHANGE
+                | D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_EXCHANGE
+                | D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_SIGNED_MIN_OR_MAX
+                | D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_UNSIGNED_MIN_OR_MAX;
     }
 
     /* Do not support tiled resources for planar formats, matches D3D12. */
@@ -4475,143 +4799,6 @@ static HRESULT d3d12_device_get_format_support(struct d3d12_device *device, D3D1
     }
 
     return S_OK;
-}
-
-static bool d3d12_device_supports_placed_resource(struct d3d12_device *device,
-        const D3D12_HEAP_PROPERTIES *heap_properties,
-        D3D12_RESOURCE_DIMENSION dimension, DXGI_FORMAT format)
-{
-    D3D12_FEATURE_DATA_FORMAT_SUPPORT data;
-    D3D12_RESOURCE_DESC1 desc;
-
-    memset(&data, 0, sizeof(data));
-    data.Format = format;
-
-    /* Validate that the format is sound. */
-    if (FAILED(d3d12_device_get_format_support(device, &data)))
-        return false;
-    if (dimension == D3D12_RESOURCE_DIMENSION_BUFFER && !(data.Support1 & D3D12_FORMAT_SUPPORT1_BUFFER))
-        return false;
-    if (dimension == D3D12_RESOURCE_DIMENSION_TEXTURE1D && !(data.Support1 & D3D12_FORMAT_SUPPORT1_TEXTURE1D))
-        return false;
-    if (dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && !(data.Support1 & D3D12_FORMAT_SUPPORT1_TEXTURE2D))
-        return false;
-    if (dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D && !(data.Support1 & D3D12_FORMAT_SUPPORT1_TEXTURE3D))
-        return false;
-
-    memset(&desc, 0, sizeof(desc));
-    desc.Width = 1;
-    desc.Height = 1;
-    desc.DepthOrArraySize = 1;
-    desc.Dimension = dimension;
-    desc.Format = format;
-    desc.SampleDesc.Count = 1;
-    desc.Layout = dimension == D3D12_RESOURCE_DIMENSION_BUFFER ?
-        D3D12_TEXTURE_LAYOUT_ROW_MAJOR : D3D12_TEXTURE_LAYOUT_UNKNOWN;
-
-    if (FAILED(d3d12_resource_validate_heap_properties(&desc, heap_properties, D3D12_RESOURCE_STATE_COMMON)))
-        return false;
-
-    return true;
-}
-
-static bool find_in_barrier_layout_list(D3D12_BARRIER_LAYOUT layout, const D3D12_BARRIER_LAYOUT *layouts, unsigned int count)
-{
-    unsigned int i;
-    for (i = 0; i < count; i++)
-        if (layouts[i] == layout)
-            return true;
-    return false;
-}
-
-static bool d3d12_barrier_layout_is_supported(D3D12_COMMAND_LIST_TYPE type, D3D12_BARRIER_LAYOUT layout)
-{
-    static const D3D12_BARRIER_LAYOUT direct_queue_only_layouts[] =
-    {
-        D3D12_BARRIER_LAYOUT_DIRECT_QUEUE_COMMON,
-        D3D12_BARRIER_LAYOUT_DIRECT_QUEUE_GENERIC_READ,
-        D3D12_BARRIER_LAYOUT_DIRECT_QUEUE_UNORDERED_ACCESS,
-        D3D12_BARRIER_LAYOUT_DIRECT_QUEUE_SHADER_RESOURCE,
-        D3D12_BARRIER_LAYOUT_DIRECT_QUEUE_COPY_SOURCE,
-        D3D12_BARRIER_LAYOUT_DIRECT_QUEUE_COPY_DEST,
-        D3D12_BARRIER_LAYOUT_RENDER_TARGET,
-        D3D12_BARRIER_LAYOUT_DEPTH_STENCIL_READ,
-        D3D12_BARRIER_LAYOUT_DEPTH_STENCIL_WRITE,
-        D3D12_BARRIER_LAYOUT_RESOLVE_SOURCE,
-        D3D12_BARRIER_LAYOUT_RESOLVE_DEST,
-        D3D12_BARRIER_LAYOUT_SHADING_RATE_SOURCE,
-    };
-
-    static const D3D12_BARRIER_LAYOUT compute_queue_only_layouts[] =
-    {
-        D3D12_BARRIER_LAYOUT_COMPUTE_QUEUE_COMMON,
-        D3D12_BARRIER_LAYOUT_COMPUTE_QUEUE_GENERIC_READ,
-        D3D12_BARRIER_LAYOUT_COMPUTE_QUEUE_UNORDERED_ACCESS,
-        D3D12_BARRIER_LAYOUT_COMPUTE_QUEUE_SHADER_RESOURCE,
-        D3D12_BARRIER_LAYOUT_COMPUTE_QUEUE_COPY_SOURCE,
-        D3D12_BARRIER_LAYOUT_COMPUTE_QUEUE_COPY_DEST,
-    };
-
-    static const D3D12_BARRIER_LAYOUT graphics_compute_only_layouts[] =
-    {
-        D3D12_BARRIER_LAYOUT_GENERIC_READ,
-        D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS,
-        D3D12_BARRIER_LAYOUT_SHADER_RESOURCE,
-        /* Not allowed in COPY which is ... interesting. Only COMMON is allowed there it seems. */
-        D3D12_BARRIER_LAYOUT_COPY_SOURCE,
-        D3D12_BARRIER_LAYOUT_COPY_DEST,
-    };
-
-    static const D3D12_BARRIER_LAYOUT video_process_only_layouts[] =
-    {
-        D3D12_BARRIER_LAYOUT_VIDEO_PROCESS_READ,
-        D3D12_BARRIER_LAYOUT_VIDEO_PROCESS_WRITE,
-    };
-
-    static const D3D12_BARRIER_LAYOUT video_encode_only_layouts[] =
-    {
-        D3D12_BARRIER_LAYOUT_VIDEO_ENCODE_READ,
-        D3D12_BARRIER_LAYOUT_VIDEO_ENCODE_WRITE,
-    };
-
-    static const D3D12_BARRIER_LAYOUT video_decode_only_layouts[] =
-    {
-        D3D12_BARRIER_LAYOUT_VIDEO_DECODE_READ,
-        D3D12_BARRIER_LAYOUT_VIDEO_DECODE_WRITE,
-    };
-
-    /* Runtime ignores bogus command list type. */
-    if (layout == D3D12_BARRIER_LAYOUT_COMMON || layout == D3D12_BARRIER_LAYOUT_UNDEFINED)
-        return true;
-
-#define find_in_list(layouts) find_in_barrier_layout_list(layout, layouts, ARRAY_SIZE(layouts))
-    if (type != D3D12_COMMAND_LIST_TYPE_DIRECT && find_in_list(direct_queue_only_layouts))
-        return false;
-
-    if (type != D3D12_COMMAND_LIST_TYPE_COMPUTE && find_in_list(compute_queue_only_layouts))
-        return false;
-
-    if (type != D3D12_COMMAND_LIST_TYPE_VIDEO_PROCESS && find_in_list(video_process_only_layouts))
-        return false;
-    if (type != D3D12_COMMAND_LIST_TYPE_VIDEO_DECODE && find_in_list(video_decode_only_layouts))
-        return false;
-    if (type != D3D12_COMMAND_LIST_TYPE_VIDEO_ENCODE && find_in_list(video_encode_only_layouts))
-        return false;
-
-    if (type != D3D12_COMMAND_LIST_TYPE_DIRECT &&
-        type != D3D12_COMMAND_LIST_TYPE_COMPUTE &&
-        find_in_list(graphics_compute_only_layouts))
-        return false;
-
-    if (layout == D3D12_BARRIER_LAYOUT_VIDEO_QUEUE_COMMON &&
-        type != D3D12_COMMAND_LIST_TYPE_VIDEO_PROCESS &&
-        type != D3D12_COMMAND_LIST_TYPE_VIDEO_DECODE &&
-        type != D3D12_COMMAND_LIST_TYPE_VIDEO_ENCODE)
-        return false;
-
-#undef find_in_list
-
-    return true;
 }
 
 static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_iface *iface,
@@ -4989,18 +5176,9 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
                 return E_INVALIDARG;
             }
 
-            /* Complete support would require some sort of wine
-             * interop to support file handles and kernels to deal with file mappings properly.
-             * We cannot easily query that here, but noone seems to rely on that particular feature.
-             * We support the simpler cases, however,
-             * and at least one ISV has asked for this to be exposed. */
-#ifdef _WIN32
-            data->Supported = device->vk_info.EXT_external_memory_host;
-#else
-            /* Cannot easily support this on native Linux since we don't have VirtualQuery() and friends.
-             * Not important enough to support to bother implementing it ourselves. */
+            /* Would require some sort of wine
+             * interop to support file handles */
             data->Supported = FALSE;
-#endif
 
             TRACE("Existing heaps %#x.\n", data->Supported);
             return S_OK;
@@ -5378,26 +5556,6 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
             return S_OK;
         }
 
-        case D3D12_FEATURE_D3D12_OPTIONS22:
-        {
-            D3D12_FEATURE_DATA_D3D12_OPTIONS22 *data = feature_data;
-
-            if (feature_data_size != sizeof(*data))
-            {
-                WARN("Invalid size %u.\n", feature_data_size);
-                return E_INVALIDARG;
-            }
-
-            *data = device->d3d12_caps.options22;
-
-            TRACE("CreateByteOffsetViewsSupported %u\n", data->CreateByteOffsetViewsSupported);
-            TRACE("Max1DDispatchMeshSize %u\n", data->Max1DDispatchMeshSize);
-            TRACE("Max1DDispatchSize %u\n", data->Max1DDispatchSize);
-            TRACE("ShaderExecutionReorderingActuallyReorders %u\n", data->ShaderExecutionReorderingActuallyReorders);
-
-            return S_OK;
-        }
-
         case D3D12_FEATURE_D3D12_TIGHT_ALIGNMENT:
         {
             D3D12_FEATURE_DATA_TIGHT_ALIGNMENT *data = feature_data;
@@ -5492,77 +5650,6 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
             return E_INVALIDARG;
         }
 
-        case D3D12_FEATURE_PREDICATION:
-        {
-            /* Unknown what this is referring to. It was added in same agiltitysdk as AV1, so might be video related.
-			 * Native runtime returns E_NOTIMPL here *shrug* */
-            FIXME("Unexpected call to D3D12_FEATURE_PREDICATION. This is completely undocumented it seems.\n");
-            return E_NOTIMPL;
-        }
-
-        case D3D12_FEATURE_HARDWARE_COPY:
-        {
-            /* Unknown what this is referring to. It was added in same agiltitysdk as AV1, so might be video related.
-			 * Native runtime returns E_NOTIMPL here *shrug* */
-            FIXME("Unexpected call for D3D12_FEATURE_HARDWARE_COPY. This is completely undocumented it seems.\n");
-            return E_NOTIMPL;
-        }
-
-        case D3D12_FEATURE_PLACED_RESOURCE_SUPPORT_INFO:
-        {
-            D3D12_FEATURE_DATA_PLACED_RESOURCE_SUPPORT_INFO *data = feature_data;
-
-            if (feature_data_size != sizeof(*data))
-            {
-                WARN("Invalid size %u.\n", feature_data_size);
-                return E_INVALIDARG;
-            }
-
-            FIXME("Unexpected call for D3D12_FEATURE_PLACED_RESOURCE_SUPPORT_INFO. This is completely undocumented it seems.\n");
-            data->Supported = d3d12_device_supports_placed_resource(device, &data->DestHeapProperties,
-                data->Dimension, data->Format);
-            return S_OK;
-        }
-
-        case D3D12_FEATURE_BYTECODE_BYPASS_HASH_SUPPORTED:
-        {
-            D3D12_FEATURE_DATA_BYTECODE_BYPASS_HASH_SUPPORTED *data = feature_data;
-
-            if (feature_data_size != sizeof(*data))
-            {
-                WARN("Invalid size %u.\n", feature_data_size);
-                return E_INVALIDARG;
-            }
-
-            /* We ignore the DXIL hash, which this is supposed to be for.
-			 * It's only documented in the hlsl proposals repo ?!?!? */
-            data->Supported = TRUE;
-            return S_OK;
-        }
-
-        case D3D12_FEATURE_SHADER_CACHE_ABI_SUPPORT:
-            /* Yes, SHADERCACHE is typoed like that */
-            if (feature_data_size != sizeof(D3D12_FEATURE_DATA_SHADERCACHE_ABI_SUPPORT))
-                return E_INVALIDARG;
-
-		    /* Rather than signaling missing support in the output struct, E_FAIL is supposed to be returned. */
-            return E_FAIL;
-
-        case D3D12_FEATURE_BARRIER_LAYOUT:
-        {
-            D3D12_FEATURE_DATA_BARRIER_LAYOUT *data = feature_data;
-
-            if (feature_data_size != sizeof(*data))
-            {
-                WARN("Invalid size %u.\n", feature_data_size);
-                return E_INVALIDARG;
-            }
-
-            /* This seems to be a simple utility query. */
-            data->Supported = d3d12_barrier_layout_is_supported(data->CommandListType, data->Layout);
-            return S_OK;
-        }
-
         default:
             FIXME("Unhandled feature %#x.\n", feature);
             return E_NOTIMPL;
@@ -5603,7 +5690,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CreateRootSignature(d3d12_device_i
     struct d3d12_root_signature *object;
     HRESULT hr;
 
-    TRACE("iface %p, node_mask 0x%08x, bytecode %p, bytecode_length %zu, riid %s, root_signature %p.\n",
+    TRACE("iface %p, node_mask 0x%08x, bytecode %p, bytecode_length %lu, riid %s, root_signature %p.\n",
             iface, node_mask, bytecode, bytecode_length, debugstr_guid(riid), root_signature);
 
     debug_ignored_node_mask(node_mask);
@@ -5615,47 +5702,12 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CreateRootSignature(d3d12_device_i
             &IID_ID3D12RootSignature, riid, root_signature);
 }
 
-static HRESULT STDMETHODCALLTYPE d3d12_device_CreateRootSignatureFromSubobjectInLibrary(
-        d3d12_device_iface *iface, UINT node_mask,
-        const void *library_blob, SIZE_T blob_length_in_bytes,
-        LPCWSTR subobject_name, REFIID riid, void **root_signature)
-{
-    struct d3d12_device *device = impl_from_ID3D12Device(iface);
-    struct d3d12_root_signature *object;
-    HRESULT hr;
-
-    TRACE("iface %p, node_mask %u, library_blob %p, blob_length_in_bytes %zu, subobject_name %s, riid %s, root_signature %p, stub!\n",
-            iface, node_mask, library_blob, blob_length_in_bytes,
-            debugstr_w(subobject_name), debugstr_guid(riid), root_signature);
-
-    debug_ignored_node_mask(node_mask);
-
-    /* NULL subobject_name segfaults on native, so don't need to check it. */
-
-    if (FAILED(hr = d3d12_root_signature_create_from_subobject(device, library_blob, blob_length_in_bytes,
-            subobject_name, &object)))
-        return hr;
-
-    return return_interface(&object->ID3D12RootSignature_iface,
-            &IID_ID3D12RootSignature, riid, root_signature);
-}
-
-static void STDMETHODCALLTYPE d3d12_device_CreateConstantBufferView_heap(d3d12_device_iface *iface,
-        const D3D12_CONSTANT_BUFFER_VIEW_DESC *desc, D3D12_CPU_DESCRIPTOR_HANDLE descriptor)
-{
-    struct d3d12_device *device = impl_from_ID3D12Device(iface);
-
-    TRACE("iface %p, desc %p, descriptor %#zx.\n", iface, desc, descriptor.ptr);
-
-    d3d12_desc_create_cbv_heap(descriptor.ptr, device, desc);
-}
-
 static void STDMETHODCALLTYPE d3d12_device_CreateConstantBufferView_embedded(d3d12_device_iface *iface,
         const D3D12_CONSTANT_BUFFER_VIEW_DESC *desc, D3D12_CPU_DESCRIPTOR_HANDLE descriptor)
 {
     struct d3d12_device *device = impl_from_ID3D12Device(iface);
 
-    TRACE("iface %p, desc %p, descriptor %#zx.\n", iface, desc, descriptor.ptr);
+    TRACE("iface %p, desc %p, descriptor %#lx.\n", iface, desc, descriptor.ptr);
 
     d3d12_desc_create_cbv_embedded(descriptor.ptr, device, desc);
 }
@@ -5665,21 +5717,9 @@ static void STDMETHODCALLTYPE d3d12_device_CreateConstantBufferView_default(d3d1
 {
     struct d3d12_device *device = impl_from_ID3D12Device(iface);
 
-    TRACE("iface %p, desc %p, descriptor %#zx.\n", iface, desc, descriptor.ptr);
+    TRACE("iface %p, desc %p, descriptor %#lx.\n", iface, desc, descriptor.ptr);
 
     d3d12_desc_create_cbv(descriptor.ptr, device, desc);
-}
-
-static void STDMETHODCALLTYPE d3d12_device_CreateShaderResourceView_heap(d3d12_device_iface *iface,
-        ID3D12Resource *resource, const D3D12_SHADER_RESOURCE_VIEW_DESC *desc,
-        D3D12_CPU_DESCRIPTOR_HANDLE descriptor)
-{
-    struct d3d12_device *device = impl_from_ID3D12Device(iface);
-
-    TRACE("iface %p, resource %p, desc %p, descriptor %#zx.\n",
-            iface, resource, desc, descriptor.ptr);
-
-    d3d12_desc_create_srv_heap(descriptor.ptr, device, impl_from_ID3D12Resource(resource), desc);
 }
 
 static void STDMETHODCALLTYPE d3d12_device_CreateShaderResourceView_embedded(d3d12_device_iface *iface,
@@ -5688,7 +5728,7 @@ static void STDMETHODCALLTYPE d3d12_device_CreateShaderResourceView_embedded(d3d
 {
     struct d3d12_device *device = impl_from_ID3D12Device(iface);
 
-    TRACE("iface %p, resource %p, desc %p, descriptor %#zx.\n",
+    TRACE("iface %p, resource %p, desc %p, descriptor %#lx.\n",
             iface, resource, desc, descriptor.ptr);
 
     d3d12_desc_create_srv_embedded(descriptor.ptr, device, impl_from_ID3D12Resource(resource), desc);
@@ -5700,55 +5740,10 @@ static void STDMETHODCALLTYPE d3d12_device_CreateShaderResourceView_default(d3d1
 {
     struct d3d12_device *device = impl_from_ID3D12Device(iface);
 
-    TRACE("iface %p, resource %p, desc %p, descriptor %#zx.\n",
+    TRACE("iface %p, resource %p, desc %p, descriptor %#lx.\n",
             iface, resource, desc, descriptor.ptr);
 
     d3d12_desc_create_srv(descriptor.ptr, device, impl_from_ID3D12Resource(resource), desc);
-}
-
-VKD3D_THREAD_LOCAL struct D3D12_UAV_INFO *d3d12_uav_info = NULL;
-
-static void STDMETHODCALLTYPE d3d12_device_CreateUnorderedAccessView_heap(d3d12_device_iface *iface,
-        ID3D12Resource *resource, ID3D12Resource *counter_resource,
-        const D3D12_UNORDERED_ACCESS_VIEW_DESC *desc, D3D12_CPU_DESCRIPTOR_HANDLE descriptor)
-{
-    struct d3d12_resource *d3d12_resource_ = impl_from_ID3D12Resource(resource);
-    struct d3d12_device *device = impl_from_ID3D12Device(iface);
-    TRACE("iface %p, resource %p, counter_resource %p, desc %p, descriptor %#zx.\n",
-            iface, resource, counter_resource, desc, descriptor.ptr);
-
-    d3d12_desc_create_uav_heap(descriptor.ptr,
-            device, d3d12_resource_,
-            impl_from_ID3D12Resource(counter_resource), desc);
-
-    /* d3d12_uav_info stores the pointer to data from previous call to d3d12_device_vkd3d_ext_CaptureUAVInfo().
-     * Below code will update the data. */
-    if (d3d12_uav_info)
-    {
-        /* Buffer VAs are updated in vkd3d_create_buffer_uav_heap since we cannot rely on metadata. */
-
-        if (!desc || desc->ViewDimension != D3D12_UAV_DIMENSION_BUFFER)
-        {
-            d3d12_uav_info->surfaceHandle = d3d12_device_find_shader_visible_descriptor_heap_offset(device, descriptor.ptr,
-                    D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-            if (d3d12_uav_info->surfaceHandle == UINT32_MAX)
-            {
-                /* Older DLSS DLLs call this on a CPU descriptor heap.
-                 * It's meaningless to report a heap index for these, but those DLLs expect
-                 * the index we return to at least be valid. Just return a dummy index that points
-                 * to a redzone descriptor. We apparently have to return 0 here for it to work,
-                 * 1 through 3 didn't seem to work as I had hoped. */
-                d3d12_uav_info->surfaceHandle = 0;
-            }
-
-            /* Is this even used? */
-            d3d12_uav_info->gpuVAStart = 0;
-            d3d12_uav_info->gpuVASize = 0;
-        }
-
-        d3d12_uav_info = NULL;
-    }
 }
 
 static void STDMETHODCALLTYPE d3d12_device_CreateUnorderedAccessView_embedded(d3d12_device_iface *iface,
@@ -5757,7 +5752,7 @@ static void STDMETHODCALLTYPE d3d12_device_CreateUnorderedAccessView_embedded(d3
 {
     struct d3d12_resource *d3d12_resource_ = impl_from_ID3D12Resource(resource);
     struct d3d12_device *device = impl_from_ID3D12Device(iface);
-    TRACE("iface %p, resource %p, counter_resource %p, desc %p, descriptor %#zx.\n",
+    TRACE("iface %p, resource %p, counter_resource %p, desc %p, descriptor %#lx.\n",
             iface, resource, counter_resource, desc, descriptor.ptr);
 
     d3d12_desc_create_uav_embedded(descriptor.ptr,
@@ -5767,6 +5762,8 @@ static void STDMETHODCALLTYPE d3d12_device_CreateUnorderedAccessView_embedded(d3
     /* Unknown at this time if we can support magic d3d12_uav_info with embedded mutable. */
 }
 
+VKD3D_THREAD_LOCAL struct D3D12_UAV_INFO *d3d12_uav_info = NULL;
+
 static void STDMETHODCALLTYPE d3d12_device_CreateUnorderedAccessView_default(d3d12_device_iface *iface,
         ID3D12Resource *resource, ID3D12Resource *counter_resource,
         const D3D12_UNORDERED_ACCESS_VIEW_DESC *desc, D3D12_CPU_DESCRIPTOR_HANDLE descriptor)
@@ -5775,7 +5772,7 @@ static void STDMETHODCALLTYPE d3d12_device_CreateUnorderedAccessView_default(d3d
     VkResult vr;
     struct d3d12_resource *d3d12_resource_ = impl_from_ID3D12Resource(resource);
     struct d3d12_device *device = impl_from_ID3D12Device(iface);
-    TRACE("iface %p, resource %p, counter_resource %p, desc %p, descriptor %#zx.\n",
+    TRACE("iface %p, resource %p, counter_resource %p, desc %p, descriptor %#lx.\n",
             iface, resource, counter_resource, desc, descriptor.ptr);
 
     d3d12_desc_create_uav(descriptor.ptr,
@@ -5821,7 +5818,7 @@ static void STDMETHODCALLTYPE d3d12_device_CreateRenderTargetView(d3d12_device_i
         ID3D12Resource *resource, const D3D12_RENDER_TARGET_VIEW_DESC *desc,
         D3D12_CPU_DESCRIPTOR_HANDLE descriptor)
 {
-    TRACE("iface %p, resource %p, desc %p, descriptor %#zx.\n",
+    TRACE("iface %p, resource %p, desc %p, descriptor %#lx.\n",
             iface, resource, desc, descriptor.ptr);
 
     d3d12_rtv_desc_create_rtv(d3d12_rtv_desc_from_cpu_handle(descriptor),
@@ -5832,24 +5829,11 @@ static void STDMETHODCALLTYPE d3d12_device_CreateDepthStencilView(d3d12_device_i
         ID3D12Resource *resource, const D3D12_DEPTH_STENCIL_VIEW_DESC *desc,
         D3D12_CPU_DESCRIPTOR_HANDLE descriptor)
 {
-    TRACE("iface %p, resource %p, desc %p, descriptor %#zx.\n",
+    TRACE("iface %p, resource %p, desc %p, descriptor %#lx.\n",
             iface, resource, desc, descriptor.ptr);
 
     d3d12_rtv_desc_create_dsv(d3d12_rtv_desc_from_cpu_handle(descriptor),
             impl_from_ID3D12Device(iface), impl_from_ID3D12Resource(resource), desc);
-}
-
-static void STDMETHODCALLTYPE d3d12_device_CreateSampler_heap(d3d12_device_iface *iface,
-        const D3D12_SAMPLER_DESC *desc, D3D12_CPU_DESCRIPTOR_HANDLE descriptor)
-{
-    struct d3d12_device *device = impl_from_ID3D12Device(iface);
-    D3D12_SAMPLER_DESC2 desc2;
-
-    TRACE("iface %p, desc %p, descriptor %#zx.\n", iface, desc, descriptor.ptr);
-
-    memcpy(&desc2, desc, sizeof(*desc));
-    desc2.Flags = D3D12_SAMPLER_FLAG_NONE;
-    d3d12_desc_create_sampler_heap(descriptor.ptr, device, &desc2);
 }
 
 static void STDMETHODCALLTYPE d3d12_device_CreateSampler_embedded(d3d12_device_iface *iface,
@@ -5858,7 +5842,7 @@ static void STDMETHODCALLTYPE d3d12_device_CreateSampler_embedded(d3d12_device_i
     struct d3d12_device *device = impl_from_ID3D12Device(iface);
     D3D12_SAMPLER_DESC2 desc2;
 
-    TRACE("iface %p, desc %p, descriptor %#zx.\n", iface, desc, descriptor.ptr);
+    TRACE("iface %p, desc %p, descriptor %#lx.\n", iface, desc, descriptor.ptr);
 
     memcpy(&desc2, desc, sizeof(*desc));
     desc2.Flags = D3D12_SAMPLER_FLAG_NONE;
@@ -5871,21 +5855,11 @@ static void STDMETHODCALLTYPE d3d12_device_CreateSampler_default(d3d12_device_if
     struct d3d12_device *device = impl_from_ID3D12Device(iface);
     D3D12_SAMPLER_DESC2 desc2;
 
-    TRACE("iface %p, desc %p, descriptor %#zx.\n", iface, desc, descriptor.ptr);
+    TRACE("iface %p, desc %p, descriptor %#lx.\n", iface, desc, descriptor.ptr);
 
     memcpy(&desc2, desc, sizeof(*desc));
     desc2.Flags = D3D12_SAMPLER_FLAG_NONE;
     d3d12_desc_create_sampler(descriptor.ptr, device, &desc2);
-}
-
-static void STDMETHODCALLTYPE d3d12_device_CreateSampler2_heap(d3d12_device_iface *iface,
-        const D3D12_SAMPLER_DESC2 *desc, D3D12_CPU_DESCRIPTOR_HANDLE descriptor)
-{
-    struct d3d12_device *device = impl_from_ID3D12Device(iface);
-
-    TRACE("iface %p, desc %p, descriptor %#zx.\n", iface, desc, descriptor.ptr);
-
-    d3d12_desc_create_sampler_heap(descriptor.ptr, device, desc);
 }
 
 static void STDMETHODCALLTYPE d3d12_device_CreateSampler2_embedded(d3d12_device_iface *iface,
@@ -5893,7 +5867,7 @@ static void STDMETHODCALLTYPE d3d12_device_CreateSampler2_embedded(d3d12_device_
 {
     struct d3d12_device *device = impl_from_ID3D12Device(iface);
 
-    TRACE("iface %p, desc %p, descriptor %#zx.\n", iface, desc, descriptor.ptr);
+    TRACE("iface %p, desc %p, descriptor %#lx.\n", iface, desc, descriptor.ptr);
 
     d3d12_desc_create_sampler_embedded(descriptor.ptr, device, desc);
 }
@@ -5903,7 +5877,7 @@ static void STDMETHODCALLTYPE d3d12_device_CreateSampler2_default(d3d12_device_i
 {
     struct d3d12_device *device = impl_from_ID3D12Device(iface);
 
-    TRACE("iface %p, desc %p, descriptor %#zx.\n", iface, desc, descriptor.ptr);
+    TRACE("iface %p, desc %p, descriptor %#lx.\n", iface, desc, descriptor.ptr);
 
     d3d12_desc_create_sampler(descriptor.ptr, device, desc);
 }
@@ -6031,8 +6005,8 @@ static void STDMETHODCALLTYPE d3d12_device_CopyDescriptorsSimple_descriptor_buff
     struct d3d12_desc_split src;
     size_t i, n;
 
-    TRACE("iface %p, descriptor_count %u, dst_descriptor_range_offset %#zx, "
-          "src_descriptor_range_offset %#zx, descriptor_heap_type %#x.\n",
+    TRACE("iface %p, descriptor_count %u, dst_descriptor_range_offset %#lx, "
+          "src_descriptor_range_offset %#lx, descriptor_heap_type %#x.\n",
             iface, descriptor_count, dst_descriptor_range_offset.ptr, src_descriptor_range_offset.ptr,
             descriptor_heap_type);
 
@@ -6135,8 +6109,8 @@ static void STDMETHODCALLTYPE d3d12_device_CopyDescriptorsSimple_descriptor_buff
     struct d3d12_desc_split src;
     size_t i, n;
 
-    TRACE("iface %p, descriptor_count %u, dst_descriptor_range_offset %#zx, "
-          "src_descriptor_range_offset %#zx, descriptor_heap_type %#x.\n",
+    TRACE("iface %p, descriptor_count %u, dst_descriptor_range_offset %#lx, "
+          "src_descriptor_range_offset %#lx, descriptor_heap_type %#x.\n",
             iface, descriptor_count, dst_descriptor_range_offset.ptr, src_descriptor_range_offset.ptr,
             descriptor_heap_type);
 
@@ -6233,8 +6207,8 @@ static void STDMETHODCALLTYPE d3d12_device_CopyDescriptorsSimple_embedded_64_16_
         D3D12_DESCRIPTOR_HEAP_TYPE descriptor_heap_type)
 {
     struct d3d12_device *device;
-    TRACE("iface %p, descriptor_count %u, dst_descriptor_range_offset %#zx, "
-          "src_descriptor_range_offset %#zx, descriptor_heap_type %#x.\n",
+    TRACE("iface %p, descriptor_count %u, dst_descriptor_range_offset %#lx, "
+          "src_descriptor_range_offset %#lx, descriptor_heap_type %#x.\n",
             iface, descriptor_count, dst_descriptor_range_offset.ptr, src_descriptor_range_offset.ptr,
             descriptor_heap_type);
 
@@ -6326,8 +6300,8 @@ static void STDMETHODCALLTYPE d3d12_device_CopyDescriptorsSimple_embedded_32_16_
         D3D12_DESCRIPTOR_HEAP_TYPE descriptor_heap_type)
 {
     struct d3d12_device *device;
-    TRACE("iface %p, descriptor_count %u, dst_descriptor_range_offset %#zx, "
-          "src_descriptor_range_offset %#zx, descriptor_heap_type %#x.\n",
+    TRACE("iface %p, descriptor_count %u, dst_descriptor_range_offset %#lx, "
+          "src_descriptor_range_offset %#lx, descriptor_heap_type %#x.\n",
             iface, descriptor_count, dst_descriptor_range_offset.ptr, src_descriptor_range_offset.ptr,
             descriptor_heap_type);
 
@@ -6377,100 +6351,14 @@ static void STDMETHODCALLTYPE d3d12_device_CopyDescriptorsSimple_embedded_32_16_
     }
 }
 
-static void STDMETHODCALLTYPE d3d12_device_CopyDescriptorsSimple_embedded_32_32_planar(d3d12_device_iface *iface,
-        UINT descriptor_count, const D3D12_CPU_DESCRIPTOR_HANDLE dst_descriptor_range_offset,
-        const D3D12_CPU_DESCRIPTOR_HANDLE src_descriptor_range_offset,
-        D3D12_DESCRIPTOR_HEAP_TYPE descriptor_heap_type)
-{
-    struct d3d12_device *device;
-    TRACE("iface %p, descriptor_count %u, dst_descriptor_range_offset %#zx, "
-          "src_descriptor_range_offset %#zx, descriptor_heap_type %#x.\n",
-            iface, descriptor_count, dst_descriptor_range_offset.ptr, src_descriptor_range_offset.ptr,
-            descriptor_heap_type);
-
-    if (VKD3D_EXPECT_TRUE(descriptor_heap_type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV ||
-            descriptor_heap_type == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER))
-    {
-        if (VKD3D_EXPECT_TRUE(descriptor_count == 1))
-        {
-            /* Expected path. */
-            d3d12_desc_copy_embedded_resource_single_32(
-                    dst_descriptor_range_offset.ptr,
-                    src_descriptor_range_offset.ptr);
-        }
-        else
-        {
-            /* Rare path. */
-            d3d12_desc_copy_embedded_resource(
-                    dst_descriptor_range_offset.ptr,
-                    src_descriptor_range_offset.ptr,
-                    32 * descriptor_count);
-        }
-    }
-    else
-    {
-        device = unsafe_impl_from_ID3D12Device(iface);
-        d3d12_device_copy_descriptors(device,
-                1, &dst_descriptor_range_offset, &descriptor_count,
-                1, &src_descriptor_range_offset, &descriptor_count,
-                descriptor_heap_type);
-    }
-}
-
-static void STDMETHODCALLTYPE d3d12_device_CopyDescriptorsSimple_embedded_128_32_planar(d3d12_device_iface *iface,
-        UINT descriptor_count, const D3D12_CPU_DESCRIPTOR_HANDLE dst_descriptor_range_offset,
-        const D3D12_CPU_DESCRIPTOR_HANDLE src_descriptor_range_offset,
-        D3D12_DESCRIPTOR_HEAP_TYPE descriptor_heap_type)
-{
-    struct d3d12_device *device;
-    TRACE("iface %p, descriptor_count %u, dst_descriptor_range_offset %#zx, "
-          "src_descriptor_range_offset %#zx, descriptor_heap_type %#x.\n",
-            iface, descriptor_count, dst_descriptor_range_offset.ptr, src_descriptor_range_offset.ptr,
-            descriptor_heap_type);
-
-    if (VKD3D_EXPECT_TRUE(descriptor_heap_type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV))
-    {
-        d3d12_desc_copy_embedded_resource(
-                dst_descriptor_range_offset.ptr,
-                src_descriptor_range_offset.ptr,
-                128 * descriptor_count);
-    }
-    else if (descriptor_heap_type == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER)
-    {
-        if (VKD3D_EXPECT_TRUE(descriptor_count == 1))
-        {
-            /* Expected path. */
-            vkd3d_memcpy_aligned_32_cached(
-                    (void *)dst_descriptor_range_offset.ptr,
-                    (const void *)src_descriptor_range_offset.ptr);
-        }
-        else
-        {
-            /* Rare path. */
-            vkd3d_memcpy_aligned_cached(
-                    (void *)dst_descriptor_range_offset.ptr,
-                    (const void *)src_descriptor_range_offset.ptr,
-                    32 * descriptor_count);
-        }
-    }
-    else
-    {
-        device = unsafe_impl_from_ID3D12Device(iface);
-        d3d12_device_copy_descriptors(device,
-                1, &dst_descriptor_range_offset, &descriptor_count,
-                1, &src_descriptor_range_offset, &descriptor_count,
-                descriptor_heap_type);
-    }
-}
-
 static void STDMETHODCALLTYPE d3d12_device_CopyDescriptorsSimple_embedded_generic(d3d12_device_iface *iface,
         UINT descriptor_count, const D3D12_CPU_DESCRIPTOR_HANDLE dst_descriptor_range_offset,
         const D3D12_CPU_DESCRIPTOR_HANDLE src_descriptor_range_offset,
         D3D12_DESCRIPTOR_HEAP_TYPE descriptor_heap_type)
 {
     struct d3d12_device *device;
-    TRACE("iface %p, descriptor_count %u, dst_descriptor_range_offset %#zx, "
-          "src_descriptor_range_offset %#zx, descriptor_heap_type %#x.\n",
+    TRACE("iface %p, descriptor_count %u, dst_descriptor_range_offset %#lx, "
+          "src_descriptor_range_offset %#lx, descriptor_heap_type %#x.\n",
             iface, descriptor_count, dst_descriptor_range_offset.ptr, src_descriptor_range_offset.ptr,
             descriptor_heap_type);
 
@@ -6481,14 +6369,14 @@ static void STDMETHODCALLTYPE d3d12_device_CopyDescriptorsSimple_embedded_generi
         d3d12_desc_copy_embedded_resource(
                 dst_descriptor_range_offset.ptr,
                 src_descriptor_range_offset.ptr,
-                device->bindless_state.cbv_srv_uav_size * descriptor_count);
+                device->bindless_state.descriptor_buffer_cbv_srv_uav_size * descriptor_count);
     }
     else if (descriptor_heap_type == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER)
     {
         vkd3d_memcpy_aligned_cached(
                 (void *)dst_descriptor_range_offset.ptr,
                 (const void *)src_descriptor_range_offset.ptr,
-                device->bindless_state.sampler_size * descriptor_count);
+                device->bindless_state.descriptor_buffer_sampler_size * descriptor_count);
     }
     else
     {
@@ -6505,8 +6393,8 @@ static void STDMETHODCALLTYPE d3d12_device_CopyDescriptorsSimple_default(d3d12_d
         D3D12_DESCRIPTOR_HEAP_TYPE descriptor_heap_type)
 {
     struct d3d12_device *device;
-    TRACE("iface %p, descriptor_count %u, dst_descriptor_range_offset %#zx, "
-            "src_descriptor_range_offset %#zx, descriptor_heap_type %#x.\n",
+    TRACE("iface %p, descriptor_count %u, dst_descriptor_range_offset %#lx, "
+            "src_descriptor_range_offset %#lx, descriptor_heap_type %#x.\n",
             iface, descriptor_count, dst_descriptor_range_offset.ptr, src_descriptor_range_offset.ptr,
             descriptor_heap_type);
 
@@ -6683,7 +6571,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CreateSharedHandle(d3d12_device_if
     vk_procs = &device->vk_procs;
 
     TRACE("iface %p, object %p, attributes %p, access %#x, name %s, handle %p\n",
-            iface, object, attributes, (int)access, debugstr_w(name), handle);
+            iface, object, attributes, access, debugstr_w(name), handle);
 
     attr.Length = sizeof(attr);
     attr.SecurityDescriptor = (void *)attributes;
@@ -6723,7 +6611,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CreateSharedHandle(d3d12_device_if
         if (attributes)
             FIXME("attributes %p not handled.\n", attributes);
         if (access)
-            FIXME("access %#x not handled.\n", (int)access);
+            FIXME("access %#x not handled.\n", access);
         if (name)
             FIXME("name %s not handled.\n", debugstr_w(name));
 
@@ -6794,7 +6682,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CreateSharedHandle(d3d12_device_if
         if (attributes)
             FIXME("attributes %p not handled\n", attributes);
         if (access)
-            FIXME("access %#x not handled\n", (int)access);
+            FIXME("access %#x not handled\n", access);
         if (name)
             FIXME("name %s not handled\n", debugstr_w(name));
 
@@ -6856,7 +6744,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_OpenSharedHandle(d3d12_device_ifac
             if (FAILED(hr = d3d12_resource_create_committed(device, &desc, &heap_props,
                     D3D12_HEAP_FLAG_SHARED, D3D12_RESOURCE_STATE_COMMON, NULL, 0, NULL, handle, &resource)))
             {
-                WARN("Failed to open shared ID3D12Resource, hr %#x.\n", (int)hr);
+                WARN("Failed to open shared ID3D12Resource, hr %#x.\n", hr);
                 *object = NULL;
                 return hr;
             }
@@ -6931,7 +6819,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_OpenSharedHandle(d3d12_device_ifac
 
         if (FAILED(hr))
         {
-            WARN("Failed to open shared ID3D12Resource, hr %#x.\n", (int)hr);
+            WARN("Failed to open shared ID3D12Resource, hr %#x.\n", hr);
             *object = NULL;
             return hr;
         }
@@ -6949,7 +6837,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_OpenSharedHandle(d3d12_device_ifac
 
         if (FAILED(hr))
         {
-            WARN("Failed to create object for imported ID3D12Fence, hr %#x.\n", (int)hr);
+            WARN("Failed to create object for imported ID3D12Fence, hr %#x.\n", hr);
             *object = NULL;
             return hr;
         }
@@ -6987,7 +6875,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_OpenSharedHandleByName(d3d12_devic
         const WCHAR *name, DWORD access, HANDLE *handle)
 {
     FIXME("iface %p, name %s, access %#x, handle %p stub!\n",
-            iface, debugstr_w(name), (int)access, handle);
+            iface, debugstr_w(name), access, handle);
 
     return E_NOTIMPL;
 }
@@ -7139,7 +7027,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CreateFence(d3d12_device_iface *if
     TRACE("iface %p, intial_value %#"PRIx64", flags %#x, riid %s, fence %p.\n",
             iface, initial_value, flags, debugstr_guid(riid), fence);
 
-    if ((flags & D3D12_FENCE_FLAG_SHARED) && !VKD3D_CONFIG_FLAG_IS_SET(IGNORE_SHARED_FENCE))
+    if (flags & D3D12_FENCE_FLAG_SHARED)
     {
         if (SUCCEEDED(hr = d3d12_shared_fence_create(device, initial_value, flags, &shared_object)))
             return return_interface(&shared_object->ID3D12Fence_iface, &IID_ID3D12Fence, riid, fence);
@@ -7162,7 +7050,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_GetDeviceRemovedReason(d3d12_devic
 
     TRACE("iface %p.\n", iface);
 
-    return d3d12_device_removed_reason(device);
+    return vkd3d_atomic_uint32_load_explicit(&device->removed_reason, vkd3d_memory_order_acquire);
 }
 
 static void STDMETHODCALLTYPE d3d12_device_GetCopyableFootprints1(d3d12_device_iface *iface,
@@ -7188,31 +7076,20 @@ static void STDMETHODCALLTYPE d3d12_device_GetCopyableFootprints(d3d12_device_if
             sub_resource_count, base_offset, layouts, row_counts, row_sizes, total_bytes);
 }
 
-static HRESULT STDMETHODCALLTYPE d3d12_device_CreateQueryHeap1(
-        d3d12_device_iface *iface,
-        const D3D12_QUERY_HEAP_DESC *desc,
-        D3D12_QUERY_HEAP_FLAGS flags,
-        REFIID iid,
-        void **heap)
+static HRESULT STDMETHODCALLTYPE d3d12_device_CreateQueryHeap(d3d12_device_iface *iface,
+        const D3D12_QUERY_HEAP_DESC *desc, REFIID iid, void **heap)
 {
     struct d3d12_device *device = impl_from_ID3D12Device(iface);
     struct d3d12_query_heap *object;
     HRESULT hr;
 
-    TRACE("iface %p, desc %p, flags #%x, iid %s, heap %p.\n",
-            iface, desc, flags, debugstr_guid(iid), heap);
+    TRACE("iface %p, desc %p, iid %s, heap %p.\n",
+            iface, desc, debugstr_guid(iid), heap);
 
-    if (FAILED(hr = d3d12_query_heap_create(device, desc, flags, &object)))
+    if (FAILED(hr = d3d12_query_heap_create(device, desc, &object)))
         return hr;
 
     return return_interface(&object->ID3D12QueryHeap_iface, &IID_ID3D12QueryHeap, iid, heap);
-}
-
-static HRESULT STDMETHODCALLTYPE d3d12_device_CreateQueryHeap(d3d12_device_iface *iface,
-        const D3D12_QUERY_HEAP_DESC *desc, REFIID iid, void **heap)
-{
-    TRACE("iface %p, desc %p, iid %s, heap %p.\n", iface, desc, debugstr_guid(iid), heap);
-    return d3d12_device_CreateQueryHeap1(iface, desc, D3D12_QUERY_HEAP_FLAG_NONE, iid, heap);
 }
 
 static HRESULT STDMETHODCALLTYPE d3d12_device_SetStablePowerState(d3d12_device_iface *iface, BOOL enable)
@@ -7294,7 +7171,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CreatePipelineLibrary(d3d12_device
     uint32_t flags;
     HRESULT hr;
 
-    TRACE("iface %p, blob %p, blob_size %zu, iid %s, lib %p.\n",
+    TRACE("iface %p, blob %p, blob_size %lu, iid %s, lib %p.\n",
             iface, blob, blob_size, debugstr_guid(iid), lib);
 
     flags = 0;
@@ -7303,13 +7180,13 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CreatePipelineLibrary(d3d12_device
      * to store SPIR-V / blob.
      * We only need to store metadata so we can implement the API correctly w.r.t. return values, and
      * PSO reload. */
-    if (!VKD3D_CONFIG_FLAG_IS_SET(PIPELINE_LIBRARY_NO_SERIALIZE_SPIRV) &&
+    if (!(vkd3d_config_flags & VKD3D_CONFIG_FLAG_PIPELINE_LIBRARY_NO_SERIALIZE_SPIRV) &&
             !device->disk_cache.library)
         flags |= VKD3D_PIPELINE_LIBRARY_FLAG_SAVE_FULL_SPIRV;
 
     /* If we're using global pipeline caches, these are irrelevant.
      * Do not use pipeline library blobs at all. */
-    if (!VKD3D_CONFIG_FLAG_IS_SET(GLOBAL_PIPELINE_CACHE))
+    if (!(vkd3d_config_flags & VKD3D_CONFIG_FLAG_GLOBAL_PIPELINE_CACHE))
     {
         flags |= VKD3D_PIPELINE_LIBRARY_FLAG_SAVE_PSO_BLOB |
                 VKD3D_PIPELINE_LIBRARY_FLAG_USE_PIPELINE_CACHE_UUID;
@@ -7319,8 +7196,16 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CreatePipelineLibrary(d3d12_device
             flags, &pipeline_library)))
         return hr;
 
-    return return_interface(&pipeline_library->ID3D12PipelineLibrary_iface,
-            &IID_ID3D12PipelineLibrary, iid, lib);
+    if (lib)
+    {
+        return return_interface(&pipeline_library->ID3D12PipelineLibrary_iface,
+                &IID_ID3D12PipelineLibrary, iid, lib);
+    }
+    else
+    {
+        ID3D12PipelineLibrary1_Release(&pipeline_library->ID3D12PipelineLibrary_iface);
+        return S_FALSE;
+    }
 }
 
 static HRESULT STDMETHODCALLTYPE d3d12_device_SetEventOnMultipleFenceCompletion(d3d12_device_iface *iface,
@@ -7359,7 +7244,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_SetEventOnMultipleFenceCompletion(
 
         if (FAILED(hr))
         {
-            ERR("Failed to create temporary event, hr %#x.\n", (int)hr);
+            ERR("Failed to create temporary event, hr %#x.\n", hr);
             return hr;
         }
     }
@@ -7504,48 +7389,16 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CreatePipelineState(d3d12_device_i
             &IID_ID3D12PipelineState, riid, pipeline_state);
 }
 
-static HRESULT STDMETHODCALLTYPE d3d12_device_OpenExistingHeapFromAddress1(
-        d3d12_device_iface *iface,
-        const void *address,
-        SIZE_T size,
-        REFIID riid,
-        void **ppHeap)
-{
-    struct d3d12_device *device = impl_from_ID3D12Device(iface);
-    D3D12_HEAP_DESC heap_desc;
-    struct d3d12_heap *object;
-    HRESULT hr;
-
-    TRACE("iface %p, address %p, size %zu, iid %s, ppHeap %p\n",
-        iface, address, size, debugstr_guid(riid), ppHeap);
-
-    memset(&heap_desc, 0, sizeof(heap_desc));
-    heap_desc.Alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
-    heap_desc.Flags = D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS |
-            (address ? (D3D12_HEAP_FLAG_SHARED | D3D12_HEAP_FLAG_SHARED_CROSS_ADAPTER) : 0);
-    heap_desc.Properties.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_WRITE_BACK;
-    heap_desc.Properties.MemoryPoolPreference = D3D12_MEMORY_POOL_L0;
-    heap_desc.Properties.Type = D3D12_HEAP_TYPE_CUSTOM;
-    heap_desc.Properties.CreationNodeMask = 1;
-    heap_desc.Properties.VisibleNodeMask = 1;
-    heap_desc.SizeInBytes = size;
-
-    if (FAILED(hr = d3d12_heap_create(device, &heap_desc, (void *)address, &object)))
-    {
-        if (ppHeap)
-            *ppHeap = NULL;
-        return hr;
-    }
-
-    return return_interface(&object->ID3D12Heap_iface, &IID_ID3D12Heap, riid, ppHeap);
-}
-
 static HRESULT STDMETHODCALLTYPE d3d12_device_OpenExistingHeapFromAddress(d3d12_device_iface *iface,
-        const void *address, REFIID riid, void **heap)
+        void *address, REFIID riid, void **heap)
 {
 #ifdef _WIN32
     MEMORY_BASIC_INFORMATION info;
+    struct d3d12_device *device;
+    struct d3d12_heap *object;
+    D3D12_HEAP_DESC heap_desc;
     size_t allocation_size;
+    HRESULT hr;
 
     TRACE("iface %p, address %p, riid %s, heap %p\n",
           iface, address, debugstr_guid(riid), heap);
@@ -7576,7 +7429,26 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_OpenExistingHeapFromAddress(d3d12_
         return E_INVALIDARG;
     }
 
-    return d3d12_device_OpenExistingHeapFromAddress1(iface, address, allocation_size, riid, heap);
+    device = impl_from_ID3D12Device(iface);
+
+    memset(&heap_desc, 0, sizeof(heap_desc));
+    heap_desc.Alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
+    heap_desc.Flags = D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS |
+            (address ? (D3D12_HEAP_FLAG_SHARED | D3D12_HEAP_FLAG_SHARED_CROSS_ADAPTER) : 0);
+    heap_desc.Properties.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_WRITE_BACK;
+    heap_desc.Properties.MemoryPoolPreference = D3D12_MEMORY_POOL_L0;
+    heap_desc.Properties.Type = D3D12_HEAP_TYPE_CUSTOM;
+    heap_desc.Properties.CreationNodeMask = 1;
+    heap_desc.Properties.VisibleNodeMask = 1;
+    heap_desc.SizeInBytes = allocation_size;
+
+    if (FAILED(hr = d3d12_heap_create(device, &heap_desc, address, &object)))
+    {
+        *heap = NULL;
+        return hr;
+    }
+
+    return return_interface(&object->ID3D12Heap_iface, &IID_ID3D12Heap, riid, heap);
 #else
     FIXME("OpenExistingHeapFromAddress can only be implemented in native Win32.\n");
     return E_NOTIMPL;
@@ -7804,7 +7676,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CreateMetaCommand(d3d12_device_ifa
     struct d3d12_meta_command *object;
     HRESULT hr;
 
-    TRACE("iface %p, command_id %s, node_mask %#x, param_data %p, param_size %zu, iid %s, meta_command %p.\n",
+    TRACE("iface %p, command_id %s, node_mask %#x, param_data %p, param_size %lu, iid %s, meta_command %p.\n",
             iface, debugstr_guid(command_id), node_mask, param_data, param_size, debugstr_guid(iid), meta_command);
 
     if (FAILED(hr = d3d12_meta_command_create(device, command_id, param_data, param_size, &object)))
@@ -7862,16 +7734,14 @@ static void d3d12_device_get_raytracing_opacity_micromap_array_prebuild_info(str
         const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS *desc,
         D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO *info)
 {
-    VkAccelerationStructureGeometryMicromapDataKHR geometry_micromap_data;
     const struct vkd3d_vk_device_procs *vk_procs = &device->vk_procs;
-    VkMicromapUsageKHR usages_stack[VKD3D_BUILD_INFO_STACK_COUNT];
-    VkAccelerationStructureBuildGeometryInfoKHR build_info;
-    VkAccelerationStructureBuildSizesInfoKHR size_info;
-    VkAccelerationStructureGeometryKHR geometry_info;
-    VkMicromapUsageKHR *usages;
+    VkMicromapUsageEXT usages_stack[VKD3D_BUILD_INFO_STACK_COUNT];
+    VkMicromapBuildSizesInfoEXT size_info;
+    VkMicromapBuildInfoEXT build_info;
+    VkMicromapUsageEXT *usages;
     uint32_t usages_count;
 
-    if (!device->device_info.supports_opacity_micromap)
+    if (!d3d12_device_supports_ray_tracing_tier_1_2(device))
     {
         ERR("Opacity micromap is not supported. Calling this is invalid.\n");
         memset(info, 0, sizeof(*info));
@@ -7885,8 +7755,7 @@ static void d3d12_device_get_raytracing_opacity_micromap_array_prebuild_info(str
     else
         usages = usages_stack;
 
-    if (!vkd3d_opacity_micromap_convert_inputs(device, desc, &build_info, &geometry_info,
-            &geometry_micromap_data, usages))
+    if (!vkd3d_opacity_micromap_convert_inputs(device, desc, &build_info, usages))
     {
         ERR("Failed to convert inputs.\n");
         memset(info, 0, sizeof(*info));
@@ -7894,12 +7763,13 @@ static void d3d12_device_get_raytracing_opacity_micromap_array_prebuild_info(str
     }
 
     memset(&size_info, 0, sizeof(size_info));
-    size_info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
+    size_info.sType = VK_STRUCTURE_TYPE_MICROMAP_BUILD_SIZES_INFO_EXT;
 
-    VK_CALL(vkGetAccelerationStructureBuildSizesKHR(device->vk_device,
-            VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &build_info, NULL, &size_info));
+    VK_CALL(vkGetMicromapBuildSizesEXT(device->vk_device,
+            VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+            &build_info, &size_info));
 
-    info->ResultDataMaxSizeInBytes = size_info.accelerationStructureSize;
+    info->ResultDataMaxSizeInBytes = size_info.micromapSize;
     info->ScratchDataSizeInBytes = size_info.buildScratchSize;
     info->UpdateScratchDataSizeInBytes = 0;
 
@@ -7918,12 +7788,11 @@ static void STDMETHODCALLTYPE d3d12_device_GetRaytracingAccelerationStructurePre
 {
     struct d3d12_device *device = impl_from_ID3D12Device(iface);
 
-    VkAccelerationStructureTrianglesOpacityMicromapKHR omm_triangles_infos_stack[VKD3D_BUILD_INFO_STACK_COUNT];
+    VkAccelerationStructureTrianglesOpacityMicromapEXT omms_stack[VKD3D_BUILD_INFO_STACK_COUNT];
     VkAccelerationStructureGeometryKHR geometries_stack[VKD3D_BUILD_INFO_STACK_COUNT];
-    VkAccelerationStructureTrianglesOpacityMicromapKHR *omm_triangles_infos;
     const struct vkd3d_vk_device_procs *vk_procs = &device->vk_procs;
     uint32_t primitive_counts_stack[VKD3D_BUILD_INFO_STACK_COUNT];
-    VkAccelerationStructureBuildSizesInfoKHR update_size_info;
+    VkAccelerationStructureTrianglesOpacityMicromapEXT *omms;
     VkAccelerationStructureBuildGeometryInfoKHR build_info;
     VkAccelerationStructureBuildSizesInfoKHR size_info;
     VkAccelerationStructureGeometryKHR *geometries;
@@ -7948,17 +7817,17 @@ static void STDMETHODCALLTYPE d3d12_device_GetRaytracingAccelerationStructurePre
     geometry_count = vkd3d_acceleration_structure_get_geometry_count(desc);
     primitive_counts = primitive_counts_stack;
     geometries = geometries_stack;
-    omm_triangles_infos = omm_triangles_infos_stack;
+    omms = omms_stack;
 
     if (geometry_count > VKD3D_BUILD_INFO_STACK_COUNT)
     {
         primitive_counts = vkd3d_malloc(geometry_count * sizeof(*primitive_counts));
         geometries = vkd3d_malloc(geometry_count * sizeof(*geometries));
-        omm_triangles_infos = vkd3d_malloc(geometry_count * sizeof(*omm_triangles_infos));
+        omms = vkd3d_malloc(geometry_count * sizeof(*omms));
     }
 
     if (!vkd3d_acceleration_structure_convert_inputs(device,
-            desc, &build_info, geometries, omm_triangles_infos, NULL, primitive_counts))
+            desc, &build_info, geometries, omms, NULL, primitive_counts))
     {
         ERR("Failed to convert inputs.\n");
         memset(info, 0, sizeof(*info));
@@ -7978,35 +7847,6 @@ static void STDMETHODCALLTYPE d3d12_device_GetRaytracingAccelerationStructurePre
     info->ScratchDataSizeInBytes = size_info.buildScratchSize;
     info->UpdateScratchDataSizeInBytes = size_info.updateScratchSize;
 
-    if (build_info.type == VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR &&
-        VKD3D_CONFIG_FLAG_IS_SET(RTAS_ALLOW_BLAS_REBUILD_SIZES))
-    {
-        if (!(build_info.flags & VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR))
-        {
-            /* The application may build with ALLOW_UPDATE even if it did not query with it,
-             * so the result has to be valid for both. We cannot assume that ALLOW_UPDATE only
-             * increases requirements. On NVIDIA, it reduces build scratch size by up to ~5x and
-             * RTAS size by ~10% for larger BLAS, so querying only with ALLOW_UPDATE would make
-             * builds without ALLOW_UPDATE overflow their scratch and result memory. */
-            build_info.flags |= VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
-
-            memset(&update_size_info, 0, sizeof(update_size_info));
-            update_size_info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
-
-            VK_CALL(vkGetAccelerationStructureBuildSizesKHR(device->vk_device,
-                    VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &build_info,
-                    primitive_counts, &update_size_info));
-
-            /* Pick the conservative result. */
-            info->ResultDataMaxSizeInBytes = max(info->ResultDataMaxSizeInBytes, update_size_info.accelerationStructureSize);
-            info->ScratchDataSizeInBytes = max(info->ScratchDataSizeInBytes, update_size_info.buildScratchSize);
-            info->UpdateScratchDataSizeInBytes = update_size_info.updateScratchSize;
-        }
-
-        info->ScratchDataSizeInBytes = max(info->ScratchDataSizeInBytes, info->UpdateScratchDataSizeInBytes);
-        info->UpdateScratchDataSizeInBytes = info->ScratchDataSizeInBytes;
-    }
-
     TRACE("ResultDataMaxSizeInBytes: %"PRIu64".\n", info->ResultDataMaxSizeInBytes);
     TRACE("ScratchDatSizeInBytes: %"PRIu64".\n", info->ScratchDataSizeInBytes);
     TRACE("UpdateScratchDataSizeInBytes: %"PRIu64".\n", info->UpdateScratchDataSizeInBytes);
@@ -8017,7 +7857,7 @@ cleanup:
     {
         vkd3d_free(primitive_counts);
         vkd3d_free(geometries);
-        vkd3d_free(omm_triangles_infos);
+        vkd3d_free(omms);
     }
 }
 
@@ -8120,17 +7960,19 @@ static D3D12_RESOURCE_ALLOCATION_INFO* STDMETHODCALLTYPE d3d12_device_GetResourc
         else
         {
             if (FAILED(vkd3d_get_image_allocation_info(device, desc,
-                    num_castable_formats, p_castable_formats, &resource_info)))
+                    num_castable_formats, p_castable_formats,
+                    &resource_info)))
             {
                 WARN("Failed to get allocation info for texture.\n");
                 goto invalid;
             }
 
-            if (!(desc->Flags & D3D12_RESOURCE_FLAG_USE_TIGHT_ALIGNMENT))
-            {
-                requested_alignment = desc->Alignment ? desc->Alignment : d3d12_resource_desc_default_alignment(desc);
-                resource_info.Alignment = max(resource_info.Alignment, requested_alignment);
-            }
+            requested_alignment = desc->Alignment;
+
+            if (!desc->Alignment && !(desc->Flags & D3D12_RESOURCE_FLAG_USE_TIGHT_ALIGNMENT))
+                requested_alignment = d3d12_resource_desc_default_alignment(desc);
+
+            resource_info.Alignment = max(resource_info.Alignment, requested_alignment);
         }
 
         resource_info.SizeInBytes = align(resource_info.SizeInBytes, resource_info.Alignment);
@@ -8144,7 +7986,7 @@ static D3D12_RESOURCE_ALLOCATION_INFO* STDMETHODCALLTYPE d3d12_device_GetResourc
         }
 
         TRACE("Offset = %"PRIu64", size = %"PRIu64", alignment = %"PRIu64
-                ", desc: %"PRIu64" x %u x %u, levels %u, samples %u, dim %u, fmt #%x, align %"PRIu64", flags #%x.\n",
+                ", desc: %u x %u x %u, levels %u, samples %u, dim %u, fmt #%x, align %"PRIu64", flags #%x.\n",
                 resource_offset, resource_info.SizeInBytes, resource_info.Alignment,
                 desc->Width, desc->Height, desc->DepthOrArraySize, desc->MipLevels, desc->SampleDesc.Count,
                 desc->Dimension, desc->Format, desc->Alignment, desc->Flags);
@@ -8252,7 +8094,7 @@ static void STDMETHODCALLTYPE d3d12_device_CreateSamplerFeedbackUnorderedAccessV
     struct d3d12_device *device = impl_from_ID3D12Device(iface);
     D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc;
 
-    TRACE("iface %p, target_resource %p, feedback_resource %p, descriptor %#zx\n",
+    TRACE("iface %p, target_resource %p, feedback_resource %p, descriptor %#lx\n",
             iface, target_resource, feedback_resource, descriptor.ptr);
 
     /* NULL paired resource means NULL descriptor.
@@ -8271,7 +8113,7 @@ static void STDMETHODCALLTYPE d3d12_device_CreateSamplerFeedbackUnorderedAccessV
     struct d3d12_device *device = impl_from_ID3D12Device(iface);
     D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc;
 
-    TRACE("iface %p, target_resource %p, feedback_resource %p, descriptor %#zx\n",
+    TRACE("iface %p, target_resource %p, feedback_resource %p, descriptor %#lx\n",
             iface, target_resource, feedback_resource, descriptor.ptr);
 
     /* NULL paired resource means NULL descriptor.
@@ -8281,25 +8123,6 @@ static void STDMETHODCALLTYPE d3d12_device_CreateSamplerFeedbackUnorderedAccessV
 
     d3d12_device_create_sampler_feedback_desc(&uav_desc, feedback);
     d3d12_desc_create_uav_embedded(descriptor.ptr, device, feedback, NULL, &uav_desc);
-}
-
-static void STDMETHODCALLTYPE d3d12_device_CreateSamplerFeedbackUnorderedAccessView_heap(d3d12_device_iface *iface,
-        ID3D12Resource *target_resource, ID3D12Resource *feedback_resource, D3D12_CPU_DESCRIPTOR_HANDLE descriptor)
-{
-    struct d3d12_resource *feedback = impl_from_ID3D12Resource(feedback_resource);
-    struct d3d12_device *device = impl_from_ID3D12Device(iface);
-    D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc;
-
-    TRACE("iface %p, target_resource %p, feedback_resource %p, descriptor %#zx\n",
-            iface, target_resource, feedback_resource, descriptor.ptr);
-
-    /* NULL paired resource means NULL descriptor.
-     * https://microsoft.github.io/DirectX-Specs/d3d/SamplerFeedback.html#null-feedback-map-binding-is-permitted */
-    if (!target_resource)
-        feedback = NULL;
-
-    d3d12_device_create_sampler_feedback_desc(&uav_desc, feedback);
-    d3d12_desc_create_uav_heap(descriptor.ptr, device, feedback, NULL, &uav_desc);
 }
 
 static void STDMETHODCALLTYPE d3d12_device_GetCopyableFootprints1(d3d12_device_iface *iface,
@@ -8595,124 +8418,9 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CreateReservedResource2(d3d12_devi
     return return_interface(&object->ID3D12Resource_iface, &IID_ID3D12Resource, iid, resource);
 }
 
-static HRESULT STDMETHODCALLTYPE d3d12_device_RegisterTrimNotificationCallback(
-        d3d12_device_iface *iface,
-        D3D12_REGISTER_TRIM_NOTIFICATION *pData)
-{
-    FIXME("iface %p, pData %p stub!\n", iface, pData);
-    return E_NOTIMPL;
-}
-
-static HRESULT STDMETHODCALLTYPE d3d12_device_UnregisterTrimNotificationCallback(
-        d3d12_device_iface *iface,
-        DWORD CallbackCookie)
-{
-    FIXME("iface %p, CallbackCookie #%x stub!\n", iface, (unsigned int)CallbackCookie);
-    return E_NOTIMPL;
-}
-
-static HRESULT STDMETHODCALLTYPE d3d12_device_TryCreateShaderResourceView(
-        d3d12_device_iface *iface, ID3D12Resource *resource,
-        const D3D12_SHADER_RESOURCE_VIEW_DESC *desc,
-        D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor)
-{
-    TRACE("iface %p, resource %p, desc %p, DestDescriptor #%zx\n",
-            iface, resource, desc, (size_t)DestDescriptor.ptr);
-
-    /* Don't want to create a million new vtable variants just for this ... */
-    FIXME_ONCE("Incomplete validation\n");
-    ID3D12Device15_CreateShaderResourceView(iface, resource, desc, DestDescriptor);
-    return S_OK;
-}
-
-static HRESULT STDMETHODCALLTYPE d3d12_device_TryCreateUnorderedAccessView(
-        d3d12_device_iface *iface,
-        ID3D12Resource *resource, ID3D12Resource *counter,
-        const D3D12_UNORDERED_ACCESS_VIEW_DESC *desc,
-        D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor)
-{
-    TRACE("iface %p, resource %p, counter %p, desc %p, DestDescriptor #%zx\n",
-            iface, resource, counter, desc, (size_t)DestDescriptor.ptr);
-    FIXME_ONCE("Incomplete validation\n");
-    ID3D12Device15_CreateUnorderedAccessView(iface, resource, counter, desc, DestDescriptor);
-    return S_OK;
-}
-
-static HRESULT STDMETHODCALLTYPE d3d12_device_TryCreateConstantBufferView(
-        d3d12_device_iface *iface, const D3D12_CONSTANT_BUFFER_VIEW_DESC *desc,
-        D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor)
-{
-    TRACE("iface %p, desc %p, DestDescriptor #%zx\n",
-            iface, desc, (size_t)DestDescriptor.ptr);
-    FIXME_ONCE("Incomplete validation\n");
-    ID3D12Device15_CreateConstantBufferView(iface, desc, DestDescriptor);
-    return S_OK;
-}
-
-static HRESULT STDMETHODCALLTYPE d3d12_device_TryCreateSampler2(
-        d3d12_device_iface *iface,
-        const D3D12_SAMPLER_DESC2 *desc,
-        D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor)
-{
-    TRACE("iface %p, pDesc %p, DestDescriptor #%zx\n",
-            iface, desc, (size_t)DestDescriptor.ptr);
-    FIXME_ONCE("Incomplete validation\n");
-    ID3D12Device15_CreateSampler2(iface, desc, DestDescriptor);
-    return S_OK;
-}
-
-static HRESULT STDMETHODCALLTYPE d3d12_device_TryCreateRenderTargetView(
-        d3d12_device_iface *iface,
-        ID3D12Resource *resource,
-        const D3D12_RENDER_TARGET_VIEW_DESC *desc,
-        D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor)
-{
-    TRACE("iface %p, pResource %p, pDesc %p, DestDescriptor #%zx\n",
-            iface, resource, desc, (size_t)DestDescriptor.ptr);
-    FIXME_ONCE("Incomplete validation\n");
-    ID3D12Device15_CreateRenderTargetView(iface, resource, desc, DestDescriptor);
-    return S_OK;
-}
-
-static HRESULT STDMETHODCALLTYPE d3d12_device_TryCreateDepthStencilView(
-        d3d12_device_iface *iface,
-        ID3D12Resource *resource,
-        const D3D12_DEPTH_STENCIL_VIEW_DESC *desc,
-        D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor)
-{
-    TRACE("iface %p, resource %p, desc %p, DestDescriptor #%zx\n",
-            iface, resource, desc, (size_t)DestDescriptor.ptr);
-    FIXME_ONCE("Incomplete validation\n");
-    ID3D12Device15_CreateDepthStencilView(iface, resource, desc, DestDescriptor);
-    return S_OK;
-}
-
-static HRESULT STDMETHODCALLTYPE d3d12_device_TryCreateSamplerFeedbackUnorderedAccessView(
-        d3d12_device_iface *iface,
-        ID3D12Resource *target,
-        ID3D12Resource *feedback,
-        D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor)
-{
-    TRACE("iface %p, target %p, feedback %p, DestDescriptor #%zx\n",
-            iface, target, feedback, (size_t)DestDescriptor.ptr);
-    FIXME_ONCE("Incomplete validation\n");
-    ID3D12Device15_CreateSamplerFeedbackUnorderedAccessView(iface, target, feedback, DestDescriptor);
-    return S_OK;
-}
-
-static HRESULT STDMETHODCALLTYPE d3d12_device_ResolveQueryData(
-        d3d12_device_iface *iface, ID3D12QueryHeap *heap_iface, D3D12_QUERY_TYPE type,
-        UINT index, UINT count, void *data)
-{
-    struct d3d12_query_heap *heap = impl_from_ID3D12QueryHeap(heap_iface);
-    TRACE("iface %p, heap %p, Type %u, StartIndex %u, NumQueries %u, pResolvedQueryData %p\n",
-        iface, heap_iface, type, index, count, data);
-    return d3d12_query_heap_resolve_cpu(heap, type, index, count, data);
-}
-
 /* Gotta love C sometimes ... :') */
 #define VKD3D_DECLARE_D3D12_DEVICE_VARIANT(name, create_desc, copy_desc_variant) \
-CONST_VTBL struct ID3D12Device15Vtbl d3d12_device_vtbl_##name = \
+CONST_VTBL struct ID3D12Device12Vtbl d3d12_device_vtbl_##name = \
 { \
     /* IUnknown methods */ \
     d3d12_device_QueryInterface, \
@@ -8810,126 +8518,14 @@ CONST_VTBL struct ID3D12Device15Vtbl d3d12_device_vtbl_##name = \
     d3d12_device_CreateSampler2_##create_desc, \
     /* ID3D12Device12 methods */ \
     d3d12_device_GetResourceAllocationInfo3, \
-    /* ID3D12Device13 methods */ \
-    d3d12_device_OpenExistingHeapFromAddress1, \
-    /* ID3D12Device14 methods */ \
-    d3d12_device_CreateRootSignatureFromSubobjectInLibrary, \
-    /* ID3D12Device15 methods */ \
-    d3d12_device_RegisterTrimNotificationCallback, \
-    d3d12_device_UnregisterTrimNotificationCallback, \
-    d3d12_device_TryCreateShaderResourceView, \
-    d3d12_device_TryCreateUnorderedAccessView, \
-    d3d12_device_TryCreateConstantBufferView, \
-    d3d12_device_TryCreateSampler2, \
-    d3d12_device_TryCreateRenderTargetView, \
-    d3d12_device_TryCreateDepthStencilView, \
-    d3d12_device_TryCreateSamplerFeedbackUnorderedAccessView, \
-    d3d12_device_CreateQueryHeap1, \
-    d3d12_device_ResolveQueryData, \
 }
 
 VKD3D_DECLARE_D3D12_DEVICE_VARIANT(default, default, default);
-
-/* Descriptor heap paths. Create one optimized copy variant per known vendor config. */
-VKD3D_DECLARE_D3D12_DEVICE_VARIANT(heap_64_16_packed, heap, embedded_64_16_packed); /* RDNA2 */
-VKD3D_DECLARE_D3D12_DEVICE_VARIANT(heap_32_16_planar, heap, embedded_32_16_planar); /* RDNA3+ */
-VKD3D_DECLARE_D3D12_DEVICE_VARIANT(heap_32_32_planar, heap, embedded_32_32_planar); /* NV */
-VKD3D_DECLARE_D3D12_DEVICE_VARIANT(heap_128_32_planar, heap, embedded_128_32_planar); /* Intel */
-VKD3D_DECLARE_D3D12_DEVICE_VARIANT(heap_generic, heap, embedded_generic);
-
-/* Descriptor buffer with embedded mutable */
-VKD3D_DECLARE_D3D12_DEVICE_VARIANT(embedded_64_16_packed, embedded, embedded_64_16_packed); /* RDNA2 */
-VKD3D_DECLARE_D3D12_DEVICE_VARIANT(embedded_32_16_planar, embedded, embedded_32_16_planar); /* RDNA3+ */
+VKD3D_DECLARE_D3D12_DEVICE_VARIANT(embedded_64_16_packed, embedded, embedded_64_16_packed);
+VKD3D_DECLARE_D3D12_DEVICE_VARIANT(embedded_32_16_planar, embedded, embedded_32_16_planar);
 VKD3D_DECLARE_D3D12_DEVICE_VARIANT(embedded_generic, embedded, embedded_generic);
-
-/* Optimized descriptor buffer paths. */
 VKD3D_DECLARE_D3D12_DEVICE_VARIANT(descriptor_buffer_16_16_4, default, descriptor_buffer_16_16_4);
 VKD3D_DECLARE_D3D12_DEVICE_VARIANT(descriptor_buffer_64_64_32, default, descriptor_buffer_64_64_32);
-
-static struct d3d12_device *impl_from_ID3D12DeviceConfiguration1(ID3D12DeviceConfiguration1 *iface)
-{
-    if (!iface)
-        return NULL;
-    return CONTAINING_RECORD(iface, struct d3d12_device, ID3D12DeviceConfiguration1_iface);
-}
-
-static ULONG STDMETHODCALLTYPE d3d12_device_configuration_AddRef(ID3D12DeviceConfiguration1 *iface)
-{
-    struct d3d12_device *device = impl_from_ID3D12DeviceConfiguration1(iface);
-    return d3d12_device_add_ref_common(device);
-}
-
-static ULONG STDMETHODCALLTYPE d3d12_device_configuration_Release(ID3D12DeviceConfiguration1 *iface)
-{
-    struct d3d12_device *device = impl_from_ID3D12DeviceConfiguration1(iface);
-    return d3d12_device_release_common(device);
-}
-
-static HRESULT STDMETHODCALLTYPE d3d12_device_configuration_QueryInterface(ID3D12DeviceConfiguration1 *iface,
-        REFIID iid, void **object)
-{
-    struct d3d12_device *device = impl_from_ID3D12DeviceConfiguration1(iface);
-    return d3d12_device_QueryInterface(&device->ID3D12Device_iface, iid, object);
-}
-
-static D3D12_DEVICE_CONFIGURATION_DESC * STDMETHODCALLTYPE d3d12_device_configuration_GetDesc(
-        ID3D12DeviceConfiguration1 *iface, D3D12_DEVICE_CONFIGURATION_DESC *desc)
-{
-    TRACE("iface %p\n", iface);
-    memset(desc, 0, sizeof(*desc));
-    desc->SDKVersion = D3D12_SDK_VERSION;
-    return desc;
-}
-
-static HRESULT STDMETHODCALLTYPE d3d12_device_configuration_GetEnabledExperimentalFeatures(
-        ID3D12DeviceConfiguration1 *iface, GUID *pGuids, UINT NumGuids)
-{
-    FIXME("iface %p, pGuids %p, NumGuids %u stub!\n", iface, pGuids, NumGuids);
-    /* The spec doesn't say how this is supposed to work. We don't support experimental features anyway. */
-    return E_NOTIMPL;
-}
-
-static HRESULT STDMETHODCALLTYPE d3d12_device_configuration_SerializeVersionedRootSignature(
-        ID3D12DeviceConfiguration1 *iface, const D3D12_VERSIONED_ROOT_SIGNATURE_DESC *pDesc,
-        ID3DBlob **ppResult, ID3DBlob **ppError)
-{
-    TRACE("iface %p, pDesc %p, ppResult %p, ppError %p\n", iface, pDesc, ppResult, ppError);
-    return vkd3d_serialize_versioned_root_signature(pDesc, ppResult, ppError);
-}
-
-static HRESULT STDMETHODCALLTYPE d3d12_device_configuration_CreateVersionedRootSignatureDeserializer(
-        ID3D12DeviceConfiguration1 *iface, const void *pBlob, SIZE_T Size,
-        REFIID iid, void **ppvDeserializer)
-{
-    TRACE("iface %p, pBlob %p, Size %zu, iid %s, ppvDeserializer %p\n",
-        iface, pBlob, Size, debugstr_guid(iid), ppvDeserializer);
-    return vkd3d_create_versioned_root_signature_deserializer(pBlob, Size, iid, ppvDeserializer);
-}
-
-static HRESULT STDMETHODCALLTYPE d3d12_device_configuration_CreateVersionedRootSignatureDeserializerFromSubobjectInLibrary(
-        ID3D12DeviceConfiguration1 *iface, const void *pLibraryBlob, SIZE_T Size,
-        LPCWSTR RootSignatureSubobjectName, REFIID iid, void **ppvDeserializer)
-{
-    TRACE("iface %p, pLibraryBlob %p, Size %zu, RootSignatureSubobjectName %s, iid %s, ppvDeserializer %p\n",
-        iface, pLibraryBlob, Size, debugstr_w(RootSignatureSubobjectName), debugstr_guid(iid), ppvDeserializer);
-    return vkd3d_create_versioned_root_signature_deserializer_for_subobject(
-        pLibraryBlob, Size, RootSignatureSubobjectName, iid, ppvDeserializer);
-}
-
-static CONST_VTBL ID3D12DeviceConfiguration1Vtbl d3d12_device_configuration_vtbl =
-{
-    /* IUnknown methods */
-    d3d12_device_configuration_QueryInterface,
-    d3d12_device_configuration_AddRef,
-    d3d12_device_configuration_Release,
-    /* ID3D12DeviceConfiguration methods */
-    d3d12_device_configuration_GetDesc,
-    d3d12_device_configuration_GetEnabledExperimentalFeatures,
-    d3d12_device_configuration_SerializeVersionedRootSignature,
-    d3d12_device_configuration_CreateVersionedRootSignatureDeserializer,
-    /* ID3D12DeviceConfiguration1 methods */
-    d3d12_device_configuration_CreateVersionedRootSignatureDeserializerFromSubobjectInLibrary,
-};
 
 #ifdef VKD3D_ENABLE_PROFILING
 #include "device_profiled.h"
@@ -9064,7 +8660,7 @@ static D3D12_RAYTRACING_TIER d3d12_device_determine_ray_tracing_tier(struct d3d1
         }
     }
 
-    if (tier == D3D12_RAYTRACING_TIER_1_1 && info->supports_opacity_micromap)
+    if (tier == D3D12_RAYTRACING_TIER_1_1 && info->opacity_micromap_features.micromap)
     {
         INFO("DXR 1.2 support enabled.\n");
         tier = D3D12_RAYTRACING_TIER_1_2;
@@ -9169,53 +8765,10 @@ uint32_t d3d12_device_get_max_descriptor_heap_size(struct d3d12_device *device, 
     switch (heap_type)
     {
         case D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV:
-            /* Only expose very large descriptor heaps if we have ReBAR available.
-             * Otherwise we risk spilling to sysmem. */
-            if (d3d12_device_use_descriptor_heap(device) && device->memory_info.has_gpu_upload_heap)
-            {
-                VkDeviceSize useable_size =
-                    device->device_info.descriptor_heap_properties.maxResourceHeapSize -
-                    device->device_info.descriptor_heap_properties.minResourceHeapReservedRange;
-                uint32_t count;
-
-                /* Reserve at start of heap. */
-                useable_size -= device->bindless_state.heap.redzone_size;
-                /* Dummy NULL descriptor. */
-                useable_size -= device->bindless_state.cbv_srv_uav_size;
-                /* Meta reservation. */
-                useable_size -= VKD3D_DESCRIPTOR_HEAP_META_DESCRIPTOR_COUNT * device->bindless_state.cbv_srv_uav_size;
-
-                /* Don't report ridiculously large numbers here for safety. Limit the number of descriptors. */
-                count = min(16000000, useable_size >> device->bindless_state.cbv_srv_uav_size_log2);
-                assert(count >= VKD3D_MIN_VIEW_DESCRIPTOR_COUNT);
-                return count;
-            }
-            else
-            {
-                return VKD3D_MIN_VIEW_DESCRIPTOR_COUNT;
-            }
+            return VKD3D_MIN_VIEW_DESCRIPTOR_COUNT;
 
         case D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER:
-            if (d3d12_device_use_descriptor_heap(device) && device->memory_info.has_gpu_upload_heap &&
-                !d3d12_descriptor_heap_require_padding_descriptors(device))
-            {
-                /* Meta shaders need embedded samplers in some cases, so we cannot potentially expose the larger limits. */
-                VkDeviceSize useable_size =
-                    device->device_info.descriptor_heap_properties.maxSamplerHeapSize -
-                    device->device_info.descriptor_heap_properties.minSamplerHeapReservedRangeWithEmbedded;
-
-                /* For padding scenarios, we rely on allocating 2048 samplers for every heap
-                 * and clamp to 2047 since we cannot sneak in a proper redzone descriptor on NV. */
-
-                /* Don't report ridiculously large numbers here for safety. Limit the number of descriptors. */
-                uint32_t count = min(1000000, useable_size >> device->bindless_state.sampler_size_log2);
-                assert(count >= VKD3D_MIN_SAMPLER_DESCRIPTOR_COUNT);
-                return count;
-            }
-            else
-            {
-                return VKD3D_MIN_SAMPLER_DESCRIPTOR_COUNT;
-            }
+            return VKD3D_MIN_SAMPLER_DESCRIPTOR_COUNT;
 
         default:
             WARN("Unhandled descriptor heap type %u.\n", heap_type);
@@ -9223,23 +8776,13 @@ uint32_t d3d12_device_get_max_descriptor_heap_size(struct d3d12_device *device, 
     }
 }
 
-static bool d3d12_device_supports_16bit_shader_ops(struct d3d12_device *device, bool allow_non_compliant_denorm)
+static bool d3d12_device_supports_16bit_shader_ops(struct d3d12_device *device)
 {
-    bool supports_fp16_denorm_preserve =
-            device->device_info.vulkan_1_2_properties.shaderDenormPreserveFloat16 &&
-            device->device_info.vulkan_1_2_properties.denormBehaviorIndependence != VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE;
-
     return device->device_info.vulkan_1_2_features.shaderFloat16 &&
-           device->device_info.features2.features.shaderInt16 &&
-           device->device_info.vulkan_1_1_features.storageBuffer16BitAccess &&
-           (supports_fp16_denorm_preserve || allow_non_compliant_denorm) &&
-           device->device_info.properties2.properties.limits.minStorageBufferOffsetAlignment <= 16;
-}
-
-static bool d3d12_device_supports_relaxed_precision_shader_ops(struct d3d12_device *device)
-{
-    return device->device_info.vulkan_1_2_features.shaderFloat16 == VK_TRUE &&
-            device->device_info.features2.features.shaderInt16 == VK_TRUE;
+            device->device_info.vulkan_1_1_features.uniformAndStorageBuffer16BitAccess &&
+            device->device_info.vulkan_1_2_properties.shaderDenormPreserveFloat16 &&
+            device->device_info.vulkan_1_2_properties.denormBehaviorIndependence != VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE &&
+            device->device_info.properties2.properties.limits.minStorageBufferOffsetAlignment <= 16;
 }
 
 static void d3d12_device_caps_init_feature_options(struct d3d12_device *device)
@@ -9261,7 +8804,8 @@ static void d3d12_device_caps_init_feature_options(struct d3d12_device *device)
             device->device_info.vulkan_1_2_properties.denormBehaviorIndependence != VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE;
 
     options->OutputMergerLogicOp = features->logicOp;
-    options->MinPrecisionSupport = d3d12_device_supports_relaxed_precision_shader_ops(device)
+    /* Ignored in DXBC, but properly supported in DXIL if device supports 16-bit ops */
+    options->MinPrecisionSupport = d3d12_device_supports_16bit_shader_ops(device)
             ? D3D12_SHADER_MIN_PRECISION_SUPPORT_16_BIT : D3D12_SHADER_MIN_PRECISION_SUPPORT_NONE;
     options->TiledResourcesTier = d3d12_device_determine_tiled_resources_tier(device);
     options->ResourceBindingTier = D3D12_RESOURCE_BINDING_TIER_3;
@@ -9287,14 +8831,6 @@ static void d3d12_device_caps_init_feature_options1(struct d3d12_device *device)
     options1->WaveOps = device->d3d12_caps.max_shader_model >= D3D_SHADER_MODEL_6_0;
     options1->WaveLaneCountMin = device->device_info.vulkan_1_3_properties.minSubgroupSize;
     options1->WaveLaneCountMax = device->device_info.vulkan_1_3_properties.maxSubgroupSize;
-
-    if (VKD3D_CONFIG_FLAG_IS_SET(DEBUG_WAVE64_SIMULATION))
-    {
-        options1->WaveLaneCountMin = max(options1->WaveLaneCountMin, 64);
-        options1->WaveLaneCountMin = min(options1->WaveLaneCountMin, options1->WaveLaneCountMax);
-        INFO("DEBUG_WAVE64_SIMULATION is set. Overriding WaveLaneCount{Min,Max} to {%u, %u}\n",
-            options1->WaveLaneCountMin, options1->WaveLaneCountMax);
-    }
 
     if (device->vk_info.AMD_shader_core_properties)
     {
@@ -9350,32 +8886,11 @@ static void d3d12_device_caps_init_feature_options3(struct d3d12_device *device)
     options3->WriteBufferImmediateSupportFlags = D3D12_COMMAND_LIST_SUPPORT_FLAG_DIRECT |
             D3D12_COMMAND_LIST_SUPPORT_FLAG_COMPUTE | D3D12_COMMAND_LIST_SUPPORT_FLAG_COPY |
             D3D12_COMMAND_LIST_SUPPORT_FLAG_BUNDLE;
-
-    /* This comes up in various games, and there are no known cases of applications needing the edge cases to work.
-     * Just expose view instancing unconditionally even if we cannot make all cases work yet.
-     * Native implementations aren't exactly fully compliant either as our test suite demonstrates.
-     * With descriptor heap, there is a path forward with draw unrolling if we *really* have to at least.
-     *
-     * TIER_2 is most appropriate since it allows for fast path in certain situations and
-     * fallback in some other cases.
-     * Turnip does not support multiviewGeom/Tess. This should not come up, so shove it under the rug for now. */
-    options3->ViewInstancingTier =
-            device->device_info.vulkan_1_1_features.multiview &&
-            device->device_info.vulkan_1_2_features.shaderOutputLayer &&
-            device->device_info.vulkan_1_2_features.shaderOutputViewportIndex &&
-            (device->workarounds.tiler_suspend_resume ||
-                    (device->device_info.vulkan_1_1_features.multiviewGeometryShader &&
-                    device->device_info.vulkan_1_1_features.multiviewTessellationShader)) &&
-            (!device->device_info.mesh_shader_features.meshShader ||
-                    device->device_info.mesh_shader_features.multiviewMeshShader) ?
-            D3D12_VIEW_INSTANCING_TIER_2 :
-            D3D12_VIEW_INSTANCING_TIER_NOT_SUPPORTED;
-
-    /* We can implement barycentrics with unstable barycentrics.
-     * Don't enable on GCN since the affected game breaks. */
+    /* Currently not supported */
+    options3->ViewInstancingTier = D3D12_VIEW_INSTANCING_TIER_NOT_SUPPORTED;
     options3->BarycentricsSupported =
-            device->device_info.barycentric_features_khr.fragmentShaderBarycentric ||
-            d3d12_device_allow_emulated_barycentrics(device);
+            device->device_info.barycentric_features_nv.fragmentShaderBarycentric ||
+            device->device_info.barycentric_features_khr.fragmentShaderBarycentric;
 }
 
 static void d3d12_device_caps_init_feature_options4(struct d3d12_device *device)
@@ -9391,7 +8906,7 @@ static void d3d12_device_caps_init_feature_options4(struct d3d12_device *device)
      * If we cannot use SSBOs, we cannot use 16-bit raw buffers, which is a requirement for this feature. */
 
     /* FP16 and FP64 must preserve denorms. Only FP32 can change, so we can accept both 32_BIT_INDEPENDENCY_ONLY and ALL. */
-    options4->Native16BitShaderOpsSupported = d3d12_device_supports_16bit_shader_ops(device, false);
+    options4->Native16BitShaderOpsSupported = d3d12_device_supports_16bit_shader_ops(device);
 }
 
 static void d3d12_device_caps_init_feature_options5(struct d3d12_device *device)
@@ -9511,7 +9026,7 @@ static void d3d12_device_caps_init_feature_options14(struct d3d12_device *device
      * Enable with experimental features for older drivers.
      */
     options14->AdvancedTextureOpsSupported = device->d3d12_caps.max_shader_model >= D3D_SHADER_MODEL_6_7 &&
-        (device->device_info.maintenance_8_features.maintenance8 || VKD3D_CONFIG_FLAG_IS_SET(ENABLE_EXPERIMENTAL_FEATURES));
+        (device->device_info.maintenance_8_features.maintenance8 || (vkd3d_config_flags & VKD3D_CONFIG_FLAG_ENABLE_EXPERIMENTAL_FEATURES));
     options14->WriteableMSAATexturesSupported = device->d3d12_caps.max_shader_model >= D3D_SHADER_MODEL_6_7 &&
             device->device_info.features2.features.shaderStorageImageMultisample;
     options14->IndependentFrontAndBackStencilRefMaskSupported = TRUE;
@@ -9589,9 +9104,8 @@ bool d3d12_device_supports_workgraphs(const struct d3d12_device *device)
 {
     /* Thread nodes currently need wave32 to function correctly since the API limits for thread nodes
      * match wave32 expectations (8 nodes per thread * 32 threads = 256 max nodes). */
-    return (VKD3D_CONFIG_FLAG_IS_SET(ENABLE_EXPERIMENTAL_FEATURES) ||
+    return ((vkd3d_config_flags & VKD3D_CONFIG_FLAG_ENABLE_EXPERIMENTAL_FEATURES) ||
             vkd3d_debug_control_is_test_suite()) &&
-            d3d12_device_use_descriptor_heap(device) &&
             device->device_info.shader_maximal_reconvergence_features.shaderMaximalReconvergence &&
             device->device_info.vulkan_1_2_features.vulkanMemoryModel &&
             device->device_info.vulkan_1_3_features.subgroupSizeControl &&
@@ -9606,27 +9120,11 @@ static void d3d12_device_caps_init_feature_options21(struct d3d12_device *device
     /* Enable WGs in test suite to avoid bitrot. */
     options21->WorkGraphsTier = d3d12_device_supports_workgraphs(device) ?
             D3D12_WORK_GRAPHS_TIER_1_0 : D3D12_WORK_GRAPHS_TIER_NOT_SUPPORTED;
-    options21->ExecuteIndirectTier = device->device_info.device_generated_commands_features.deviceGeneratedCommands ?
+    options21->ExecuteIndirectTier = device->device_info.device_generated_commands_features_ext.deviceGeneratedCommands ?
             D3D12_EXECUTE_INDIRECT_TIER_1_1 : D3D12_EXECUTE_INDIRECT_TIER_1_0;
     options21->SampleCmpGradientAndBiasSupported = device->d3d12_caps.max_shader_model >= D3D_SHADER_MODEL_6_8 &&
             device->d3d12_caps.options14.AdvancedTextureOpsSupported;
     options21->ExtendedCommandInfoSupported = device->d3d12_caps.max_shader_model >= D3D_SHADER_MODEL_6_8;
-}
-
-static void d3d12_device_caps_init_feature_options22(struct d3d12_device *device)
-{
-    D3D12_FEATURE_DATA_D3D12_OPTIONS22 *options22 = &device->d3d12_caps.options22;
-
-    /* Possible to support on super legacy model too, but it's extra effort that is a waste of time.
-     * Dealing with offset buffers is a bit too much of a hassle and that old model is
-     * up for the chopping block soon (tm). */
-    options22->CreateByteOffsetViewsSupported =
-        d3d12_device_use_descriptor_heap(device) || d3d12_device_uses_descriptor_buffers(device);
-
-    options22->ShaderExecutionReorderingActuallyReorders = device->d3d12_caps.max_shader_model >= D3D_SHADER_MODEL_6_9 ?
-        device->device_info.invocation_reorder_properties.rayTracingInvocationReorderReorderingHint == VK_RAY_TRACING_INVOCATION_REORDER_MODE_REORDER_EXT : FALSE;
-    options22->Max1DDispatchSize = device->device_info.properties2.properties.limits.maxComputeWorkGroupCount[0];
-    options22->Max1DDispatchMeshSize = device->device_info.mesh_shader_properties.maxMeshWorkGroupCount[0];
 }
 
 static void d3d12_device_caps_init_feature_tight_alignment(struct d3d12_device *device)
@@ -9706,7 +9204,6 @@ static void d3d12_device_caps_shader_model_override(struct d3d12_device *device)
         { "6_6", D3D_SHADER_MODEL_6_6 },
         { "6_7", D3D_SHADER_MODEL_6_7 },
         { "6_8", D3D_SHADER_MODEL_6_8 },
-        { "6_9", D3D_SHADER_MODEL_6_9 },
     };
 
     if (!vkd3d_get_env_var("VKD3D_SHADER_MODEL", sm_string, sizeof(sm_string)))
@@ -9889,7 +9386,7 @@ static void d3d12_device_caps_init_shader_model(struct d3d12_device *device)
         if (device->d3d12_caps.max_shader_model == D3D_SHADER_MODEL_6_6 && ((
                 device->device_info.shader_maximal_reconvergence_features.shaderMaximalReconvergence &&
                 device->device_info.shader_quad_control_features.shaderQuadControl) ||
-                VKD3D_CONFIG_FLAG_IS_SET(ENABLE_EXPERIMENTAL_FEATURES)))
+                (vkd3d_config_flags & VKD3D_CONFIG_FLAG_ENABLE_EXPERIMENTAL_FEATURES)))
         {
             /* Helper lanes in wave ops behavior appears to work as intended on NV and RADV.
              * Technically needs an extension to *guarantee* this behavior however ... */
@@ -9914,30 +9411,50 @@ static void d3d12_device_caps_init_shader_model(struct d3d12_device *device)
             INFO("Enabling support for SM 6.8.\n");
             device->d3d12_caps.max_shader_model = D3D_SHADER_MODEL_6_8;
         }
-
-        /* SM6.9 adds:
-         * - RayQuery micromap flags
-         * - General vector support (SPIR-V 1.0 already supports that)
-         * - Long vector (hnnnnng)
-         * - Shader Execution Reordering
-         * - 16/64-bit is{inf,nan,normal} etc
-         */
-        if (device->d3d12_caps.max_shader_model == D3D_SHADER_MODEL_6_8 &&
-            device->device_info.opacity_micromap_features.micromap &&
-            /* For maint9 bitops which support 16-bit / 64-bit. Needed for vector version of these. */
-            device->device_info.maintenance_9_features.maintenance9 &&
-            device->device_info.long_vector_features.longVector &&
-            device->device_info.long_vector_properties.maxVectorComponents >= 1024 &&
-            device->device_info.invocation_reorder_features.rayTracingInvocationReorder)
-        {
-            INFO("Enabling experimental support for SM 6.9.\n");
-            device->d3d12_caps.max_shader_model = D3D_SHADER_MODEL_6_9;
-        }
     }
     else
     {
         device->d3d12_caps.max_shader_model = D3D_SHADER_MODEL_5_1;
         TRACE("Enabling support for SM 5.1.\n");
+    }
+}
+
+static void d3d12_device_caps_override_application(struct d3d12_device *device)
+{
+    /* Some games rely on certain features to be exposed before they let the primary feature
+     * be exposed. */
+    switch (vkd3d_application_feature_override)
+    {
+        case VKD3D_APPLICATION_FEATURE_NO_DEFAULT_DXR_ON_DECK:
+            /* For games which automatically enable RT even on Deck, leading to very poor performance by default. */
+            if (d3d12_device_is_steam_deck(device) && !(vkd3d_config_flags & VKD3D_CONFIG_FLAG_DXR))
+            {
+                INFO("Disabling automatic enablement of DXR on Deck.\n");
+                device->d3d12_caps.options5.RaytracingTier = D3D12_RAYTRACING_TIER_NOT_SUPPORTED;
+            }
+            break;
+
+        case VKD3D_APPLICATION_FEATURE_LIMIT_DXR_1_0:
+            if (device->d3d12_caps.options5.RaytracingTier > D3D12_RAYTRACING_TIER_1_0)
+            {
+                INFO("Limiting reported DXR tier to 1.0.\n");
+                device->d3d12_caps.options5.RaytracingTier = D3D12_RAYTRACING_TIER_1_0;
+            }
+            break;
+
+        case VKD3D_APPLICATION_FEATURE_DISABLE_NV_REFLEX:
+            INFO("Disabling NV reflex.\n");
+            device->vk_info.NV_low_latency2 = false;
+            break;
+
+        case VKD3D_APPLICATION_FEATURE_DISABLE_ANTI_LAG:
+            INFO("Disabling AMD anti-lag.\n");
+            device->vk_info.AMD_anti_lag = false;
+            device->device_info.anti_lag_amd.antiLag = VK_FALSE;
+            break;
+
+        default:
+            break;
     }
 }
 
@@ -10040,7 +9557,6 @@ static void d3d12_device_caps_init(struct d3d12_device *device)
     d3d12_device_caps_init_feature_options19(device);
     d3d12_device_caps_init_feature_options20(device);
     d3d12_device_caps_init_feature_options21(device);
-    d3d12_device_caps_init_feature_options22(device);
     d3d12_device_caps_init_feature_tight_alignment(device);
     d3d12_device_caps_init_feature_level(device);
 
@@ -10085,23 +9601,6 @@ static void vkd3d_init_shader_extensions(struct d3d12_device *device)
             device->vk_info.shader_extensions[device->vk_info.shader_extension_count++] =
                     VKD3D_SHADER_TARGET_EXTENSION_ASSUME_PER_COMPONENT_SSBO_ROBUSTNESS;
         }
-
-        if (device->device_info.properties2.properties.vendorID == VKD3D_VENDOR_ID_NVIDIA)
-        {
-            /* On other vendors, we follow the provided alignment, so it's the driver's job to deal with whatever we do.
-             * On NVIDIA, we skirt the rules and emit SSBOs with lower alignment than driver advertises.
-             * It becomes our job to ensure that we don't generate certain patterns in code
-             * that violate what the compiler assumes.
-             * With NV_raw_access_chains, all of this is irrelevant, since we emit proper alignment in the shader,
-             * but when capturing in e.g. RenderDoc we don't have the extension, so be conservative.
-             *
-             * This is sort of a "negative" extension, but it's the most convenient way to signal this.
-             *
-             * Include NVK in this. NVK also does similar hackery, and we don't want to risk problems.
-             */
-            device->vk_info.shader_extensions[device->vk_info.shader_extension_count++] =
-                    VKD3D_SHADER_TARGET_EXTENSION_SHADER_IMPLIED_SSBO_ALIGNMENT;
-        }
     }
 
     if (device->device_info.barycentric_features_khr.fragmentShaderBarycentric)
@@ -10118,26 +9617,12 @@ static void vkd3d_init_shader_extensions(struct d3d12_device *device)
             compute_derivative_ext = VKD3D_SHADER_TARGET_EXTENSION_COMPUTE_SHADER_DERIVATIVES_KHR;
 
         device->vk_info.shader_extensions[device->vk_info.shader_extension_count++] = compute_derivative_ext;
-
-        if (device->device_info.compute_shader_derivatives_features_khr.computeDerivativeGroupQuads)
-        {
-            device->vk_info.shader_extensions[device->vk_info.shader_extension_count++] =
-                VKD3D_SHADER_TARGET_EXTENSION_COMPUTE_SHADER_DERIVATIVES_QUAD;
-        }
     }
 
     if (device->d3d12_caps.options4.Native16BitShaderOpsSupported)
     {
         device->vk_info.shader_extensions[device->vk_info.shader_extension_count++] =
                 VKD3D_SHADER_TARGET_EXTENSION_MIN_PRECISION_IS_NATIVE_16BIT;
-    }
-    else if (!vkd3d_application_requires_min16_denorms() && d3d12_device_supports_relaxed_precision_shader_ops(device))
-    {
-        /* Quirky hardware. It supports FP16, but not denorms (?!). We cannot expose full FP16,
-         * but it's okay to expose min16float.
-         * D3D11.3 functional spec (7.20.2.2.1) allows this behavior for min16float. */
-        device->vk_info.shader_extensions[device->vk_info.shader_extension_count++] =
-                VKD3D_SHADER_TARGET_EXTENSION_MIN_PRECISION_IS_RELAXED;
     }
 
     /* NV driver implies denorm preserve by default in FP16 and 64, but there's an issue where
@@ -10147,7 +9632,7 @@ static void vkd3d_init_shader_extensions(struct d3d12_device *device)
      * but the only way we can make NV pass our tests is to *not* emit anything at all for 16 and 64. */
     allow_denorm_control =
             device->device_info.vulkan_1_2_properties.driverID != VK_DRIVER_ID_NVIDIA_PROPRIETARY ||
-            VKD3D_CONFIG_FLAG_IS_SET(SKIP_DRIVER_WORKAROUNDS);
+            (vkd3d_config_flags & VKD3D_CONFIG_FLAG_SKIP_DRIVER_WORKAROUNDS);
 
     if (device->device_info.vulkan_1_2_properties.denormBehaviorIndependence !=
             VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE &&
@@ -10170,12 +9655,6 @@ static void vkd3d_init_shader_extensions(struct d3d12_device *device)
             device->vk_info.shader_extensions[device->vk_info.shader_extension_count++] =
                     VKD3D_SHADER_TARGET_EXTENSION_SUPPORT_FP64_DENORM_PRESERVE;
         }
-    }
-    else if (device->device_info.vulkan_1_2_properties.shaderDenormPreserveFloat16)
-    {
-        /* Only used to signal to dxil.c if we should engage the min16float denorm quirk or not. */
-        device->vk_info.shader_extensions[device->vk_info.shader_extension_count++] =
-                VKD3D_SHADER_TARGET_EXTENSION_SUPPORT_FP16_DENORM_PRESERVE_DEFAULT;
     }
 
     if (device->device_info.vulkan_1_2_properties.shaderSignedZeroInfNanPreserveFloat16)
@@ -10216,7 +9695,7 @@ static void vkd3d_init_shader_extensions(struct d3d12_device *device)
                 VKD3D_SHADER_TARGET_EXTENSION_RAW_ACCESS_CHAINS_NV;
     }
 
-    if (device->device_info.supports_opacity_micromap)
+    if (device->device_info.opacity_micromap_features.micromap)
     {
         device->vk_info.shader_extensions[device->vk_info.shader_extension_count++] =
                 VKD3D_SHADER_TARGET_EXTENSION_OPACITY_MICROMAP;
@@ -10234,34 +9713,10 @@ static void vkd3d_init_shader_extensions(struct d3d12_device *device)
                 VKD3D_SHADER_TARGET_EXTENSION_NV_COOPMAT2_CONVERSIONS;
     }
 
-    if (VKD3D_CONFIG_FLAG_IS_SET(EXTENDED_DEBUG_UTILS))
+    if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_EXTENDED_DEBUG_UTILS)
     {
         device->vk_info.shader_extensions[device->vk_info.shader_extension_count++] =
                 VKD3D_SHADER_TARGET_EXTENSION_EXTENDED_NON_SEMANTIC;
-    }
-
-    if (device->device_info.shader_mixed_float_dot_product_features.shaderMixedFloatDotProductFloat16AccFloat32)
-    {
-        device->vk_info.shader_extensions[device->vk_info.shader_extension_count++] =
-                VKD3D_SHADER_TARGET_EXTENSION_MIXED_FLOAT_DOT_PRODUCT;
-    }
-
-    if (vkd3d_driver_id_wraps_ssbo_32bit_before_robustness(device->device_info.vulkan_1_2_properties.driverID))
-    {
-        device->vk_info.shader_extensions[device->vk_info.shader_extension_count++] =
-                VKD3D_SHADER_TARGET_EXTENSION_ASSUME_SSBO_32BIT_WRAPPING;
-    }
-
-    if (device->device_info.float_controls2_features.shaderFloatControls2)
-    {
-        device->vk_info.shader_extensions[device->vk_info.shader_extension_count++] =
-                VKD3D_SHADER_TARGET_EXTENSION_FLOAT_CONTROLS_2;
-    }
-
-    if (device->device_info.shader_abort_features.shaderAbort)
-    {
-        device->vk_info.shader_extensions[device->vk_info.shader_extension_count++] =
-                VKD3D_SHADER_TARGET_EXTENSION_SHADER_ABORT;
     }
 }
 
@@ -10270,7 +9725,6 @@ static void vkd3d_compute_shader_interface_key(struct d3d12_device *device)
     /* This key needs to hold all state which could potentially affect shader compilation.
      * We may generate different SPIR-V based on the bindless state flags.
      * The bindless states are affected by various flags. */
-    const struct vkd3d_shader_quirk_info *quirk_info = &device->workarounds.quirks;
     unsigned int i;
     char env[64];
     uint64_t key;
@@ -10280,66 +9734,44 @@ static void vkd3d_compute_shader_interface_key(struct d3d12_device *device)
     /* Technically, any changes in vkd3d-shader will be reflected in the vkd3d-proton Git hash,
      * but it is useful to be able to modify the internal revision while developing since
      * we have no mechanism for emitting dirty Git revisions. */
-    key = hash_fnv1_iterate_u64(key, vkd3d_shader_get_revision(NULL));
-    key = hash_fnv1_iterate_u32(key, device->d3d12_caps.options1.WaveLaneCountMin);
-    key = hash_fnv1_iterate_u32(key, device->d3d12_caps.options1.WaveLaneCountMax);
+    key = hash_fnv1_iterate_u64(key, vkd3d_shader_get_revision());
+    key = hash_fnv1_iterate_u32(key, device->device_info.vulkan_1_3_properties.minSubgroupSize);
+    key = hash_fnv1_iterate_u32(key, device->device_info.vulkan_1_3_properties.maxSubgroupSize);
     key = hash_fnv1_iterate_u32(key, device->bindless_state.flags);
-
-    if (d3d12_device_use_descriptor_heap(device))
+    key = hash_fnv1_iterate_u32(key, device->bindless_state.cbv_srv_uav_count);
+    key = hash_fnv1_iterate_u32(key, device->bindless_state.set_count);
+    for (i = 0; i < device->bindless_state.set_count; i++)
     {
-        key = hash_fnv1_iterate_u32(key, device->bindless_state.heap.supports_universal_byte_address_ssbo);
-        key = hash_fnv1_iterate_u32(key, device->bindless_state.heap.supports_universal_structured_ssbo);
-        key = hash_fnv1_iterate_u32(key, device->bindless_state.heap.uav_counter_embedded_offset);
-        key = hash_fnv1_iterate_u32(key, device->bindless_state.heap.min_ssbo_alignment);
-
-        /* We only get to know this very late after we've checked quirk override files and workaround setup. */
-        if (!d3d12_descriptor_heap_require_padding_descriptors(device) &&
-                !device->bindless_state.heap.uav_counter_embedded_offset)
-        {
-            INFO("Disabling heap redzone.\n");
-            device->bindless_state.heap.redzone_size = 0;
-        }
-
-        key = hash_fnv1_iterate_u32(key, device->bindless_state.heap.redzone_size);
-    }
-    else
-    {
-        key = hash_fnv1_iterate_u32(key, device->bindless_state.legacy.cbv_srv_uav_count);
-        key = hash_fnv1_iterate_u32(key, device->bindless_state.legacy.set_count);
-        for (i = 0; i < device->bindless_state.legacy.set_count; i++)
-        {
-            key = hash_fnv1_iterate_u32(key, device->bindless_state.legacy.set_info[i].flags);
-            key = hash_fnv1_iterate_u32(key, device->bindless_state.legacy.set_info[i].binding_index);
-            key = hash_fnv1_iterate_u32(key, device->bindless_state.legacy.set_info[i].set_index);
-            key = hash_fnv1_iterate_u32(key, device->bindless_state.legacy.set_info[i].heap_type);
-            key = hash_fnv1_iterate_u32(key, device->bindless_state.legacy.set_info[i].vk_descriptor_type);
-        }
+        key = hash_fnv1_iterate_u32(key, device->bindless_state.set_info[i].flags);
+        key = hash_fnv1_iterate_u32(key, device->bindless_state.set_info[i].binding_index);
+        key = hash_fnv1_iterate_u32(key, device->bindless_state.set_info[i].set_index);
+        key = hash_fnv1_iterate_u32(key, device->bindless_state.set_info[i].heap_type);
+        key = hash_fnv1_iterate_u32(key, device->bindless_state.set_info[i].vk_descriptor_type);
     }
 
     if (d3d12_device_use_embedded_mutable_descriptors(device))
     {
         /* Will affect shaders which use raw VA descriptors like RTAS, UAV counters and local root signatures. */
-        key = hash_fnv1_iterate_u32(key, device->bindless_state.cbv_srv_uav_size);
+        key = hash_fnv1_iterate_u32(key, device->bindless_state.descriptor_buffer_cbv_srv_uav_size);
         /* Will affect shaders which use local root signatures. */
-        key = hash_fnv1_iterate_u32(key, device->bindless_state.sampler_size);
+        key = hash_fnv1_iterate_u32(key, device->bindless_state.descriptor_buffer_sampler_size);
     }
 
-    key = hash_fnv1_iterate_u64(key, quirk_info->global_quirks);
-    key = hash_fnv1_iterate_u64(key, quirk_info->default_quirks);
-    key = hash_fnv1_iterate_u32(key, quirk_info->num_entry_points);
+    key = hash_fnv1_iterate_u32(key, vkd3d_shader_quirk_info.global_quirks);
+    key = hash_fnv1_iterate_u32(key, vkd3d_shader_quirk_info.default_quirks);
+    key = hash_fnv1_iterate_u32(key, vkd3d_shader_quirk_info.num_hashes);
     /* If apps attempt to use the same shader cache with different executables, we might end up with different
      * quirk tables due to app workarounds, so hash that too. */
-    for (i = 0; i < quirk_info->num_entry_points; i++)
+    for (i = 0; i < vkd3d_shader_quirk_info.num_hashes; i++)
     {
-        key = hash_fnv1_iterate_u64(key, quirk_info->entry_points[i].shader_hash);
-        key = hash_fnv1_iterate_u64(key, quirk_info->entry_points[i].quirks);
-        key = hash_fnv1_iterate_string(key, quirk_info->entry_points[i].entry ? quirk_info->entry_points[i].entry : "");
+        key = hash_fnv1_iterate_u64(key, vkd3d_shader_quirk_info.hashes[i].shader_hash);
+        key = hash_fnv1_iterate_u32(key, vkd3d_shader_quirk_info.hashes[i].quirks);
     }
 
     for (i = 0; i < device->vk_info.shader_extension_count; i++)
         key = hash_fnv1_iterate_u32(key, device->vk_info.shader_extensions[i]);
 
-    if (VKD3D_CONFIG_FLAG_IS_SET(DRIVER_VERSION_SENSITIVE_SHADERS))
+    if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_DRIVER_VERSION_SENSITIVE_SHADERS)
     {
         key = hash_fnv1_iterate_u32(key, device->device_info.vulkan_1_2_properties.driverID);
         key = hash_fnv1_iterate_u32(key, device->device_info.properties2.properties.driverVersion);
@@ -10384,53 +9816,17 @@ static void d3d12_device_replace_vtable(struct d3d12_device *device)
     /* Don't bother modifying CopyDescriptors path, its main overhead is chasing other pointers anyway,
      * and that code path handles embedded mutable descriptors. */
 
-    if (d3d12_device_use_descriptor_heap(device))
+    if (d3d12_device_use_embedded_mutable_descriptors(device))
     {
         if ((device->bindless_state.flags & VKD3D_BINDLESS_MUTABLE_EMBEDDED_PACKED_METADATA) &&
-                device->bindless_state.cbv_srv_uav_size == 64 &&
-                device->bindless_state.sampler_size == 16)
-        {
-            /* RDNA2 */
-            device->ID3D12Device_iface.lpVtbl = &d3d12_device_vtbl_heap_64_16_packed;
-        }
-        else if (!(device->bindless_state.flags & VKD3D_BINDLESS_MUTABLE_EMBEDDED_PACKED_METADATA) &&
-                device->bindless_state.cbv_srv_uav_size == 32 &&
-                device->bindless_state.sampler_size == 16)
-        {
-            /* RDNA3+ */
-            device->ID3D12Device_iface.lpVtbl = &d3d12_device_vtbl_heap_32_16_planar;
-        }
-        else if (!(device->bindless_state.flags & VKD3D_BINDLESS_MUTABLE_EMBEDDED_PACKED_METADATA) &&
-                device->bindless_state.cbv_srv_uav_size == 32 &&
-                device->bindless_state.sampler_size == 32)
-        {
-            /* NV */
-            device->ID3D12Device_iface.lpVtbl = &d3d12_device_vtbl_heap_32_32_planar;
-        }
-        else if (!(device->bindless_state.flags & VKD3D_BINDLESS_MUTABLE_EMBEDDED_PACKED_METADATA) &&
-                device->bindless_state.cbv_srv_uav_size == 128 &&
-                device->bindless_state.sampler_size == 32)
-        {
-            /* Intel. If we can find a way to properly alias SSBO + Texel buffer and stuff UAV counter
-             * somewhere, we can probably do 64_32. */
-            device->ID3D12Device_iface.lpVtbl = &d3d12_device_vtbl_heap_128_32_planar;
-        }
-        else
-        {
-            device->ID3D12Device_iface.lpVtbl = &d3d12_device_vtbl_heap_generic;
-        }
-    }
-    else if (d3d12_device_use_embedded_mutable_descriptors(device))
-    {
-        if ((device->bindless_state.flags & VKD3D_BINDLESS_MUTABLE_EMBEDDED_PACKED_METADATA) &&
-                device->bindless_state.cbv_srv_uav_size == 64 &&
-                device->bindless_state.sampler_size == 16)
+                device->bindless_state.descriptor_buffer_cbv_srv_uav_size == 64 &&
+                device->bindless_state.descriptor_buffer_sampler_size == 16)
         {
             device->ID3D12Device_iface.lpVtbl = &d3d12_device_vtbl_embedded_64_16_packed;
         }
         else if (!(device->bindless_state.flags & VKD3D_BINDLESS_MUTABLE_EMBEDDED_PACKED_METADATA) &&
-                device->bindless_state.cbv_srv_uav_size == 32 &&
-                device->bindless_state.sampler_size == 16)
+                device->bindless_state.descriptor_buffer_cbv_srv_uav_size == 32 &&
+                device->bindless_state.descriptor_buffer_sampler_size == 16)
         {
             device->ID3D12Device_iface.lpVtbl = &d3d12_device_vtbl_embedded_32_16_planar;
         }
@@ -10445,17 +9841,17 @@ static void d3d12_device_replace_vtable(struct d3d12_device *device)
          * Only attempt to optimize the copy itself by avoid various indirections. */
         if (device->device_info.mutable_descriptor_features.mutableDescriptorType &&
                 !(device->bindless_state.flags & VKD3D_BINDLESS_MUTABLE_TYPE_RAW_SSBO) &&
-                device->bindless_state.cbv_srv_uav_size == 16 &&
+                device->bindless_state.descriptor_buffer_cbv_srv_uav_size == 16 &&
                 device->device_info.descriptor_buffer_properties.robustStorageBufferDescriptorSize == 16 &&
-                device->bindless_state.sampler_size == 4)
+                device->bindless_state.descriptor_buffer_sampler_size == 4)
         {
             device->ID3D12Device_iface.lpVtbl = &d3d12_device_vtbl_descriptor_buffer_16_16_4;
         }
         else if (device->device_info.mutable_descriptor_features.mutableDescriptorType &&
                 !(device->bindless_state.flags & VKD3D_BINDLESS_MUTABLE_TYPE_RAW_SSBO) &&
-                device->bindless_state.cbv_srv_uav_size == 64 &&
+                device->bindless_state.descriptor_buffer_cbv_srv_uav_size == 64 &&
                 device->device_info.descriptor_buffer_properties.robustStorageBufferDescriptorSize == 64 &&
-                device->bindless_state.sampler_size == 32)
+                device->bindless_state.descriptor_buffer_sampler_size == 32)
         {
             /* Matches Intel Arc on ANV. */
             device->ID3D12Device_iface.lpVtbl = &d3d12_device_vtbl_descriptor_buffer_64_64_32;
@@ -10463,8 +9859,8 @@ static void d3d12_device_replace_vtable(struct d3d12_device *device)
     }
 }
 
-extern CONST_VTBL struct ID3D12DeviceExt5Vtbl d3d12_device_vkd3d_ext_vtbl;
-extern CONST_VTBL struct ID3D12DXVKInteropDevice3Vtbl d3d12_dxvk_interop_device_vtbl;
+extern CONST_VTBL struct ID3D12DeviceExt1Vtbl d3d12_device_vkd3d_ext_vtbl;
+extern CONST_VTBL struct ID3D12DXVKInteropDevice2Vtbl d3d12_dxvk_interop_device_vtbl;
 extern CONST_VTBL struct ID3DLowLatencyDeviceVtbl d3d_low_latency_device_vtbl;
 extern CONST_VTBL struct IAmdExtAntiLagApiVtbl d3d_amd_ext_anti_lag_vtbl;
 
@@ -10480,8 +9876,9 @@ static void vkd3d_scratch_pool_init(struct d3d12_device *device)
 
     if (device->device_info.vulkan_1_2_properties.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY)
     {
-        if (VKD3D_CONFIG_FLAG_IS_SET(HUGE_NV_DGC_BUFFERS) &&
-            device->device_info.device_generated_commands_features.deviceGeneratedCommands)
+        if ((vkd3d_config_flags & VKD3D_CONFIG_FLAG_REQUIRES_COMPUTE_INDIRECT_TEMPLATES) &&
+            (device->device_info.device_generated_commands_compute_features_nv.deviceGeneratedCompute ||
+             device->device_info.device_generated_commands_features_ext.deviceGeneratedCommands))
         {
             /* DGCC preprocess buffers are gigantic on NV. Starfield requires 27 MB for 4096 dispatches ... */
             device->scratch_pools[VKD3D_SCRATCH_POOL_KIND_INDIRECT_PREPROCESS].block_size =
@@ -10544,9 +9941,6 @@ static HRESULT d3d12_device_init(struct d3d12_device *device,
 
     device->adapter_luid = create_info->adapter_luid;
     device->removed_reason = S_OK;
-    vkd3d_atomic_uint32_store_explicit(
-            &device->vendor_hacks.global_ray_tracing_pipeline_create_flags, 0,
-            vkd3d_memory_order_relaxed);
 
     device->vk_device = VK_NULL_HANDLE;
 
@@ -10557,18 +9951,24 @@ static HRESULT d3d12_device_init(struct d3d12_device *device,
         goto out_free_instance;
     }
 
+    if ((rc = pthread_mutex_init(&device->global_submission_mutex, NULL)))
+    {
+        ERR("Failed to initialize mutex, error %d.\n", rc);
+        hr = hresult_from_errno(rc);
+        goto out_free_mutex;
+    }
+
     spinlock_init(&device->low_latency_swapchain_spinlock);
 
     device->ID3D12DeviceExt_iface.lpVtbl = &d3d12_device_vkd3d_ext_vtbl;
     device->ID3D12DXVKInteropDevice_iface.lpVtbl = &d3d12_dxvk_interop_device_vtbl;
     device->ID3DLowLatencyDevice_iface.lpVtbl = &d3d_low_latency_device_vtbl;
     device->IAmdExtAntiLagApi_iface.lpVtbl = &d3d_amd_ext_anti_lag_vtbl;
-    device->ID3D12DeviceConfiguration1_iface.lpVtbl = &d3d12_device_configuration_vtbl;
 
     if ((rc = rwlock_init(&device->vertex_input_lock)))
     {
         hr = hresult_from_errno(rc);
-        goto out_free_mutex;
+        goto out_free_global_submission_mutex;
     }
 
     if ((rc = rwlock_init(&device->fragment_output_lock)))
@@ -10626,7 +10026,7 @@ static HRESULT d3d12_device_init(struct d3d12_device *device,
 
 #ifdef VKD3D_ENABLE_BREADCRUMBS
     vkd3d_breadcrumb_tracer_init_barrier_hashes(&device->breadcrumb_tracer);
-    if (VKD3D_CONFIG_FLAG_IS_SET(BREADCRUMBS))
+    if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_BREADCRUMBS)
     {
         if (FAILED(hr = vkd3d_breadcrumb_tracer_init(&device->breadcrumb_tracer, device)))
         {
@@ -10685,7 +10085,7 @@ out_cleanup_descriptor_qa_global_info:
     vkd3d_descriptor_debug_free_global_info(device->descriptor_qa_global_info, device);
 out_cleanup_breadcrumb_tracer:
 #ifdef VKD3D_ENABLE_BREADCRUMBS
-    if (VKD3D_CONFIG_FLAG_IS_SET(BREADCRUMBS))
+    if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_BREADCRUMBS)
         vkd3d_breadcrumb_tracer_cleanup(&device->breadcrumb_tracer, device);
 out_cleanup_address_binding_tracker:
 #endif
@@ -10727,6 +10127,8 @@ out_free_fragment_output_lock:
     rwlock_destroy(&device->fragment_output_lock);
 out_free_vertex_input_lock:
     rwlock_destroy(&device->vertex_input_lock);
+out_free_global_submission_mutex:
+    pthread_mutex_destroy(&device->global_submission_mutex);
 out_free_mutex:
     pthread_mutex_destroy(&device->mutex);
     return hr;
@@ -10734,11 +10136,8 @@ out_free_mutex:
 
 bool d3d12_device_validate_shader_meta(struct d3d12_device *device, const struct vkd3d_shader_meta *meta)
 {
-    /* For pragmatic reasons, allow a shader to use FP16 on Turnip even if we cannot expose the "true" FP16 (denorm control).
-     * Too many games are bugged and assumes that FP16 just works and will crash without this workaround.
-     * The pragmatically correct thing to do here is to allow it as long as the shader is otherwise valid. */
     if ((meta->flags & VKD3D_SHADER_META_FLAG_USES_NATIVE_16BIT_OPERATIONS) &&
-        !d3d12_device_supports_16bit_shader_ops(device, true))
+            !device->d3d12_caps.options4.Native16BitShaderOpsSupported)
     {
         WARN("Attempting to use 16-bit operations in shader %016"PRIx64", but this is not supported.\n", meta->hash);
         return false;
@@ -10821,28 +10220,22 @@ bool d3d12_device_validate_shader_meta(struct d3d12_device *device, const struct
 
     if (meta->cs_wave_size_min)
     {
+        const struct vkd3d_physical_device_info *info = &device->device_info;
+
         if (!d3d12_device_supports_required_subgroup_size_for_stage(device, VK_SHADER_STAGE_COMPUTE_BIT))
         {
             ERR("Required subgroup size control features are not supported for SM 6.6 WaveSize.\n");
             return false;
         }
 
-        if (meta->cs_wave_size_min > device->d3d12_caps.options1.WaveLaneCountMax ||
-                meta->cs_wave_size_max < device->d3d12_caps.options1.WaveLaneCountMin)
+        if (meta->cs_wave_size_min > info->vulkan_1_3_properties.maxSubgroupSize ||
+                meta->cs_wave_size_max < info->vulkan_1_3_properties.minSubgroupSize)
         {
-            /* On Wave64 with a thread group size of 32, we may have allowed the wave lane count to return 32
-             * for pragmatic workaround reasons. */
-            bool allowed_edge_case = (meta->flags & VKD3D_SHADER_META_FLAG_ALLOW_WAVE32) &&
-                meta->cs_wave_size_min == 32 && device->d3d12_caps.options1.WaveLaneCountMin > 32;
-
-            if (!allowed_edge_case)
-            {
-                ERR("Required WaveSize range [%u, %u], but supported range is [%u, %u].\n",
-                        meta->cs_wave_size_min, meta->cs_wave_size_max,
-                        device->d3d12_caps.options1.WaveLaneCountMin,
-                        device->d3d12_caps.options1.WaveLaneCountMax);
-                return false;
-            }
+            ERR("Required WaveSize range [%u, %u], but supported range is [%u, %u].\n",
+                    meta->cs_wave_size_min, meta->cs_wave_size_max,
+                    info->vulkan_1_3_properties.minSubgroupSize,
+                    info->vulkan_1_3_properties.maxSubgroupSize);
+            return false;
         }
     }
 
@@ -10870,58 +10263,17 @@ bool d3d12_device_validate_shader_meta(struct d3d12_device *device, const struct
 HRESULT d3d12_device_create(struct vkd3d_instance *instance,
         const struct vkd3d_device_create_info *create_info, struct d3d12_device **device)
 {
-    bool reject_existing_device = false;
-    bool forced_singletons = false;
     struct d3d12_device *object;
-    char env[64];
     HRESULT hr;
 
-    if (create_info->independent)
-    {
-        /* RenderDoc does not support multiple VkDevices active.
-         * The independent devices APIs exposes this scenario. */
-        forced_singletons = vkd3d_get_env_var("ENABLE_VULKAN_RENDERDOC_CAPTURE", env, sizeof(env)) &&
-                strcmp(env, "1") == 0;
-
-        if (forced_singletons)
-            INFO("Forcing singleton device due to RenderDoc being enabled.\n");
-
-        if (forced_singletons &&
-            (create_info->device_factory_flags &
-                (D3D12_DEVICE_FACTORY_FLAG_ALLOW_RETURNING_EXISTING_DEVICE |
-                 D3D12_DEVICE_FACTORY_FLAG_ALLOW_RETURNING_INCOMPATIBLE_EXISTING_DEVICE)) == 0)
-        {
-            reject_existing_device = true;
-        }
-    }
-
     pthread_mutex_lock(&d3d12_device_map_mutex);
-
-    if (!create_info->independent || forced_singletons)
+    if ((object = d3d12_find_device_singleton(create_info->adapter_luid)))
     {
-        if ((object = d3d12_find_device_singleton(create_info->adapter_luid)))
-        {
-            TRACE("Returned existing singleton device %p.\n", object);
+        TRACE("Returned existing singleton device %p.\n", object);
 
-            if (reject_existing_device)
-            {
-                pthread_mutex_unlock(&d3d12_device_map_mutex);
-                INFO("Attempting to create a new independent device, but we're blocked by RenderDoc.\n");
-                return DXGI_ERROR_ALREADY_EXISTS;
-            }
-
-            d3d12_device_add_ref(*device = object);
-            pthread_mutex_unlock(&d3d12_device_map_mutex);
-            return S_OK;
-        }
-    }
-
-    if (forced_singletons &&
-        (create_info->device_factory_flags & D3D12_DEVICE_FACTORY_FLAG_DISALLOW_STORING_NEW_DEVICE_AS_SINGLETON))
-    {
+        d3d12_device_add_ref(*device = object);
         pthread_mutex_unlock(&d3d12_device_map_mutex);
-        INFO("Attempting to create a new independent device, but we must store as singleton due to RenderDoc.\n");
-        return DXGI_ERROR_UNSUPPORTED;
+        return S_OK;
     }
 
     if (!(object = vkd3d_malloc_aligned(sizeof(*object), 64)))
@@ -10950,10 +10302,7 @@ HRESULT d3d12_device_create(struct vkd3d_instance *instance,
 
     TRACE("Created device %p (dummy d3d12_device_AddRef for debug grep purposes).\n", object);
 
-    if (create_info->independent && !forced_singletons)
-        object->independent_device = true;
-    else
-        d3d12_add_device_singleton(object, create_info->adapter_luid);
+    d3d12_add_device_singleton(object, create_info->adapter_luid);
 
     pthread_mutex_unlock(&d3d12_device_map_mutex);
 
@@ -10962,115 +10311,14 @@ HRESULT d3d12_device_create(struct vkd3d_instance *instance,
     return S_OK;
 }
 
-HRESULT d3d12_device_removed_reason(struct d3d12_device *device)
-{
-    return vkd3d_atomic_uint32_load_explicit(&device->removed_reason, vkd3d_memory_order_acquire);
-}
-
-VkResult d3d12_device_poll_device_faults(struct d3d12_device *device, uint64_t timeout)
-{
-    const struct vkd3d_vk_device_procs *vk_procs = &device->vk_procs;
-    VkDeviceFaultInfoKHR fault_info[64];
-    uint32_t fault_counts;
-    VkResult vr;
-    uint32_t i;
-
-    static const char *address_type_to_str[] =
-    {
-        "N/A",
-        "ReadInvalid",
-        "WriteInvalid",
-        "ExecuteInvalid",
-        "UnknownPC",
-        "InvalidPC",
-        "FaultPC",
-    };
-
-    if (!device->device_info.fault_features.deviceFault)
-        return VK_ERROR_EXTENSION_NOT_PRESENT;
-
-    fault_counts = ARRAY_SIZE(fault_info);
-    memset(fault_info, 0, sizeof(fault_info));
-    for (i = 0; i < fault_counts; i++)
-        fault_info[i].sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_KHR;
-
-    /* Might be a delay from device lost until we have the fault info ready. Block for a second just in case. */
-    if ((vr = VK_CALL(vkGetDeviceFaultReportsKHR(
-        device->vk_device, timeout, &fault_counts, fault_info))) != VK_SUCCESS)
-    {
-        return vr;
-    }
-
-    if (fault_counts == 0)
-        return VK_SUCCESS;
-
-    ERR("Reporting faults.\n");
-
-    for (i = 0; i < fault_counts; i++)
-    {
-        const VkDeviceFaultAddressInfoKHR *inst_info = &fault_info[i].instructionAddressInfo;
-        const VkDeviceFaultAddressInfoKHR *addr_info = &fault_info[i].faultAddressInfo;
-        const char *type;
-
-        ERR("Desc: %s\n", fault_info[i].description);
-
-        if (fault_info[i].flags & VK_DEVICE_FAULT_FLAG_DEVICE_LOST_KHR)
-            ERR("Flag [%u] contains DEVICE_LOST.\n", i);
-        if (fault_info[i].flags & VK_DEVICE_FAULT_FLAG_WATCHDOG_TIMEOUT_KHR)
-            ERR("Flag [%u] contains WATCHDOG_TIMEOUT.\n", i);
-
-        if (fault_info[i].flags & VK_DEVICE_FAULT_FLAG_VENDOR_KHR)
-        {
-            ERR("Vendor [%u] = { code = #%"PRIx64", data = #%"PRIx64", desc = %s }\n", i,
-                fault_info[i].vendorInfo.vendorFaultCode,
-                fault_info[i].vendorInfo.vendorFaultData,
-                fault_info[i].vendorInfo.description);
-        }
-
-        if (fault_info[i].flags & VK_DEVICE_FAULT_FLAG_MEMORY_ADDRESS_KHR)
-        {
-            if (addr_info->addressType < ARRAY_SIZE(address_type_to_str))
-                type = address_type_to_str[addr_info->addressType];
-            else
-                type = "?";
-
-            ERR("Address [%u]: [%016"PRIx64", %016"PRIx64"], type %s\n", i,
-                    addr_info->reportedAddress, addr_info->reportedAddress + addr_info->addressPrecision - 1, type);
-
-            switch (addr_info->addressType)
-            {
-                case VK_DEVICE_FAULT_ADDRESS_TYPE_READ_INVALID_KHR:
-                case VK_DEVICE_FAULT_ADDRESS_TYPE_WRITE_INVALID_KHR:
-                    vkd3d_address_binding_tracker_check_va(&device->address_binding_tracker, addr_info->reportedAddress);
-                    break;
-
-                default:
-                    break;
-            }
-        }
-
-        if (fault_info[i].flags & VK_DEVICE_FAULT_FLAG_INSTRUCTION_ADDRESS_KHR)
-        {
-            if (inst_info->addressType < ARRAY_SIZE(address_type_to_str))
-                type = address_type_to_str[inst_info->addressType];
-            else
-                type = "?";
-
-            ERR("Instruction [%u]: [%016"PRIx64", %016"PRIx64"], type %s\n", i,
-                    inst_info->reportedAddress, inst_info->reportedAddress + inst_info->addressPrecision - 1, type);
-        }
-    }
-
-    return VK_SUCCESS;
-}
-
-void d3d12_device_report_fault(struct d3d12_device *device, VkResult vr)
+void d3d12_device_report_fault(struct d3d12_device *device)
 {
     const struct vkd3d_vk_device_procs *vk_procs = &device->vk_procs;
     static pthread_mutex_t report_lock = PTHREAD_MUTEX_INITIALIZER;
+    VkDeviceFaultCountsEXT fault_counts;
+    VkDeviceFaultInfoEXT fault_info;
     static bool reported = false;
-    void *vendor_binary = NULL;
-    uint64_t start_wait_idle;
+    VkResult vr;
     uint32_t i;
 
     d3d12_device_mark_as_removed(device, DXGI_ERROR_DEVICE_REMOVED, "VK_ERROR_DEVICE_LOST");
@@ -11078,7 +10326,14 @@ void d3d12_device_report_fault(struct d3d12_device *device, VkResult vr)
     if (!device->device_info.fault_features.deviceFault)
         return;
 
-    /* Only need to dump information once. */
+    fault_counts.sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT;
+    fault_counts.pNext = NULL;
+    if ((vr = VK_CALL(vkGetDeviceFaultInfoEXT(device->vk_device, &fault_counts, NULL)) < 0))
+    {
+        ERR("Failed to query device fault info, vr %d.\n", vr);
+        return;
+    }
+
     pthread_mutex_lock(&report_lock);
     if (reported)
     {
@@ -11087,40 +10342,66 @@ void d3d12_device_report_fault(struct d3d12_device *device, VkResult vr)
     }
     reported = true;
 
-    start_wait_idle = vkd3d_get_current_time_ns();
+    memset(&fault_info, 0, sizeof(fault_info));
+    fault_info.sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT;
 
-    while (vr != VK_ERROR_DEVICE_LOST && vkd3d_get_current_time_ns() < start_wait_idle + 5000000000ull)
+    /* Don't have to explicitly check vendor binary feature,
+     * implementations must return 0 size if not enabled. */
+    fault_info.pAddressInfos = vkd3d_calloc(fault_counts.addressInfoCount, sizeof(*fault_info.pAddressInfos));
+    fault_info.pVendorBinaryData = vkd3d_malloc(fault_counts.vendorBinarySize);
+    fault_info.pVendorInfos = vkd3d_calloc(fault_counts.vendorInfoCount, sizeof(*fault_info.pVendorInfos));
+
+    vr = VK_CALL(vkGetDeviceFaultInfoEXT(device->vk_device, &fault_counts, &fault_info));
+
+    if (vr < 0)
     {
-        ERR("DEVICE_LOST has not been properly observed yet, blocking until we can confirm that.\n");
-        /* We have to observe an actual device lost. */
-        vr = VK_CALL(vkDeviceWaitIdle(device->vk_device));
+        ERR("Failed to query device fault info, vr %d.\n", vr);
     }
-
-    if (vr != VK_ERROR_DEVICE_LOST)
-        ERR("We could not observe device lost in finite time. Very strange. Trying to fish for faults anyway.\n");
-
-    if (d3d12_device_poll_device_faults(device, 1000000000ull) != VK_SUCCESS)
-        ERR("Failed to poll for device faults.\n");
-
-    if (device->device_info.fault_features.deviceFaultVendorBinary)
+    else
     {
-        VkDeviceFaultDebugInfoKHR fault_debug_info;
-
-        memset(&fault_debug_info, 0, sizeof(fault_debug_info));
-        fault_debug_info.sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_DEBUG_INFO_KHR;
-        if (VK_CALL(vkGetDeviceFaultDebugInfoKHR(device->vk_device, &fault_debug_info)) != VK_SUCCESS)
-            goto unlock;
-
-        vendor_binary = vkd3d_malloc(fault_debug_info.vendorBinarySize);
-        fault_debug_info.pVendorBinaryData = vendor_binary;
-        if (VK_CALL(vkGetDeviceFaultDebugInfoKHR(device->vk_device, &fault_debug_info)) != VK_SUCCESS)
-            goto unlock;
-
-        if (fault_debug_info.vendorBinarySize >= sizeof(VkDeviceFaultVendorBinaryHeaderVersionOneKHR))
+        static const char *address_type_to_str[] =
         {
-            const VkDeviceFaultVendorBinaryHeaderVersionOneKHR *header = fault_debug_info.pVendorBinaryData;
-            if (header->headerVersion == VK_DEVICE_FAULT_VENDOR_BINARY_HEADER_VERSION_ONE_KHR &&
-                header->headerSize <= fault_debug_info.vendorBinarySize)
+            "N/A",
+            "ReadInvalid",
+            "WriteInvalid",
+            "ExecuteInvalid",
+            "UnknownPC",
+            "InvalidPC",
+            "FaultPC",
+        };
+
+        ERR("DEVICE_LOST received, reporting fault.\n");
+        ERR("Desc: %s\n", fault_info.description);
+
+        for (i = 0; i < fault_counts.addressInfoCount; i++)
+        {
+            const VkDeviceFaultAddressInfoEXT *addr = &fault_info.pAddressInfos[i];
+            const char *type;
+
+            if (addr->addressType < ARRAY_SIZE(address_type_to_str))
+                type = address_type_to_str[addr->addressType];
+            else
+                type = "?";
+
+            ERR("Address [%u]: %016"PRIx64" (granularity %"PRIx64"), type %s\n", i,
+                    addr->reportedAddress, addr->addressPrecision, type);
+
+            vkd3d_address_binding_tracker_check_va(&device->address_binding_tracker, addr->reportedAddress);
+        }
+
+        for (i = 0; i < fault_counts.vendorInfoCount; i++)
+        {
+            const VkDeviceFaultVendorInfoEXT *vend = &fault_info.pVendorInfos[i];
+            ERR("Vendor [%u]: (code #%"PRIx64") (data #%"PRIx64") %s\n",
+                    i, vend->vendorFaultCode, vend->vendorFaultData,
+                    vend->description);
+        }
+
+        if (fault_counts.vendorBinarySize >= sizeof(VkDeviceFaultVendorBinaryHeaderVersionOneEXT))
+        {
+            const VkDeviceFaultVendorBinaryHeaderVersionOneEXT *header = fault_info.pVendorBinaryData;
+            if (header->headerVersion == VK_DEVICE_FAULT_VENDOR_BINARY_HEADER_VERSION_ONE_EXT &&
+                    header->headerSize <= fault_counts.vendorBinarySize)
             {
                 const char *path = "vkd3d-proton.fault.bin";
                 char cache_uuid[VK_UUID_SIZE * 2 + 1];
@@ -11132,17 +10413,16 @@ void d3d12_device_report_fault(struct d3d12_device *device, VkResult vr)
                 ERR("driverVersion: #%x\n", header->driverVersion);
                 ERR("deviceID: #%x\n", header->deviceID);
                 ERR("apiVersion: #%x\n", header->apiVersion);
-
                 if (header->applicationNameOffset)
                 {
                     ERR("applicationName: %s\n",
-                            ((const char *)fault_debug_info.pVendorBinaryData) + header->applicationNameOffset);
+                            ((const char *)fault_info.pVendorBinaryData) + header->applicationNameOffset);
                     ERR("applicationVersion: #%x\n", header->applicationVersion);
                 }
 
                 if (header->engineNameOffset)
                 {
-                    ERR("engineName: %s\n", ((const char *)fault_debug_info.pVendorBinaryData) + header->engineNameOffset);
+                    ERR("engineName: %s\n", ((const char *)fault_info.pVendorBinaryData) + header->engineNameOffset);
                     ERR("engineVersion: #%x\n", header->engineVersion);
                 }
 
@@ -11154,8 +10434,8 @@ void d3d12_device_report_fault(struct d3d12_device *device, VkResult vr)
                 file = fopen(path, "wb");
                 if (file)
                 {
-                    size_t write_size = fault_debug_info.vendorBinarySize - header->headerSize;
-                    if (fwrite((const uint8_t *)fault_debug_info.pVendorBinaryData + header->headerSize, 1,
+                    size_t write_size = fault_counts.vendorBinarySize - header->headerSize;
+                    if (fwrite((const uint8_t *)fault_info.pVendorBinaryData + header->headerSize, 1,
                             write_size, file) != write_size)
                     {
                         ERR("Failed to write fault file.\n");
@@ -11170,44 +10450,10 @@ void d3d12_device_report_fault(struct d3d12_device *device, VkResult vr)
         }
     }
 
-    if (device->device_info.shader_abort_features.shaderAbort)
-    {
-        VkDeviceFaultShaderAbortMessageInfoKHR message_info;
-        VkDeviceFaultDebugInfoKHR fault_debug_info;
-
-        memset(&fault_debug_info, 0, sizeof(fault_debug_info));
-        memset(&message_info, 0, sizeof(message_info));
-
-        fault_debug_info.sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_DEBUG_INFO_KHR;
-        fault_debug_info.pNext = &message_info;
-        message_info.sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_SHADER_ABORT_MESSAGE_INFO_KHR;
-
-        if (VK_CALL(vkGetDeviceFaultDebugInfoKHR(device->vk_device, &fault_debug_info)) != VK_SUCCESS)
-            goto unlock;
-
-        if (message_info.messageDataSize)
-        {
-            uint64_t *msg = vkd3d_malloc(message_info.messageDataSize);
-            message_info.pMessageData = msg;
-
-            if (VK_CALL(vkGetDeviceFaultDebugInfoKHR(device->vk_device, &fault_debug_info)) != VK_SUCCESS)
-            {
-                vkd3d_free(msg);
-                goto unlock;
-            }
-
-            ERR("Got shader abort length of %"PRIu64"\n", message_info.messageDataSize);
-
-            vkd3d_shader_abort_print_message_sequence(msg, message_info.messageDataSize);
-            vkd3d_free(msg);
-        }
-    }
-
-unlock:
-    /* Keep the lock held until we're completely done to avoid other threads spamming new submissions
-     * in a lost state. */
     pthread_mutex_unlock(&report_lock);
-    vkd3d_free(vendor_binary);
+    vkd3d_free(fault_info.pAddressInfos);
+    vkd3d_free(fault_info.pVendorBinaryData);
+    vkd3d_free(fault_info.pVendorInfos);
 }
 
 void d3d12_device_mark_as_removed(struct d3d12_device *device, HRESULT reason,
@@ -11217,7 +10463,7 @@ void d3d12_device_mark_as_removed(struct d3d12_device *device, HRESULT reason,
 
     va_start(args, message);
     WARN("Device %p is lost (reason %#x, \"%s\").\n",
-            device, (int)reason, vkd3d_dbg_vsprintf(message, args));
+            device, reason, vkd3d_dbg_vsprintf(message, args));
     va_end(args);
 
     vkd3d_atomic_uint32_store_explicit(&device->removed_reason, reason, vkd3d_memory_order_release);

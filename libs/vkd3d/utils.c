@@ -157,14 +157,14 @@ static const struct vkd3d_format vkd3d_depth_stencil_formats[] =
 {
     {DXGI_FORMAT_R32G8X24_TYPELESS,        VK_FORMAT_D32_SFLOAT_S8_UINT, 8,  1, 1, 1, DEPTH_STENCIL, 2, TYPELESS, false, depth_stencil_copy_footprints},
     {DXGI_FORMAT_D32_FLOAT_S8X24_UINT,     VK_FORMAT_D32_SFLOAT_S8_UINT, 8,  1, 1, 1, DEPTH_STENCIL, 2, 0, false, depth_stencil_copy_footprints},
-    {DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS, VK_FORMAT_D32_SFLOAT_S8_UINT, 8,  1, 1, 1, DEPTH,         2, 0, false, depth_stencil_copy_footprints},
-    {DXGI_FORMAT_X32_TYPELESS_G8X24_UINT,  VK_FORMAT_D32_SFLOAT_S8_UINT, 8,  1, 1, 1, STENCIL,       2, 0, false, depth_stencil_copy_footprints},
+    {DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS, VK_FORMAT_D32_SFLOAT_S8_UINT, 8,  1, 1, 1, DEPTH,         2},
+    {DXGI_FORMAT_X32_TYPELESS_G8X24_UINT,  VK_FORMAT_D32_SFLOAT_S8_UINT, 8,  1, 1, 1, STENCIL,       2},
     {DXGI_FORMAT_R32_TYPELESS,             VK_FORMAT_D32_SFLOAT,         4,  1, 1, 1, DEPTH,         1, TYPELESS},
     {DXGI_FORMAT_R32_FLOAT,                VK_FORMAT_D32_SFLOAT,         4,  1, 1, 1, DEPTH,         1},
     {DXGI_FORMAT_R24G8_TYPELESS,           VK_FORMAT_D24_UNORM_S8_UINT,  4,  1, 1, 1, DEPTH_STENCIL, 2, TYPELESS, false, depth_stencil_copy_footprints},
     {DXGI_FORMAT_D24_UNORM_S8_UINT,        VK_FORMAT_D24_UNORM_S8_UINT,  4,  1, 1, 1, DEPTH_STENCIL, 2, 0, false, depth_stencil_copy_footprints},
-    {DXGI_FORMAT_R24_UNORM_X8_TYPELESS,    VK_FORMAT_D24_UNORM_S8_UINT,  4,  1, 1, 1, DEPTH,         2, 0, false, depth_stencil_copy_footprints},
-    {DXGI_FORMAT_X24_TYPELESS_G8_UINT,     VK_FORMAT_D24_UNORM_S8_UINT,  4,  1, 1, 1, STENCIL,       2, 0, false, depth_stencil_copy_footprints},
+    {DXGI_FORMAT_R24_UNORM_X8_TYPELESS,    VK_FORMAT_D24_UNORM_S8_UINT,  4,  1, 1, 1, DEPTH,         2},
+    {DXGI_FORMAT_X24_TYPELESS_G8_UINT,     VK_FORMAT_D24_UNORM_S8_UINT,  4,  1, 1, 1, STENCIL,       2},
     {DXGI_FORMAT_R16_TYPELESS,             VK_FORMAT_D16_UNORM,          2,  1, 1, 1, DEPTH,         1, TYPELESS},
     {DXGI_FORMAT_R16_UNORM,                VK_FORMAT_D16_UNORM,          2,  1, 1, 1, DEPTH,         1},
 };
@@ -771,8 +771,6 @@ static void vkd3d_cleanup_depth_stencil_formats(struct d3d12_device *device)
 static HRESULT vkd3d_init_formats(struct d3d12_device *device)
 {
     const struct vkd3d_format_compatibility_list *list;
-    VkFormatProperties3 a8_properties, r8_properties;
-    VkFormatFeatureFlags r8_unique_features;
     struct vkd3d_format *formats, *format;
     VkFormatProperties3 properties;
     DXGI_FORMAT dxgi_format;
@@ -786,27 +784,35 @@ static HRESULT vkd3d_init_formats(struct d3d12_device *device)
             VK_FORMAT_FEATURE_TRANSFER_SRC_BIT |
             VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
 
-    static const VkFormatFeatureFlags a8_required_features =
-            VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
-            VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT |
-            VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
-            VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
-            VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT |
-            VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT |
-            VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT;
-
     if (!(formats = vkd3d_calloc(VKD3D_MAX_DXGI_FORMAT + 1, sizeof(*formats))))
         return E_OUTOFMEMORY;
 
-    vkd3d_get_vk_format_properties(device, VK_FORMAT_A8_UNORM_KHR, &a8_properties);
-    vkd3d_get_vk_format_properties(device, VK_FORMAT_R8_UNORM, &r8_properties);
+    if (device->device_info.maintenance_5_features.maintenance5)
+    {
+        const VkFormatFeatureFlags a8_required_features =
+                VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
+                VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT |
+                VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+                VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
+                VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT |
+                VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT |
+                VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT;
 
-    /* Only use the native A8_UNORM format if support is at least as good
-        * as for the R8_UNORM fallback format for relevant features. */
-    r8_unique_features = (r8_properties.optimalTilingFeatures | r8_properties.bufferFeatures) &
-            ~(a8_properties.optimalTilingFeatures | a8_properties.bufferFeatures);
+        VkFormatProperties3 a8_properties, r8_properties;
+        VkFormatFeatureFlags r8_unique_features;
 
-    emulate_a8 = (r8_unique_features & a8_required_features) != 0;
+        vkd3d_get_vk_format_properties(device, VK_FORMAT_A8_UNORM_KHR, &a8_properties);
+        vkd3d_get_vk_format_properties(device, VK_FORMAT_R8_UNORM, &r8_properties);
+
+        /* Only use the native A8_UNORM format if support is at least as good
+         * as for the R8_UNORM fallback format for relevant features. */
+        r8_unique_features = (r8_properties.optimalTilingFeatures | r8_properties.bufferFeatures) &
+                ~(a8_properties.optimalTilingFeatures | a8_properties.bufferFeatures);
+
+        emulate_a8 = (r8_unique_features & a8_required_features) != 0;
+    }
+    else
+        emulate_a8 = true;
 
     if (emulate_a8)
         WARN("Mapping VK_FORMAT_A8_UNORM_KHR to VK_FORMAT_R8_UNORM.\n");
@@ -1732,7 +1738,7 @@ static HRESULT STDMETHODCALLTYPE d3d_blob_QueryInterface(ID3DBlob *iface, REFIID
 static ULONG STDMETHODCALLTYPE d3d_blob_AddRef(ID3DBlob *iface)
 {
     struct d3d_blob *blob = impl_from_ID3DBlob(iface);
-    unsigned int refcount = InterlockedIncrement(&blob->refcount);
+    ULONG refcount = InterlockedIncrement(&blob->refcount);
 
     TRACE("%p increasing refcount to %u.\n", blob, refcount);
 
@@ -1742,7 +1748,7 @@ static ULONG STDMETHODCALLTYPE d3d_blob_AddRef(ID3DBlob *iface)
 static ULONG STDMETHODCALLTYPE d3d_blob_Release(ID3DBlob *iface)
 {
     struct d3d_blob *blob = impl_from_ID3DBlob(iface);
-    unsigned int refcount = InterlockedDecrement(&blob->refcount);
+    ULONG refcount = InterlockedDecrement(&blob->refcount);
 
     TRACE("%p decreasing refcount to %u.\n", blob, refcount);
 
@@ -1828,7 +1834,7 @@ static HRESULT STDMETHODCALLTYPE d3d_destruction_notifier_QueryInterface(ID3DDes
 static ULONG STDMETHODCALLTYPE d3d_destruction_notifier_AddRef(ID3DDestructionNotifier *iface)
 {
     struct d3d_destruction_notifier *notifier = impl_from_ID3DDestructionNotifier(iface);
-    unsigned int refcount = IUnknown_AddRef(notifier->parent);
+    ULONG refcount = IUnknown_AddRef(notifier->parent);
 
     TRACE("%p increasing refcount to %u.\n", notifier, refcount);
 
@@ -1838,7 +1844,7 @@ static ULONG STDMETHODCALLTYPE d3d_destruction_notifier_AddRef(ID3DDestructionNo
 static ULONG STDMETHODCALLTYPE d3d_destruction_notifier_Release(ID3DDestructionNotifier *iface)
 {
     struct d3d_destruction_notifier *notifier = impl_from_ID3DDestructionNotifier(iface);
-    unsigned int refcount = IUnknown_Release(notifier->parent);
+    ULONG refcount = IUnknown_Release(notifier->parent);
 
     TRACE("%p decreasing refcount to %u.\n", notifier, refcount);
 

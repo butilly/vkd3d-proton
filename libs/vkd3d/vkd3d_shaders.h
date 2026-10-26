@@ -42,6 +42,7 @@ enum vkd3d_meta_copy_mode
 #include <cs_clear_uav_image_3d_float.h>
 #include <cs_clear_uav_image_3d_uint.h>
 #include <cs_predicate_command.h>
+#include <cs_predicate_command_execute_indirect.h>
 #include <cs_resolve_binary_queries.h>
 #include <cs_resolve_predicate.h>
 #include <cs_resolve_query.h>
@@ -50,8 +51,7 @@ enum vkd3d_meta_copy_mode
 #include <cs_execute_indirect_patch.h>
 #include <cs_execute_indirect_patch_debug_ring.h>
 #include <cs_execute_indirect_multi_dispatch.h>
-#include <cs_copy_buffer_to_emulated_d24.h>
-#include <cs_copy_emulated_d24_to_buffer.h>
+#include <cs_execute_indirect_multi_dispatch_state.h>
 #include <vs_fullscreen_layer.h>
 #include <vs_fullscreen.h>
 #include <gs_fullscreen.h>

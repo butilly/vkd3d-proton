@@ -375,7 +375,7 @@ struct vkd3d_shader_quirk_entry
 {
     vkd3d_shader_hash_t lo;
     vkd3d_shader_hash_t hi;
-    vkd3d_shader_quirks_t quirks;
+    uint32_t flags;
 };
 
 static struct vkd3d_shader_quirk_entry *vkd3d_shader_quirk_entries;
@@ -385,7 +385,7 @@ size_t vkd3d_shader_quirk_entry_count;
 static const struct vkd3d_shader_quirk_mapping
 {
     const char *name;
-    vkd3d_shader_quirks_t quirk;
+    enum vkd3d_shader_quirk quirk;
 } vkd3d_shader_quirk_mappings[] = {
     ENTRY(FORCE_EXPLICIT_LOD_IN_CONTROL_FLOW),
     ENTRY(FORCE_TGSM_BARRIERS),
@@ -413,15 +413,6 @@ static const struct vkd3d_shader_quirk_mapping
     ENTRY(FORCE_GRAPHICS_BARRIER_BEFORE_RENDER_PASS),
     ENTRY(FIXUP_LOOP_HEADER_UNDEF_PHIS),
     ENTRY(FIXUP_RSQRT_INF_NAN),
-    ENTRY(ROBUST_COMPUTE_QUAD_BROADCAST),
-    ENTRY(IGNORE_PRIMITIVE_SHADING_RATE),
-    ENTRY(PRECISE_FMA),
-    ENTRY(CLAMP_WAVE_SIZE_TO_THREAD_GROUP32),
-    ENTRY(ENABLE_FAIR_SCHEDULING),
-    ENTRY(FORCE_GRAPHICS_BARRIER_BEFORE_DRAW),
-    ENTRY(FORCE_FEEDBACK_LOOP),
-    ENTRY(DEBUG_FORCE_MIN_WAVE64),
-    ENTRY(FORCE_DENORM_LEGACY_FP16_CONVERSIONS),
 };
 #undef ENTRY
 
@@ -446,7 +437,6 @@ static void vkd3d_shader_init_quirk_table(void)
 
     while (fgets(env, sizeof(env), file))
     {
-        entry.quirks = 0;
         if (!vkd3d_shader_hash_range_parse_line(env, &entry.lo, &entry.hi, &trail))
             continue;
 
@@ -457,7 +447,7 @@ static void vkd3d_shader_init_quirk_table(void)
         {
             if (strcmp(trail, vkd3d_shader_quirk_mappings[i].name) == 0)
             {
-                entry.quirks = vkd3d_shader_quirk_mappings[i].quirk;
+                entry.flags = vkd3d_shader_quirk_mappings[i].quirk;
                 INFO("Parsed shader quirk entry: [%016"PRIx64", %016"PRIx64"] -> %s\n",
                         entry.lo, entry.hi, trail);
                 break;
@@ -468,7 +458,6 @@ static void vkd3d_shader_init_quirk_table(void)
         {
             INFO("Parsed shader quirk entry: [%016"PRIx64", %016"PRIx64"], but no quirk for %s was found.\n",
                     entry.lo, entry.hi, trail);
-            continue;
         }
 
         vkd3d_array_reserve((void **)&vkd3d_shader_quirk_entries, &size,
@@ -481,11 +470,10 @@ static void vkd3d_shader_init_quirk_table(void)
 
 static pthread_once_t vkd3d_shader_quirk_once = PTHREAD_ONCE_INIT;
 
-vkd3d_shader_quirks_t vkd3d_shader_compile_arguments_select_quirks(
-        const struct vkd3d_shader_compile_arguments *compile_args,
-        vkd3d_shader_hash_t shader_hash, const char *entry)
+uint32_t vkd3d_shader_compile_arguments_select_quirks(
+        const struct vkd3d_shader_compile_arguments *compile_args, vkd3d_shader_hash_t shader_hash)
 {
-    vkd3d_shader_quirks_t quirks = 0;
+    uint32_t quirks = 0;
     unsigned int i;
 
     pthread_once(&vkd3d_shader_quirk_once, vkd3d_shader_init_quirk_table);
@@ -494,33 +482,25 @@ vkd3d_shader_quirks_t vkd3d_shader_compile_arguments_select_quirks(
     {
         if (vkd3d_shader_quirk_entries[i].lo <= shader_hash && vkd3d_shader_quirk_entries[i].hi >= shader_hash)
         {
-            quirks |= vkd3d_shader_quirk_entries[i].quirks;
-            INFO("Adding shader quirks #%"PRIx64" for hash %016"PRIx64".\n",
-                    vkd3d_shader_quirk_entries[i].quirks, shader_hash);
+            quirks |= vkd3d_shader_quirk_entries[i].flags;
+            INFO("Adding shader quirks #%x for hash %016"PRIx64".\n",
+                    vkd3d_shader_quirk_entries[i].flags, shader_hash);
         }
     }
 
     if (compile_args && compile_args->quirks)
     {
-        for (i = 0; i < compile_args->quirks->num_entry_points; i++)
-        {
-            const char *quirk_entry = compile_args->quirks->entry_points[i].entry;
-            if (compile_args->quirks->entry_points[i].shader_hash == shader_hash ||
-                (entry && quirk_entry && !strcmp(entry, quirk_entry)))
-            {
-                return quirks | compile_args->quirks->entry_points[i].quirks | compile_args->quirks->global_quirks;
-            }
-        }
-
+        for (i = 0; i < compile_args->quirks->num_hashes; i++)
+            if (compile_args->quirks->hashes[i].shader_hash == shader_hash)
+                return quirks | compile_args->quirks->hashes[i].quirks | compile_args->quirks->global_quirks;
         return quirks | compile_args->quirks->default_quirks | compile_args->quirks->global_quirks;
     }
     else
         return quirks;
 }
 
-uint64_t vkd3d_shader_get_revision(vkd3d_shader_quirks_t *aux_quirks)
+uint64_t vkd3d_shader_get_revision(void)
 {
-    vkd3d_shader_quirks_t quirks = 0;
     uint64_t quirk_hash = 0;
     size_t i;
 
@@ -533,8 +513,7 @@ uint64_t vkd3d_shader_get_revision(vkd3d_shader_quirks_t *aux_quirks)
         {
             quirk_hash = hash_fnv1_iterate_u64(quirk_hash, vkd3d_shader_quirk_entries[i].lo);
             quirk_hash = hash_fnv1_iterate_u64(quirk_hash, vkd3d_shader_quirk_entries[i].hi);
-            quirk_hash = hash_fnv1_iterate_u64(quirk_hash, vkd3d_shader_quirk_entries[i].quirks);
-            quirks |= vkd3d_shader_quirk_entries[i].quirks;
+            quirk_hash = hash_fnv1_iterate_u32(quirk_hash, vkd3d_shader_quirk_entries[i].flags);
         }
     }
 
@@ -542,9 +521,6 @@ uint64_t vkd3d_shader_get_revision(vkd3d_shader_quirks_t *aux_quirks)
      * Might get nuked later ...
      * It's not immediately useful for invalidating pipeline caches, since that would mostly be covered
      * by vkd3d-proton Git hash. */
-    if (aux_quirks)
-        *aux_quirks = quirks;
-
     return quirk_hash ^ 1;
 }
 
@@ -954,14 +930,6 @@ void vkd3d_shader_extract_feature_meta(struct vkd3d_shader_code *code)
                     else
                         ERR("Too many tracked built-in variables.\n");
                 }
-                else if (builtin == SpvBuiltInBaryCoordSmoothAMD || builtin == SpvBuiltInBaryCoordNoPerspAMD)
-                {
-                    meta |= VKD3D_SHADER_META_FLAG_USES_FRAGMENT_BARYCENTRIC;
-                }
-            }
-            else if (decoration == SpvDecorationExplicitInterpAMD)
-            {
-                meta |= VKD3D_SHADER_META_FLAG_USES_FRAGMENT_BARYCENTRIC;
             }
         }
         else if (op == SpvOpVariable && count >= 4)

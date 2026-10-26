@@ -61,7 +61,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_heap_QueryInterface(d3d12_heap_iface *ifa
 static ULONG STDMETHODCALLTYPE d3d12_heap_AddRef(d3d12_heap_iface *iface)
 {
     struct d3d12_heap *heap = impl_from_ID3D12Heap1(iface);
-    unsigned int refcount = InterlockedIncrement(&heap->refcount);
+    ULONG refcount = InterlockedIncrement(&heap->refcount);
 
     if (refcount == 1)
     {
@@ -79,13 +79,6 @@ static void d3d12_heap_destroy(struct d3d12_heap *heap)
 
     d3d_destruction_notifier_free(&heap->destruction_notifier);
 
-#ifdef VKD3D_ENABLE_BREADCRUMBS
-    /* Heap is held alive until all placements are released. */
-    assert(heap->placements_count == 0);
-    vkd3d_free(heap->placements);
-    pthread_mutex_destroy(&heap->placement_lock);
-#endif
-
     vkd3d_free_memory(heap->device, &heap->device->memory_allocator, &heap->allocation);
     vkd3d_private_store_destroy(&heap->private_store);
     vkd3d_free(heap);
@@ -101,7 +94,7 @@ static void d3d12_heap_set_name(struct d3d12_heap *heap, const char *name)
 static ULONG STDMETHODCALLTYPE d3d12_heap_Release(d3d12_heap_iface *iface)
 {
     struct d3d12_heap *heap = impl_from_ID3D12Heap1(iface);
-    unsigned int refcount = InterlockedDecrement(&heap->refcount);
+    ULONG refcount = InterlockedDecrement(&heap->refcount);
 
     TRACE("%p decreasing refcount to %u.\n", heap, refcount);
 
@@ -179,7 +172,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_heap_GetProtectedResourceSession(d3d12_he
 
 ULONG d3d12_heap_incref(struct d3d12_heap *heap)
 {
-    unsigned int refcount = InterlockedIncrement(&heap->internal_refcount);
+    ULONG refcount = InterlockedIncrement(&heap->internal_refcount);
 
     TRACE("%p increasing refcount to %u.\n", heap, refcount);
 
@@ -188,7 +181,7 @@ ULONG d3d12_heap_incref(struct d3d12_heap *heap)
 
 ULONG d3d12_heap_decref(struct d3d12_heap *heap)
 {
-    unsigned int refcount = InterlockedDecrement(&heap->internal_refcount);
+    ULONG refcount = InterlockedDecrement(&heap->internal_refcount);
 
     TRACE("%p decreasing refcount to %u.\n", heap, refcount);
 
@@ -283,16 +276,6 @@ static HRESULT validate_heap_desc(struct d3d12_device *device, const D3D12_HEAP_
         return E_INVALIDARG;
     }
 
-    /* OpenExistingHeapFrom* maps to D3D12_HEAP_FLAG_SHARED_CROSS_ADAPTER,
-     * which in turn maps to VK_EXT_external_memory_host.
-     */
-    if ((desc->Flags & D3D12_HEAP_FLAG_SHARED_CROSS_ADAPTER) &&
-        !device->vk_info.EXT_external_memory_host)
-    {
-        WARN("D3D12_HEAP_FLAG_SHARED_CROSS_ADAPTER is not supported.\n");
-        return E_INVALIDARG;
-    }
-
     if (FAILED(hr = d3d12_device_validate_custom_heap_type(device, &desc->Properties)))
         return hr;
 
@@ -331,15 +314,12 @@ static HRESULT d3d12_heap_init(struct d3d12_heap *heap, struct d3d12_device *dev
     alloc_info.host_ptr = host_address;
 
     if ((alloc_info.heap_desc.Flags & D3D12_HEAP_FLAG_DENY_BUFFERS) &&
-        d3d12_device_allow_image_heap_suballocation(device))
+            device->d3d12_caps.options.ResourceHeapTier >= D3D12_RESOURCE_HEAP_TIER_2)
     {
         alloc_info.extra_allocation_flags = VKD3D_ALLOCATION_FLAG_ALLOW_IMAGE_SUBALLOCATION;
     }
 
-    if (!(alloc_info.heap_desc.Flags & D3D12_HEAP_FLAG_DENY_BUFFERS))
-        alloc_info.extra_allocation_flags |= VKD3D_ALLOCATION_FLAG_REQUIRE_ALIGNED_GPU_ADDRESS;
-
-    if (!VKD3D_CONFIG_FLAG_IS_SET(DAMAGE_NOT_ZEROED_ALLOCATIONS))
+    if (!(vkd3d_config_flags & VKD3D_CONFIG_FLAG_DAMAGE_NOT_ZEROED_ALLOCATIONS))
     {
         /* Unfortunately, we cannot trust CREATE_NOT_ZEROED to actually do anything.
          * Stress tests on Windows suggest that it drivers always clear anyway.
@@ -351,7 +331,7 @@ static HRESULT d3d12_heap_init(struct d3d12_heap *heap, struct d3d12_device *dev
 
     /* Buffers are far more sensitive to memory clears than images. */
     if ((alloc_info.heap_desc.Flags & D3D12_HEAP_FLAG_DENY_BUFFERS) &&
-            VKD3D_CONFIG_FLAG_IS_SET(MEMORY_ALLOCATOR_SKIP_IMAGE_HEAP_CLEAR))
+            (vkd3d_config_flags & VKD3D_CONFIG_FLAG_MEMORY_ALLOCATOR_SKIP_IMAGE_HEAP_CLEAR))
         alloc_info.heap_desc.Flags |= D3D12_HEAP_FLAG_CREATE_NOT_ZEROED;
 
     if (FAILED(hr = vkd3d_private_store_init(&heap->private_store)))
@@ -394,11 +374,6 @@ static HRESULT d3d12_heap_init(struct d3d12_heap *heap, struct d3d12_device *dev
             VKD3D_QUEUE_TIMELINE_TRACE_STATE_TYPE_HEAP_ALLOCATION, desc->SizeInBytes);
 
     d3d_destruction_notifier_init(&heap->destruction_notifier, (IUnknown*)&heap->ID3D12Heap_iface);
-
-#ifdef VKD3D_ENABLE_BREADCRUMBS
-    pthread_mutex_init(&heap->placement_lock, NULL);
-#endif
-
     d3d12_device_add_ref(heap->device);
     return S_OK;
 }

@@ -17,12 +17,10 @@ vkd3d_shaders =[
   'shaders/cs_emit_nv_memory_decompression_regions.comp',
   'shaders/cs_emit_nv_memory_decompression_workgroups.comp',
   'shaders/cs_predicate_command.comp',
+  'shaders/cs_predicate_command_execute_indirect.comp',
   'shaders/cs_resolve_binary_queries.comp',
   'shaders/cs_resolve_predicate.comp',
   'shaders/cs_resolve_query.comp',
-
-  'shaders/cs_copy_buffer_to_emulated_d24.comp',
-  'shaders/cs_copy_emulated_d24_to_buffer.comp',
 
   'shaders/fs_copy_image_float.frag',
   'shaders/fs_copy_image_uint.frag',
@@ -38,6 +36,7 @@ vkd3d_shaders =[
   'shaders/cs_execute_indirect_patch.comp',
   'shaders/cs_execute_indirect_patch_debug_ring.comp',
   'shaders/cs_execute_indirect_multi_dispatch.comp',
+  'shaders/cs_execute_indirect_multi_dispatch_state.comp',
 
   'shaders/cs_sampler_feedback_decode_buffer_min_mip.comp',
   'shaders/fs_sampler_feedback_decode_image_min_mip.frag',
@@ -74,7 +73,6 @@ vkd3d_src = [
   'command_queue_vkd3d_ext.c',
   'd3dkmt.c',
   'device.c',
-  'device_workarounds.c',
   'device_vkd3d_ext.c',
   'heap.c',
   'memory.c',
