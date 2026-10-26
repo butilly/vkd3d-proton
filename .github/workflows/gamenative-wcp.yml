@@ -37,6 +37,18 @@ jobs:
         submodules: recursive
         fetch-depth: 0
 
+    - name: Apply submodule patches
+      run: |
+        set -euo pipefail
+        shopt -s nullglob
+        for dir in gamenative/patches/*/; do
+          sub="subprojects/$(basename "$dir")"
+          for p in "$dir"*.patch; do
+            echo "applying $p to $sub"
+            patch -p1 -N -d "$sub" -i "$GITHUB_WORKSPACE/$p"
+          done
+        done
+
     - name: Resolve package name
       env:
         VARIANT_NAME: ${{ inputs.variant_name || 'gamenative' }}

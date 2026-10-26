@@ -1,0 +1,111 @@
+From 23653d43d7925ca1b8310377d261078f18623288 Mon Sep 17 00:00:00 2001
+From: Utkarsh Dalal <utkarsh@gamenative.app>
+Date: Mon, 26 Oct 2026 08:11:45 +0530
+Subject: [PATCH] Make the DXBC unsigned int-to-float workaround a per-thread
+ switch
+
+---
+ bc/module.hpp           | 1 +
+ bc/module_dxbc_ir.cpp   | 9 ++++++++-
+ dxil_spirv_c.cpp        | 5 +++++
+ dxil_spirv_c.h          | 2 ++
+ llvm_bitcode_parser.cpp | 9 +++++++++
+ llvm_bitcode_parser.hpp | 1 +
+ 6 files changed, 26 insertions(+), 1 deletion(-)
+
+diff --git a/bc/module.hpp b/bc/module.hpp
+index 14ec3ba7..e1f6fcd0 100644
+--- a/bc/module.hpp
++++ b/bc/module.hpp
+@@ -96,5 +96,6 @@ private:
+ Module *parseIR(LLVMContext &context, const void *data, size_t size);
+ Module *parseDXBCIR(LLVMContext &context, dxbc_spv::ir::Builder &builder);
+ Module *parseDXBCBinary(LLVMContext &context, const void *data, size_t size);
++void set_thread_dxbc_nv_unsigned_itof_workaround(bool enable);
+ bool disassemble(Module &module, String &str);
+ } // namespace LLVMBC
+diff --git a/bc/module_dxbc_ir.cpp b/bc/module_dxbc_ir.cpp
+index a76a39d5..78b3c62e 100644
+--- a/bc/module_dxbc_ir.cpp
++++ b/bc/module_dxbc_ir.cpp
+@@ -3977,6 +3977,13 @@ Module *parseDXBCIR(LLVMContext &context, ir::Builder &builder)
+ 	return module;
+ }
+ 
++static thread_local bool dxbc_nv_unsigned_itof_workaround = true;
++
++void set_thread_dxbc_nv_unsigned_itof_workaround(bool enable)
++{
++	dxbc_nv_unsigned_itof_workaround = enable;
++}
++
+ Module *parseDXBCBinary(LLVMContext &context, const void* data, size_t size)
+ {
+ 	ScopedLogger logger;
+@@ -3997,7 +4004,7 @@ Module *parseDXBCBinary(LLVMContext &context, const void* data, size_t size)
+ 	options.arithmeticOptions.lowerF32toF16 = true;
+ 	options.arithmeticOptions.lowerConvertFtoI = false;
+ 	options.arithmeticOptions.lowerGsVertexCountIn = true;
+-	options.arithmeticOptions.hasNvUnsignedItoFBug = true;
++	options.arithmeticOptions.hasNvUnsignedItoFBug = dxbc_nv_unsigned_itof_workaround;
+ 
+ 	options.min16Options.enableFloat16 = true;
+ 	options.min16Options.enableInt16 = true;
+diff --git a/dxil_spirv_c.cpp b/dxil_spirv_c.cpp
+index c33912a5..1d8f198d 100644
+--- a/dxil_spirv_c.cpp
++++ b/dxil_spirv_c.cpp
+@@ -1713,3 +1713,8 @@ void dxil_spv_set_thread_log_callback(dxil_spv_log_cb callback, void *userdata)
+ 	c_callback_wrapper = callback;
+ 	dxil_spv::set_thread_log_callback(c_callback_wrapper_trampoline, userdata);
+ }
++
++void dxil_spv_set_thread_dxbc_nv_unsigned_itof_workaround(dxil_spv_bool enable)
++{
++	LLVMBCParser::set_thread_dxbc_nv_unsigned_itof_workaround(enable == DXIL_SPV_TRUE);
++}
+diff --git a/dxil_spirv_c.h b/dxil_spirv_c.h
+index ca3ce38d..e1026939 100644
+--- a/dxil_spirv_c.h
++++ b/dxil_spirv_c.h
+@@ -905,6 +905,8 @@ DXIL_SPV_PUBLIC_API void dxil_spv_parsed_blob_free(dxil_spv_parsed_blob blob);
+ /* Sets per thread global state. */
+ DXIL_SPV_PUBLIC_API void dxil_spv_set_thread_log_callback(dxil_spv_log_cb callback, void *userdata);
+ 
++DXIL_SPV_PUBLIC_API void dxil_spv_set_thread_dxbc_nv_unsigned_itof_workaround(dxil_spv_bool enable);
++
+ /* Converter API */
+ 
+ typedef struct dxil_spv_converter_s *dxil_spv_converter;
+diff --git a/llvm_bitcode_parser.cpp b/llvm_bitcode_parser.cpp
+index fbbffb6b..edc631d7 100644
+--- a/llvm_bitcode_parser.cpp
++++ b/llvm_bitcode_parser.cpp
+@@ -87,6 +87,15 @@ bool LLVMBCParser::parseDXBCBinary(const void *data, size_t size)
+ #endif
+ }
+ 
++void LLVMBCParser::set_thread_dxbc_nv_unsigned_itof_workaround(bool enable)
++{
++#ifdef HAVE_LLVMBC
++	llvm::set_thread_dxbc_nv_unsigned_itof_workaround(enable);
++#else
++	(void)enable;
++#endif
++}
++
+ bool LLVMBCParser::parseDXBC(dxbc_spv::ir::Builder &builder)
+ {
+ #ifdef HAVE_LLVMBC
+diff --git a/llvm_bitcode_parser.hpp b/llvm_bitcode_parser.hpp
+index 8686a60f..f17c2e4d 100644
+--- a/llvm_bitcode_parser.hpp
++++ b/llvm_bitcode_parser.hpp
+@@ -51,6 +51,7 @@ public:
+ 	~LLVMBCParser();
+ 	bool parse(const void *data, size_t size);
+ 	bool parseDXBCBinary(const void *data, size_t size);
++	static void set_thread_dxbc_nv_unsigned_itof_workaround(bool enable);
+ 	bool parseDXBC(dxbc_spv::ir::Builder &builder);
+ 	llvm::Module &get_module();
+ 	const llvm::Module &get_module() const;
