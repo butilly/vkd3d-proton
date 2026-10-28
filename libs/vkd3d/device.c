@@ -9803,6 +9803,15 @@ static void d3d12_device_caps_init_shader_model(struct d3d12_device *device)
             device->d3d12_caps.max_shader_model = D3D_SHADER_MODEL_6_2;
             TRACE("Enabling support for SM 6.2.\n");
         }
+        else
+        {
+            WARN("SM 6.2 capability gate failed: driverID=%u, denormBehaviorIndependence=%u, "
+                    "shaderDenormFlushToZeroFloat32=%u, shaderDenormPreserveFloat32=%u.\n",
+                    physical_device_info->vulkan_1_2_properties.driverID,
+                    physical_device_info->vulkan_1_2_properties.denormBehaviorIndependence,
+                    physical_device_info->vulkan_1_2_properties.shaderDenormFlushToZeroFloat32,
+                    physical_device_info->vulkan_1_2_properties.shaderDenormPreserveFloat32);
+        }
 
         /* SM 6.3 adds:
          * https://github.com/microsoft/DirectXShaderCompiler/wiki/Shader-Model-6.3
@@ -9937,6 +9946,23 @@ static void d3d12_device_caps_init_shader_model(struct d3d12_device *device)
     else
     {
         device->d3d12_caps.max_shader_model = D3D_SHADER_MODEL_5_1;
+        WARN("SM 6.0 capability gate failed: subgroupSize=%u, subgroupSupportedOperations=%#x "
+                "(required=%#x, missing=%#x), subgroupSupportedStages=%#x (required=%#x, missing=%#x), "
+                "scalarBlockLayout=%u, uniformBufferStandardLayout=%u, shaderInt16=%u.\n",
+                physical_device_info->vulkan_1_1_properties.subgroupSize,
+                physical_device_info->vulkan_1_1_properties.subgroupSupportedOperations,
+                required, required & ~physical_device_info->vulkan_1_1_properties.subgroupSupportedOperations,
+                physical_device_info->vulkan_1_1_properties.subgroupSupportedStages,
+                required_stages, required_stages & ~physical_device_info->vulkan_1_1_properties.subgroupSupportedStages,
+                physical_device_info->vulkan_1_2_features.scalarBlockLayout,
+                physical_device_info->vulkan_1_2_features.uniformBufferStandardLayout,
+                physical_device_info->features2.features.shaderInt16);
+        WARN("SM 6.2 capability gate not reached: driverID=%u, denormBehaviorIndependence=%u, "
+                "shaderDenormFlushToZeroFloat32=%u, shaderDenormPreserveFloat32=%u.\n",
+                physical_device_info->vulkan_1_2_properties.driverID,
+                physical_device_info->vulkan_1_2_properties.denormBehaviorIndependence,
+                physical_device_info->vulkan_1_2_properties.shaderDenormFlushToZeroFloat32,
+                physical_device_info->vulkan_1_2_properties.shaderDenormPreserveFloat32);
         TRACE("Enabling support for SM 5.1.\n");
     }
 }
