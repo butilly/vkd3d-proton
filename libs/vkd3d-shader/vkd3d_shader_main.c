@@ -413,15 +413,6 @@ static const struct vkd3d_shader_quirk_mapping
     ENTRY(FORCE_GRAPHICS_BARRIER_BEFORE_RENDER_PASS),
     ENTRY(FIXUP_LOOP_HEADER_UNDEF_PHIS),
     ENTRY(FIXUP_RSQRT_INF_NAN),
-    ENTRY(ROBUST_COMPUTE_QUAD_BROADCAST),
-    ENTRY(IGNORE_PRIMITIVE_SHADING_RATE),
-    ENTRY(PRECISE_FMA),
-    ENTRY(CLAMP_WAVE_SIZE_TO_THREAD_GROUP32),
-    ENTRY(ENABLE_FAIR_SCHEDULING),
-    ENTRY(FORCE_GRAPHICS_BARRIER_BEFORE_DRAW),
-    ENTRY(FORCE_FEEDBACK_LOOP),
-    ENTRY(DEBUG_FORCE_MIN_WAVE64),
-    ENTRY(FORCE_DENORM_LEGACY_FP16_CONVERSIONS),
 };
 #undef ENTRY
 
@@ -518,9 +509,8 @@ vkd3d_shader_quirks_t vkd3d_shader_compile_arguments_select_quirks(
         return quirks;
 }
 
-uint64_t vkd3d_shader_get_revision(vkd3d_shader_quirks_t *aux_quirks)
+uint64_t vkd3d_shader_get_revision(void)
 {
-    vkd3d_shader_quirks_t quirks = 0;
     uint64_t quirk_hash = 0;
     size_t i;
 
@@ -534,7 +524,6 @@ uint64_t vkd3d_shader_get_revision(vkd3d_shader_quirks_t *aux_quirks)
             quirk_hash = hash_fnv1_iterate_u64(quirk_hash, vkd3d_shader_quirk_entries[i].lo);
             quirk_hash = hash_fnv1_iterate_u64(quirk_hash, vkd3d_shader_quirk_entries[i].hi);
             quirk_hash = hash_fnv1_iterate_u64(quirk_hash, vkd3d_shader_quirk_entries[i].quirks);
-            quirks |= vkd3d_shader_quirk_entries[i].quirks;
         }
     }
 
@@ -542,9 +531,6 @@ uint64_t vkd3d_shader_get_revision(vkd3d_shader_quirks_t *aux_quirks)
      * Might get nuked later ...
      * It's not immediately useful for invalidating pipeline caches, since that would mostly be covered
      * by vkd3d-proton Git hash. */
-    if (aux_quirks)
-        *aux_quirks = quirks;
-
     return quirk_hash ^ 1;
 }
 

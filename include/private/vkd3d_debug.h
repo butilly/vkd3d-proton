@@ -20,7 +20,6 @@
 #define __VKD3D_DEBUG_H
 
 #include "vkd3d_common.h"
-#include "config_flags.h"
 
 #include <stdarg.h>
 #include <stdbool.h>
@@ -136,11 +135,11 @@ unsigned int vkd3d_env_var_as_uint(const char *name, unsigned int default_value)
 struct vkd3d_debug_option
 {
     const char *name;
-    union vkd3d_config_flags flag;
+    uint64_t flag;
 };
 
 bool vkd3d_debug_list_has_member(const char *string, const char *member);
-union vkd3d_config_flags vkd3d_parse_debug_options(const char *string,
+uint64_t vkd3d_parse_debug_options(const char *string,
         const struct vkd3d_debug_option *options, unsigned int option_count);
 
 #endif  /* __VKD3D_DEBUG_H */

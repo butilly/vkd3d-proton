@@ -147,16 +147,11 @@ static BOOL STDMETHODCALLTYPE d3d12_device_vkd3d_ext_GetExtensionSupport(d3d12_d
     TRACE("iface %p, extension %u\n", iface, extension);
     switch (extension)
     {
-        case D3D12_VK_EXT_OPACITY_MICROMAP:
-            ret_val = device->device_info.supports_opacity_micromap;
-            break;
         case D3D12_VK_NVX_BINARY_IMPORT:
             ret_val = device->vk_info.NVX_binary_import;
             break;
         case D3D12_VK_NVX_IMAGE_VIEW_HANDLE:
             ret_val = device->vk_info.NVX_image_view_handle;
-            if (ret_val && d3d12_device_use_descriptor_heap(device))
-                ret_val = device->vk_procs.vkGetDeviceCombinedImageSamplerIndexNVX != NULL;
             break;
         case D3D12_VK_NV_LOW_LATENCY_2:
             ret_val = device->vk_info.NV_low_latency2;
@@ -263,26 +258,6 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_vkd3d_ext_DestroyCubinComputeShade
     return S_OK;
 }
 
-uint32_t d3d12_device_find_shader_visible_descriptor_heap_offset(
-        struct d3d12_device *device, vkd3d_cpu_descriptor_va_t va, D3D12_DESCRIPTOR_HEAP_TYPE type)
-{
-    size_t offset = vkd3d_va_map_query_descriptor_heap_offset(&device->memory_allocator.va_map, va, type);
-    if (offset == SIZE_MAX)
-        return UINT32_MAX;
-
-    if (type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV)
-    {
-        offset += device->bindless_state.heap.redzone_size;
-        offset /= device->device_info.descriptor_heap_properties.imageDescriptorSize;
-    }
-    else
-    {
-        offset /= device->device_info.descriptor_heap_properties.samplerDescriptorSize;
-    }
-
-    return offset;
-}
-
 static HRESULT STDMETHODCALLTYPE d3d12_device_vkd3d_ext_GetCudaTextureObject(d3d12_device_vkd3d_ext_iface *iface, D3D12_CPU_DESCRIPTOR_HANDLE srv_handle,
        D3D12_CPU_DESCRIPTOR_HANDLE sampler_handle, UINT32 *cuda_texture_handle)
 {
@@ -291,8 +266,6 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_vkd3d_ext_GetCudaTextureObject(d3d
     struct d3d12_desc_split sampler_desc;
     struct d3d12_desc_split srv_desc;
     struct d3d12_device *device;
-    uint32_t sampler_index;
-    uint32_t image_index;
 
     TRACE("iface %p, srv_handle %zu, sampler_handle %zu, cuda_texture_handle %p.\n",
             iface, (size_t)srv_handle.ptr, (size_t)sampler_handle.ptr, cuda_texture_handle);
@@ -301,40 +274,19 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_vkd3d_ext_GetCudaTextureObject(d3d
        return E_INVALIDARG;
 
     device = d3d12_device_from_ID3D12DeviceExt(iface);
+    srv_desc = d3d12_desc_decode_va(srv_handle.ptr);
+    sampler_desc = d3d12_desc_decode_va(sampler_handle.ptr);
+
+    /* If image flag is not set, descriptor cannot be used as a CudaTexture */
+    if (!(srv_desc.view->info.flags & VKD3D_DESCRIPTOR_FLAG_IMAGE_VIEW))
+        return E_INVALIDARG;
+
+    imageViewHandleInfo.imageView = srv_desc.view->info.image.view->vk_image_view;
+    imageViewHandleInfo.sampler = sampler_desc.view->info.image.view->vk_sampler;
+    imageViewHandleInfo.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+
     vk_procs = &device->vk_procs;
-
-    if (d3d12_device_use_descriptor_heap(device))
-    {
-        image_index = d3d12_device_find_shader_visible_descriptor_heap_offset(device, srv_handle.ptr,
-                D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-        sampler_index = d3d12_device_find_shader_visible_descriptor_heap_offset(device, sampler_handle.ptr,
-                D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
-
-        if (image_index == UINT32_MAX || sampler_index == UINT32_MAX)
-        {
-            FIXME("Could not find heap index. CPU handles must point to SHADER_VISIBLE heaps to have any meaning.\n");
-            return E_INVALIDARG;
-        }
-
-        *cuda_texture_handle = VK_CALL(vkGetDeviceCombinedImageSamplerIndexNVX(device->vk_device,
-                image_index, sampler_index));
-    }
-    else
-    {
-        srv_desc = d3d12_desc_decode_va(srv_handle.ptr);
-        sampler_desc = d3d12_desc_decode_va(sampler_handle.ptr);
-
-        /* If image flag is not set, descriptor cannot be used as a CudaTexture */
-        if (!(srv_desc.view->info.flags & VKD3D_DESCRIPTOR_FLAG_IMAGE_VIEW))
-            return E_INVALIDARG;
-
-        imageViewHandleInfo.imageView = srv_desc.view->info.image.view->vk_image_view;
-        imageViewHandleInfo.sampler = sampler_desc.view->info.image.view->vk_sampler;
-        imageViewHandleInfo.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-
-        *cuda_texture_handle = VK_CALL(vkGetImageViewHandleNVX(device->vk_device, &imageViewHandleInfo));
-    }
-
+    *cuda_texture_handle = VK_CALL(vkGetImageViewHandleNVX(device->vk_device, &imageViewHandleInfo));
     return S_OK;
 }
 
@@ -345,43 +297,23 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_vkd3d_ext_GetCudaSurfaceObject(d3d
     const struct vkd3d_vk_device_procs *vk_procs;
     struct d3d12_desc_split uav_desc;
     struct d3d12_device *device;
-    uint32_t image_index;
 
     TRACE("iface %p, uav_handle %zu, cuda_surface_handle %p.\n", iface, (size_t)uav_handle.ptr, cuda_surface_handle);
     if (!cuda_surface_handle)
-        return E_INVALIDARG;
+       return E_INVALIDARG;
 
     device = d3d12_device_from_ID3D12DeviceExt(iface);
+    uav_desc = d3d12_desc_decode_va(uav_handle.ptr);
+
+    /* If image flag is not set, descriptor cannot be used as a CudaSurface */
+    if (!(uav_desc.view->info.flags & VKD3D_DESCRIPTOR_FLAG_IMAGE_VIEW))
+        return E_INVALIDARG;
+
+    imageViewHandleInfo.imageView = uav_desc.view->info.image.view->vk_image_view;
+    imageViewHandleInfo.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+
     vk_procs = &device->vk_procs;
-
-    if (d3d12_device_use_descriptor_heap(device))
-    {
-        image_index = d3d12_device_find_shader_visible_descriptor_heap_offset(device,
-                uav_handle.ptr, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-        if (image_index == UINT32_MAX)
-        {
-            FIXME("Could not find heap index. CPU handles must point to SHADER_VISIBLE heaps to have any meaning.\n");
-            return E_INVALIDARG;
-        }
-
-        *cuda_surface_handle = VK_CALL(vkGetDeviceCombinedImageSamplerIndexNVX(device->vk_device,
-                image_index, 0));
-    }
-    else
-    {
-        uav_desc = d3d12_desc_decode_va(uav_handle.ptr);
-
-        /* If image flag is not set, descriptor cannot be used as a CudaSurface */
-        if (!(uav_desc.view->info.flags & VKD3D_DESCRIPTOR_FLAG_IMAGE_VIEW))
-            return E_INVALIDARG;
-
-        imageViewHandleInfo.imageView = uav_desc.view->info.image.view->vk_image_view;
-        imageViewHandleInfo.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-
-        *cuda_surface_handle = VK_CALL(vkGetImageViewHandleNVX(device->vk_device, &imageViewHandleInfo));
-    }
-
+    *cuda_surface_handle = VK_CALL(vkGetImageViewHandleNVX(device->vk_device, &imageViewHandleInfo));
     return S_OK; 
 }
 
@@ -390,7 +322,7 @@ extern VKD3D_THREAD_LOCAL struct D3D12_UAV_INFO *d3d12_uav_info;
 static HRESULT STDMETHODCALLTYPE d3d12_device_vkd3d_ext_CaptureUAVInfo(d3d12_device_vkd3d_ext_iface *iface, D3D12_UAV_INFO *uav_info)
 {
     if (!uav_info)
-        return E_INVALIDARG;
+       return E_INVALIDARG;
 
     TRACE("iface %p, uav_info %p.\n", iface, uav_info);
     
@@ -419,63 +351,13 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_vkd3d_ext_GetVulkanQueueInfoEx(d3d
     TRACE("iface %p, queue %p, vk_queue %p, vk_queue_index %p, vk_queue_flags %p vk_queue_family %p.\n",
             iface, queue, vk_queue, vk_queue_index, vk_queue_flags, vk_queue_family);
 
-    if (FAILED(ID3D12CommandQueue_QueryInterface(queue, &IID_ID3D12ExtDummyInterface, (void **)&queue)))
-    {
-        ERR("no ID3D12ExtDummyInterface.\n");
-        return E_FAIL;
-    }
     *vk_queue = vkd3d_lock_vk_queue(queue);
     vkd3d_unlock_vk_queue(queue);
 
     *vk_queue_index = vkd3d_get_vk_queue_index(queue);
     *vk_queue_flags = vkd3d_get_vk_queue_flags(queue);
     *vk_queue_family = vkd3d_get_vk_queue_family_index(queue);
-    ID3D12CommandQueue_Release(queue);
     return S_OK;
-}
-
-static BOOL STDMETHODCALLTYPE d3d12_device_vkd3d_ext_SetCreatePipelineStateFlagsNVAPI(d3d12_device_vkd3d_ext_iface *iface,
-        D3D12_VK_EXT_PIPELINE_CREATION_STATE_FLAG pipeline_state_flags)
-{
-    struct d3d12_device *device = d3d12_device_from_ID3D12DeviceExt(iface);
-    VKD3D_UNUSED VkPipelineCreateFlags ray_tracing_pipeline_create_flags;
-    bool enable_opacity_micromap;
-
-    TRACE("iface %p, pipeline_state_flags %d.\n", iface, pipeline_state_flags);
-
-    enable_opacity_micromap = (pipeline_state_flags & D3D12_VK_EXT_PIPELINE_CREATION_STATE_FLAGS_ENABLE_OMM_SUPPORT) != 0;
-
-    if (enable_opacity_micromap)
-    {
-        if (!device->device_info.supports_opacity_micromap)
-        {
-            ERR("Opacity micromap is not supported.\n");
-            return FALSE;
-        }
-
-        ray_tracing_pipeline_create_flags = vkd3d_atomic_uint32_or(&device->vendor_hacks.global_ray_tracing_pipeline_create_flags,
-                VK_PIPELINE_CREATE_RAY_TRACING_OPACITY_MICROMAP_BIT_KHR, vkd3d_memory_order_relaxed) |
-                VK_PIPELINE_CREATE_RAY_TRACING_OPACITY_MICROMAP_BIT_KHR;
-
-        /* Set force_ray_query_omm to true the first time ENABLE_OMM_SUPPORT is set.
-         * This causes any RayQuery shader with SM < 6.9 to consult the OMM.
-         * 1. NVAPI has no way to opt into the OMM on the RayQuery.
-         * 2. Treated as a sticky bit to deal with possible race conditions where the bit is
-         *    set after a PSO using RayQuery has already been created.
-         * 3. There is a small possibility that a PSO could be created with a RayQuery before
-         *    ENABLE_OMM_SUPPORT is set; in that window the RayQuery will not consult the OMM. */
-        vkd3d_atomic_uint32_or(&device->vendor_hacks.force_ray_query_omm, 1u, vkd3d_memory_order_relaxed);
-    }
-    else
-    {
-        ray_tracing_pipeline_create_flags = vkd3d_atomic_uint32_and(&device->vendor_hacks.global_ray_tracing_pipeline_create_flags,
-                ~VK_PIPELINE_CREATE_RAY_TRACING_OPACITY_MICROMAP_BIT_KHR, vkd3d_memory_order_relaxed) &
-                ~VK_PIPELINE_CREATE_RAY_TRACING_OPACITY_MICROMAP_BIT_KHR;
-    }
-
-    TRACE("flags #%x.\n", ray_tracing_pipeline_create_flags);
-
-    return TRUE;
 }
 
 static BOOL STDMETHODCALLTYPE d3d12_device_vkd3d_ext_SupportsCubin64bit(d3d12_device_vkd3d_ext_iface *iface)
@@ -512,70 +394,38 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_vkd3d_ext_GetCudaMergedTextureSamp
     struct d3d12_device *device = d3d12_device_from_ID3D12DeviceExt(iface);
     const struct vkd3d_vk_device_procs *vk_procs = &device->vk_procs;
     struct d3d12_desc_split sampler_desc, texture_desc;
-    uint32_t image_index = 0, sampler_index = 0;
 
     TRACE("iface %p, tex_desc %zu, smp_desc %zu.\n",
             iface, (size_t)params->texDesc, (size_t)params->smpDesc);
 
-    if (!device->vk_info.supports_cubin_64bit)
+    if (!device->vk_info.supports_cubin_64bit || !vk_procs->vkGetImageViewHandle64NVX)
         return E_NOTIMPL;
-
+    
     if (params->pNext)
     {
         FIXME("pNext not supported.\n");
         params->pNext = NULL;
     }
 
-    if (d3d12_device_use_descriptor_heap(device))
+    texture_desc = d3d12_desc_decode_va(params->texDesc);
+
+    if (!(texture_desc.view->info.flags & VKD3D_DESCRIPTOR_FLAG_IMAGE_VIEW))
+        return E_INVALIDARG;
+
+    imageViewHandleInfo.imageView = texture_desc.view->info.image.view->vk_image_view;
+
+    if (params->smpDesc)
     {
-        if (params->texDesc)
-        {
-            image_index = d3d12_device_find_shader_visible_descriptor_heap_offset(device, params->texDesc,
-                D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-        }
-
-        if (params->smpDesc)
-        {
-            sampler_index = d3d12_device_find_shader_visible_descriptor_heap_offset(device, params->smpDesc,
-                D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
-        }
-
-        if (image_index == UINT32_MAX || sampler_index == UINT32_MAX)
-        {
-            FIXME("Could not find heap index. CPU handles must point to SHADER_VISIBLE heaps to have any meaning.\n");
-            return E_INVALIDARG;
-        }
-
-        params->textureHandle = VK_CALL(vkGetDeviceCombinedImageSamplerIndexNVX(
-                device->vk_device, image_index, sampler_index));
-        return S_OK;
+        sampler_desc = d3d12_desc_decode_va(params->smpDesc);
+        imageViewHandleInfo.sampler = sampler_desc.view->info.image.view->vk_sampler;
+        imageViewHandleInfo.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     }
     else
     {
-        if (!vk_procs->vkGetImageViewHandle64NVX)
-            return E_NOTIMPL;
-
-        texture_desc = d3d12_desc_decode_va(params->texDesc);
-
-        if (!(texture_desc.view->info.flags & VKD3D_DESCRIPTOR_FLAG_IMAGE_VIEW))
-            return E_INVALIDARG;
-
-        imageViewHandleInfo.imageView = texture_desc.view->info.image.view->vk_image_view;
-
-        if (params->smpDesc)
-        {
-            sampler_desc = d3d12_desc_decode_va(params->smpDesc);
-            imageViewHandleInfo.sampler = sampler_desc.view->info.image.view->vk_sampler;
-            imageViewHandleInfo.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        }
-        else
-        {
-            imageViewHandleInfo.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-        }
-
-        params->textureHandle = VK_CALL(vkGetImageViewHandle64NVX(device->vk_device, &imageViewHandleInfo));
+        imageViewHandleInfo.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     }
 
+    params->textureHandle = VK_CALL(vkGetImageViewHandle64NVX(device->vk_device, &imageViewHandleInfo));
     return S_OK;
 }
 
@@ -586,7 +436,6 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_vkd3d_ext_GetCudaIndependentDescri
     struct d3d12_device *device = d3d12_device_from_ID3D12DeviceExt(iface);
     const struct vkd3d_vk_device_procs *vk_procs = &device->vk_procs;
     struct d3d12_desc_split desc;
-    uint32_t image_index;
 
     TRACE("iface %p, desc %zu, type %d.\n",
             iface, (size_t)params->desc, params->type);
@@ -600,58 +449,30 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_vkd3d_ext_GetCudaIndependentDescri
         params->pNext = NULL;
     }
 
-    if (d3d12_device_use_descriptor_heap(device))
+    desc = d3d12_desc_decode_va(params->desc);
+
+    if (!(desc.view->info.flags & VKD3D_DESCRIPTOR_FLAG_IMAGE_VIEW))
+        return E_INVALIDARG;
+
+    imageViewHandleInfo.imageView = desc.view->info.image.view->vk_image_view;
+
+    switch (params->type)
     {
-        if (params->type != D3D12_GET_CUDA_INDEPENDENT_DESCRIPTOR_OBJECT_SURFACE &&
-            params->type != D3D12_GET_CUDA_INDEPENDENT_DESCRIPTOR_OBJECT_TEXTURE)
-        {
+        case D3D12_GET_CUDA_INDEPENDENT_DESCRIPTOR_OBJECT_SURFACE:
+            imageViewHandleInfo.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            break;
+        case D3D12_GET_CUDA_INDEPENDENT_DESCRIPTOR_OBJECT_TEXTURE:
+            imageViewHandleInfo.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+            break;
+        case D3D12_GET_CUDA_INDEPENDENT_DESCRIPTOR_OBJECT_SAMPLER:
+            FIXME("SAMPLER object type not supported.\n");
+            return E_FAIL;
+        default:
             ERR("Unsupported object type %d\n", params->type);
             return E_INVALIDARG;
-        }
-
-        image_index = d3d12_device_find_shader_visible_descriptor_heap_offset(device, params->desc,
-                D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-        if (image_index == UINT32_MAX)
-        {
-            FIXME("Could not find heap index. CPU handles must point to SHADER_VISIBLE heaps to have any meaning.\n");
-            return E_INVALIDARG;
-        }
-
-        params->handle = VK_CALL(vkGetDeviceCombinedImageSamplerIndexNVX(device->vk_device,
-                image_index, 0));
-    }
-    else
-    {
-        if (!vk_procs->vkGetImageViewHandle64NVX)
-            return E_NOTIMPL;
-
-        desc = d3d12_desc_decode_va(params->desc);
-
-        if (!(desc.view->info.flags & VKD3D_DESCRIPTOR_FLAG_IMAGE_VIEW))
-            return E_INVALIDARG;
-
-        imageViewHandleInfo.imageView = desc.view->info.image.view->vk_image_view;
-
-        switch (params->type)
-        {
-            case D3D12_GET_CUDA_INDEPENDENT_DESCRIPTOR_OBJECT_SURFACE:
-                imageViewHandleInfo.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-                break;
-            case D3D12_GET_CUDA_INDEPENDENT_DESCRIPTOR_OBJECT_TEXTURE:
-                imageViewHandleInfo.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-                break;
-            case D3D12_GET_CUDA_INDEPENDENT_DESCRIPTOR_OBJECT_SAMPLER:
-                FIXME("SAMPLER object type not supported.\n");
-                return E_FAIL;
-            default:
-                ERR("Unsupported object type %d\n", params->type);
-                return E_INVALIDARG;
-        }
-
-        params->handle = VK_CALL(vkGetImageViewHandle64NVX(device->vk_device, &imageViewHandleInfo));
     }
 
+    params->handle = VK_CALL(vkGetImageViewHandle64NVX(device->vk_device, &imageViewHandleInfo));
     return S_OK;
 }
 
@@ -779,7 +600,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_vkd3d_ext_SetNvShaderExtnSlotSpace
     return S_OK;
 }
 
-CONST_VTBL struct ID3D12DeviceExt5Vtbl d3d12_device_vkd3d_ext_vtbl =
+CONST_VTBL struct ID3D12DeviceExt4Vtbl d3d12_device_vkd3d_ext_vtbl =
 {
     /* IUnknown methods */
     d3d12_device_vkd3d_ext_QueryInterface,
@@ -812,9 +633,6 @@ CONST_VTBL struct ID3D12DeviceExt5Vtbl d3d12_device_vkd3d_ext_vtbl =
     /* ID3D12DeviceExt4 methods */
     d3d12_device_vkd3d_ext_IsNvShaderExtnOpCodeSupported,
     d3d12_device_vkd3d_ext_SetNvShaderExtnSlotSpace,
-
-    /* ID3D12DeviceExt5 methods */
-    d3d12_device_vkd3d_ext_SetCreatePipelineStateFlagsNVAPI,
 };
 
 static inline struct d3d12_device *d3d12_device_from_ID3D12DXVKInteropDevice(d3d12_dxvk_interop_device_iface *iface)
@@ -921,17 +739,10 @@ static HRESULT STDMETHODCALLTYPE d3d12_dxvk_interop_device_GetVulkanQueueInfo(d3
 {
     TRACE("iface %p, queue %p, vk_queue %p, vk_queue_family %p.\n", iface, queue, vk_queue, vk_queue_family);
 
-    if (FAILED(ID3D12CommandQueue_QueryInterface(queue, &IID_ID3D12ExtDummyInterface, (void **)&queue)))
-    {
-        ERR("no ID3D12ExtDummyInterface.\n");
-        return E_FAIL;
-    }
-
     *vk_queue = vkd3d_lock_vk_queue(queue);
     vkd3d_unlock_vk_queue(queue);
 
     *vk_queue_family = vkd3d_get_vk_queue_family_index(queue);
-    ID3D12CommandQueue_Release(queue);
     return S_OK;
 }
 
@@ -990,18 +801,11 @@ static HRESULT STDMETHODCALLTYPE d3d12_dxvk_interop_device_LockCommandQueue(d3d1
 
     TRACE("iface %p, queue %p.\n", iface, queue);
 
-    if (FAILED(ID3D12CommandQueue_QueryInterface(queue, &IID_ID3D12ExtDummyInterface, (void **)&queue)))
-    {
-        ERR("no ID3D12ExtDummyInterface.\n");
-        return E_FAIL;
-    }
-
     /* Flushing the transfer queue adds a wait to all other queues, and the
      * acquire operation will drain the queue, ensuring that any pending clear
      * or upload happens before D3D11 submissions on the GPU timeline. */
     vkd3d_memory_transfer_queue_flush(&device->memory_transfers);
     vkd3d_acquire_vk_queue(queue);
-    ID3D12CommandQueue_Release(queue);
     return S_OK;
 }
 
@@ -1009,14 +813,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_dxvk_interop_device_UnlockCommandQueue(d3
 {
     TRACE("iface %p, queue %p.\n", iface, queue);
 
-    if (FAILED(ID3D12CommandQueue_QueryInterface(queue, &IID_ID3D12ExtDummyInterface, (void **)&queue)))
-    {
-        ERR("no ID3D12ExtDummyInterface.\n");
-        return E_FAIL;
-    }
-
     vkd3d_release_vk_queue(queue);
-    ID3D12CommandQueue_Release(queue);
     return S_OK;
 }
 
@@ -1094,14 +891,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_dxvk_interop_device_LockVulkanQueue(d3d12
 {
     TRACE("iface %p, queue %p.\n", iface, queue);
 
-    if (FAILED(ID3D12CommandQueue_QueryInterface(queue, &IID_ID3D12ExtDummyInterface, (void **)&queue)))
-    {
-        ERR("no ID3D12ExtDummyInterface.\n");
-        return E_FAIL;
-    }
-
     vkd3d_lock_vk_queue(queue);
-    ID3D12CommandQueue_Release(queue);
     return S_OK;
 }
 
@@ -1109,14 +899,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_dxvk_interop_device_UnlockVulkanQueue(d3d
 {
     TRACE("iface %p, queue %p.\n", iface, queue);
 
-    if (FAILED(ID3D12CommandQueue_QueryInterface(queue, &IID_ID3D12ExtDummyInterface, (void **)&queue)))
-    {
-        ERR("no ID3D12ExtDummyInterface.\n");
-        return E_FAIL;
-    }
-
     vkd3d_unlock_vk_queue(queue);
-    ID3D12CommandQueue_Release(queue);
     return S_OK;
 }
 
@@ -1178,70 +961,6 @@ CONST_VTBL struct ID3D12DXVKInteropDevice3Vtbl d3d12_dxvk_interop_device_vtbl =
     /* ID3D12DXVKInteropDevice3 methods */
     d3d12_dxvk_interop_device_GetVulkanHeapInfo,
 };
-
-void d3d12_device_notify_vk_swapchain_creation(struct d3d12_device *device, struct dxgi_vk_swap_chain *chain)
-{
-    if (!device->vk_info.NV_low_latency2)
-        return;
-
-    spinlock_acquire(&device->low_latency_swapchain_spinlock);
-
-    if (device->swapchain_info.low_latency_swapchain && device->swapchain_info.low_latency_swapchain != chain)
-    {
-        /* Hard evidence of multiple swapchains being in flight. */
-        dxgi_vk_swap_chain_set_latency_sleep_mode(chain, false, false, 0);
-        dxgi_vk_swap_chain_decref(device->swapchain_info.low_latency_swapchain);
-        WARN("Multiple swapchains are in-flight. LL2 will be disabled until the situation stabilizes.\n");
-        device->swapchain_info.low_latency_swapchain = NULL;
-    }
-
-    spinlock_release(&device->low_latency_swapchain_spinlock);
-}
-
-void d3d12_device_register_low_latency_swapchain(struct d3d12_device *device, struct dxgi_vk_swap_chain *chain)
-{
-    if (!device->vk_info.NV_low_latency2)
-        return;
-
-    spinlock_acquire(&device->low_latency_swapchain_spinlock);
-
-    device->swapchain_info.dxgi_swapchain_count++;
-
-    if (device->swapchain_info.dxgi_swapchain_count == 1 && !device->swapchain_info.low_latency_swapchain)
-    {
-        dxgi_vk_swap_chain_incref(chain);
-        device->swapchain_info.low_latency_swapchain = chain;
-        dxgi_vk_swap_chain_set_latency_sleep_mode(chain, device->swapchain_info.mode,
-                device->swapchain_info.boost, device->swapchain_info.minimum_us);
-    }
-
-    /* Defer the demotion of the existing low-latency swapchain.
-     * Supposedly, there are applications that create a second swapchain, but never actually present anything to it
-     * before destroying it.
-     * It will never create a Vulkan swapchain and will not conflict with LL2.
-     * We can defer the demotion until we have evidence later. */
-
-    spinlock_release(&device->low_latency_swapchain_spinlock);
-}
-
-void d3d12_device_remove_low_latency_swapchain(struct d3d12_device *device, struct dxgi_vk_swap_chain *chain)
-{
-    if (!device->vk_info.NV_low_latency2)
-        return;
-
-    spinlock_acquire(&device->low_latency_swapchain_spinlock);
-
-    assert(device->swapchain_info.dxgi_swapchain_count);
-    device->swapchain_info.dxgi_swapchain_count--;
-
-    if (device->swapchain_info.low_latency_swapchain == chain)
-    {
-        dxgi_vk_swap_chain_decref(chain);
-        device->swapchain_info.low_latency_swapchain = NULL;
-    }
-
-    spinlock_release(&device->low_latency_swapchain_spinlock);
-}
 
 static inline struct d3d12_device *d3d12_device_from_ID3DLowLatencyDevice(d3d_low_latency_device_iface *iface)
 {
@@ -1338,6 +1057,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_low_latency_device_SetLatencyMarker(d3d_l
     struct dxgi_vk_swap_chain *low_latency_swapchain;
     VkLatencyMarkerNV vk_marker;
     struct d3d12_device *device;
+    uint64_t internal_frame_id;
 
     device = d3d12_device_from_ID3DLowLatencyDevice(iface);
     vk_marker = (VkLatencyMarkerNV)markerType;
@@ -1351,35 +1071,30 @@ static HRESULT STDMETHODCALLTYPE d3d12_low_latency_device_SetLatencyMarker(d3d_l
         return S_OK;
     }
 
+    /* Skip ahead. If application does not set frame counter, we'll still internally increment over time to fill in the gap.
+     * If application starts to use the frame IDs appropriately again, we'll catch up almost instantly,
+     * where low_latency_frame_id should overtake internal present ID counter.
+     * Frame marker needs to be device level monotonic. */
+    internal_frame_id = frameID;
+
     switch (vk_marker)
     {
-        case VK_LATENCY_MARKER_SIMULATION_START_NV:
-        {
-            struct vkd3d_device_frame_markers *markers = &device->frame_markers;
-            spinlock_acquire(&device->low_latency_swapchain_spinlock);
-            markers->recent_sim_starts[markers->recent_sim_starts_index] = frameID;
-            markers->recent_sim_starts_index = (markers->recent_sim_starts_index + 1) % VKD3D_RECENT_SIM_STARTS_COUNT;
-            spinlock_release(&device->low_latency_swapchain_spinlock);
-            break;
-        }
-        case VK_LATENCY_MARKER_PRESENT_END_NV:
-            spinlock_acquire(&device->low_latency_swapchain_spinlock);
-            device->frame_markers.present_end = frameID;
-            device->frame_markers.new_frame = true;
-            spinlock_release(&device->low_latency_swapchain_spinlock);
+        case VK_LATENCY_MARKER_RENDERSUBMIT_START_NV:
+            if (internal_frame_id < device->frame_markers.render)
+            {
+                WARN("RENDERSUBMIT_START_NV is non-monotonic %"PRIu64" < %"PRIu64".\n",
+                        internal_frame_id, device->frame_markers.render);
+            }
+            device->frame_markers.render = internal_frame_id;
             break;
         case VK_LATENCY_MARKER_PRESENT_START_NV:
-            if (frameID < device->frame_markers.present)
+            if (internal_frame_id < device->frame_markers.present)
             {
                 WARN("PRESENT_START_NV is non-monotonic %"PRIu64" < %"PRIu64".\n",
-                        frameID, device->frame_markers.present);
+                        internal_frame_id, device->frame_markers.present);
             }
             vkd3d_atomic_uint64_store_explicit(
-                    &device->frame_markers.present, frameID, vkd3d_memory_order_release);
-            break;
-        case VK_LATENCY_MARKER_OUT_OF_BAND_RENDERSUBMIT_START_NV:
-            vkd3d_atomic_uint64_store_explicit(
-                    &device->frame_markers.out_of_band_render, frameID, vkd3d_memory_order_release);
+                    &device->frame_markers.present, internal_frame_id, vkd3d_memory_order_release);
             break;
         default:
             break;
@@ -1392,7 +1107,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_low_latency_device_SetLatencyMarker(d3d_l
 
     if (low_latency_swapchain)
     {
-        dxgi_vk_swap_chain_set_latency_marker(low_latency_swapchain, frameID, vk_marker, true);
+        dxgi_vk_swap_chain_set_latency_marker(low_latency_swapchain, internal_frame_id, vk_marker, true);
         dxgi_vk_swap_chain_decref(low_latency_swapchain);
     }
 
@@ -1483,28 +1198,33 @@ static HRESULT STDMETHODCALLTYPE d3d12_amd_ext_anti_lag_UpdateAntiLagState(
     if (!pData)
     {
         struct vkd3d_queue_timeline_trace_cookie cookie = { 0 };
+        VkAntiLagPresentationInfoAMD present_info;
         VkAntiLagDataAMD anti_lag;
 
+        /* Purely inserts a delay. The API wrapper never seems to pass down anything useful for
+         * frame IDs, so just invent them ourselves. */
+
         memset(&anti_lag, 0, sizeof(anti_lag));
+        memset(&present_info, 0, sizeof(present_info));
         anti_lag.sType = VK_STRUCTURE_TYPE_ANTI_LAG_DATA_AMD;
         anti_lag.mode = device->swapchain_info.mode ? VK_ANTI_LAG_MODE_ON_AMD : VK_ANTI_LAG_MODE_OFF_AMD;
         anti_lag.maxFPS = device->swapchain_info.max_fps;
+        anti_lag.pPresentationInfo = &present_info;
 
-        /* The AntiLag API has no useful present IDs we can correlate with.
-         * The Vulkan API allows not passing down presentation information at all, which
-         * means that in this mode we give the driver the full responsibility of figuring out how to
-         * deal with frame boundaries. The expectation is that the driver can use vkQueuePresentKHR as
-         * a split point. Any submits happening after QueuePresentKHR would be assumed to belong to a future frame. */
+        present_info.sType = VK_STRUCTURE_TYPE_ANTI_LAG_PRESENTATION_INFO_AMD;
+        present_info.frameIndex = device->frame_markers.present + 1;
+        present_info.stage = VK_ANTI_LAG_STAGE_INPUT_AMD;
 
-        /* There is no robust way to keep track of frame indices ourselves, since application can do threaded presents
-         * and end up with INPUT -> INPUT -> PRESENT -> PRESENT patterns which just break.
-         * Even if we try to keep track of this, INPUT and PRESENT can get out of sync, which is terrible too. */
-
+        TRACE("AntiLag input timeline, frame %"PRIu64".\n", present_info.frameIndex);
         if (device->swapchain_info.mode)
-            cookie = vkd3d_queue_timeline_trace_register_low_latency_sleep(&device->queue_timeline_trace, 0);
+            cookie = vkd3d_queue_timeline_trace_register_low_latency_sleep(&device->queue_timeline_trace, present_info.frameIndex);
         VK_CALL(vkAntiLagUpdateAMD(device->vk_device, &anti_lag));
         if (device->swapchain_info.mode)
             vkd3d_queue_timeline_trace_complete_low_latency_sleep(&device->queue_timeline_trace, cookie);
+
+        /* Any present after this point will map to this frameIndex. */
+        vkd3d_atomic_uint64_store_explicit(&device->frame_markers.present,
+                present_info.frameIndex, vkd3d_memory_order_release);
     }
     else if (v1->uiVersion == 1)
     {

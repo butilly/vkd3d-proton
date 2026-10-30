@@ -85,9 +85,6 @@ enum vkd3d_shader_meta_flags
     VKD3D_SHADER_META_FLAG_USES_COOPERATIVE_MATRIX = 1 << 24,
     VKD3D_SHADER_META_FLAG_USES_COOPERATIVE_MATRIX_FP8 = 1 << 25,
     VKD3D_SHADER_META_FLAG_FORCE_GRAPHICS_BARRIER_BEFORE_RENDER_PASS = 1 << 26,
-    VKD3D_SHADER_META_FLAG_FORCE_GRAPHICS_BARRIER_BEFORE_DRAW = 1 << 27,
-    VKD3D_SHADER_META_FLAG_FEEDBACK_LOOP = 1 << 28,
-    VKD3D_SHADER_META_FLAG_ALLOW_WAVE32 = 1 << 29
 };
 
 struct vkd3d_shader_meta
@@ -264,10 +261,6 @@ enum vkd3d_shader_interface_flag
     VKD3D_SHADER_INTERFACE_INSTRUCTION_QA_BUFFER_EXPECT_ASSUME = 0x00000200u,
     VKD3D_SHADER_INTERFACE_INSTRUCTION_QA_BUFFER_SYNC          = 0x00000400u,
     VKD3D_SHADER_INTERFACE_INSTRUCTION_QA_BUFFER_SYNC_COMPUTE  = 0x00000800u,
-    VKD3D_SHADER_INTERFACE_HEAP_LOWERING                       = 0x00001000u,
-    VKD3D_SHADER_INTERFACE_INLINE_REDZONE_CBV                  = 0x00002000u,
-    VKD3D_SHADER_INTERFACE_RAYTRACING_OPACITY_MICROMAP         = 0x00004000u,
-    VKD3D_SHADER_INTERFACE_RAY_QUERY_OMM_DEVICE_GLOBAL         = 0x00008000u,
 };
 
 struct vkd3d_shader_stage_io_entry
@@ -326,7 +319,6 @@ struct vkd3d_shader_interface_info
 
     /* Used for either VKD3D_SHADER_INTERFACE_RAW_VA_ALIAS_DESCRIPTOR_BUFFER or local root signatures. */
     uint32_t descriptor_size_cbv_srv_uav;
-    uint32_t raw_uav_counter_offset;
     uint32_t descriptor_size_sampler;
 
     /* Purely for debug. Only non-NULL when running with EXTENDED_DEBUG_UTILS. */
@@ -423,7 +415,6 @@ enum vkd3d_shader_target_extension
     VKD3D_SHADER_TARGET_EXTENSION_MIN_PRECISION_IS_NATIVE_16BIT,
     VKD3D_SHADER_TARGET_EXTENSION_MIN_PRECISION_IS_RELAXED,
     VKD3D_SHADER_TARGET_EXTENSION_SUPPORT_FP16_DENORM_PRESERVE,
-    VKD3D_SHADER_TARGET_EXTENSION_SUPPORT_FP16_DENORM_PRESERVE_DEFAULT,
     VKD3D_SHADER_TARGET_EXTENSION_SUPPORT_FP32_DENORM_FLUSH,
     VKD3D_SHADER_TARGET_EXTENSION_SUPPORT_FP64_DENORM_PRESERVE,
     VKD3D_SHADER_TARGET_EXTENSION_SUPPORT_FP16_INF_NAN_PRESERVE,
@@ -440,14 +431,6 @@ enum vkd3d_shader_target_extension
     VKD3D_SHADER_TARGET_EXTENSION_EXTENDED_NON_SEMANTIC,
     VKD3D_SHADER_TARGET_EXTENSION_MIXED_FLOAT_DOT_PRODUCT,
     VKD3D_SHADER_TARGET_EXTENSION_COMPUTE_SHADER_DERIVATIVES_QUAD,
-
-    /* Treat this as an extension similar to ASSUME_PER_COMPONENT_SSBO_ROBUSTNESS.
-     * This avoids lots of jank around ByteAddressBuffer u32 wrapping behavior when
-     * translating to SSBOs. We always need the wrap if we have to fallback to texel buffers however. */
-    VKD3D_SHADER_TARGET_EXTENSION_ASSUME_SSBO_32BIT_WRAPPING,
-    VKD3D_SHADER_TARGET_EXTENSION_FLOAT_CONTROLS_2,
-    VKD3D_SHADER_TARGET_EXTENSION_SHADER_ABORT,
-    VKD3D_SHADER_TARGET_EXTENSION_SHADER_IMPLIED_SSBO_ALIGNMENT,
     VKD3D_SHADER_TARGET_EXTENSION_COUNT,
 };
 
@@ -564,33 +547,6 @@ enum vkd3d_shader_target_extension
 
 /* Use precise fma instead of the spec correct mad. To workaround issues with invariance. */
 #define VKD3D_SHADER_QUIRK_PRECISE_FMA (1ull << 33)
-
-/* If the threadgroup size is 32, lower reported WaveSize to shader accordingly.
- * Some games assume they can get away with only <= wave32. */
-#define VKD3D_SHADER_QUIRK_CLAMP_WAVE_SIZE_TO_THREAD_GROUP32 (1ull << 34)
-
-/* Very special surgical hack that lets specific drivers listen for a NonSemantic flag
- * to enable very awkward workarounds. This workaround is expected to go away eventually. */
-#define VKD3D_SHADER_QUIRK_ENABLE_FAIR_SCHEDULING (1ull << 35)
-
-/* Forces nonuniformEXT for everything in RT. */
-#define VKD3D_SHADER_QUIRK_FORCE_NONUNIFORM_RT (1ull << 36)
-
-#define VKD3D_SHADER_QUIRK_FORCE_GRAPHICS_BARRIER_BEFORE_DRAW (1ull << 37)
-
-/* Forces a draw call to go through a renderpass with feedback loops.
- * Used to workaround games where an image is rendered to while being sampled as an SRV,
- * which is highly illegal and only way out of it is to use filthy trickery. */
-#define VKD3D_SHADER_QUIRK_FORCE_FEEDBACK_LOOP (1ull << 38)
-
-/* Enforce a subgroup size of 64 or more.
- * Used for debugging only when bisecting where games screw up wave64. */
-#define VKD3D_SHADER_QUIRK_DEBUG_FORCE_MIN_WAVE64 (1ull << 39)
-
-/* f32tof16 and f16tof32 must preserve denorms.
- * Turnip on 7xx chips cannot, so we may need soft-float in some rare cases
- * where denorms really matter to visual output. */
-#define VKD3D_SHADER_QUIRK_FORCE_DENORM_LEGACY_FP16_CONVERSIONS (1ull << 40)
 
 typedef uint64_t vkd3d_shader_quirks_t;
 
@@ -1094,8 +1050,6 @@ struct vkd3d_shader_node_input_push_signature
     VkDeviceAddress local_root_signature_bda;
     uint32_t node_payload_output_offset;
     uint32_t node_remaining_recursion_levels;
-    /* Used by heap path. */
-    VkDeviceAddress root_parameter_bda;
 };
 
 struct vkd3d_shader_node_input_data
@@ -1234,8 +1188,7 @@ vkd3d_shader_quirks_t vkd3d_shader_compile_arguments_select_quirks(
         const struct vkd3d_shader_compile_arguments *args,
         vkd3d_shader_hash_t hash, const char *entry);
 
-/* Also returns global shader quirks which are added through config files. */
-uint64_t vkd3d_shader_get_revision(vkd3d_shader_quirks_t *aux_quirks);
+uint64_t vkd3d_shader_get_revision(void);
 
 int vkd3d_shader_parse_root_signature_v_1_0(const struct vkd3d_shader_code *dxbc,
         struct vkd3d_versioned_root_signature_desc *desc,
@@ -1253,37 +1206,6 @@ vkd3d_shader_hash_t vkd3d_root_signature_v_1_2_compute_layout_compat_hash(
 bool vkd3d_shader_hash_range_parse_line(char *line,
         vkd3d_shader_hash_t *lo, vkd3d_shader_hash_t *hi,
         char **trail);
-
-/* In EXT_descriptor_heap, sets and bindings are non-physical concepts.
- * Agree on a convention so that we can link SPIR-V to PSO creation. */
-enum
-{
-    VKD3D_SHADER_TABLES_VIRTUAL_DESCRIPTOR_SET_BASE = 0, /* maximum 64 of these. binding encodes constant offset. */
-    VKD3D_SHADER_GLOBAL_HEAP_VIRTUAL_DESCRIPTOR_SET = 100,
-
-    /* Non-bindless bindings for global root signature */
-    VKD3D_SHADER_STATIC_SAMPLERS_VIRTUAL_DESCRIPTOR_SET = 101, /* bindings are allocated linearly */
-    VKD3D_SHADER_ROOT_CONSTANTS_VIRTUAL_DESCRIPTOR_SET = 102, /* Allows reading root parameters as a UBO */
-    VKD3D_SHADER_ROOT_DESCRIPTORS_VIRTUAL_DESCRIPTOR_SET = 103, /* binding = raw VA index */
-
-    /* Non-bindless bindings for local root signature */
-    VKD3D_SHADER_STATIC_LOCAL_SAMPLERS_VIRTUAL_DESCRIPTOR_SET = 104,
-    VKD3D_SHADER_LOCAL_ROOT_CONSTANTS_VIRTUAL_DESCRIPTOR_SET = 105,
-    VKD3D_SHADER_LOCAL_ROOT_DESCRIPTORS_VIRTUAL_DESCRIPTOR_SET = 106,
-
-    /* Same as tables, but for shader records. Maximum number of these would be 4096 / sizeof(u64) = 512,
-     * so the numbering scheme is sound. */
-    VKD3D_SHADER_LOCAL_TABLES_VIRTUAL_DESCRIPTOR_SET_BASE = 200,
-
-    /* Bindings within GLOBAL_HEAP set */
-    VKD3D_SHADER_GLOBAL_HEAP_BINDING = 0,
-
-    /* These are either plain SSBOs or magic UBOs. */
-    VKD3D_SHADER_GLOBAL_HEAP_BINDING_AUX_BINDINGS = 1,
-    VKD3D_SHADER_RAW_VIEW_GLOBAL_HEAP_BINDING = VKD3D_SHADER_GLOBAL_HEAP_BINDING_AUX_BINDINGS,
-    VKD3D_SHADER_GLOBAL_HEAP_SIZE_BINDING,
-    VKD3D_SHADER_GLOBAL_HEAP_BINDING_AUX_BINDINGS_COUNT = 4
-};
 
 #ifdef __cplusplus
 }

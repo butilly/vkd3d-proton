@@ -249,7 +249,7 @@ void test_clear_render_target_view(void)
             &heap_properties, D3D12_HEAP_FLAG_NONE, &resource_desc,
             D3D12_RESOURCE_STATE_RENDER_TARGET, &clear_value,
             &IID_ID3D12Resource, (void **)&resource);
-    ok(hr == S_OK, "Failed to create texture, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create texture, hr %#x.\n", hr);
 
     memset(&rtv_desc, 0, sizeof(rtv_desc));
     rtv_desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
@@ -275,7 +275,7 @@ void test_clear_render_target_view(void)
 
     /* R16G16B16A16 */
     hr = ID3D12GraphicsCommandList_Close(command_list);
-    ok(hr == S_OK, "Failed to close command list, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to close command list, hr %#x.\n", hr);
     reset_command_list(command_list, context.allocator);
     ID3D12Resource_Release(resource);
     resource_desc.Format = DXGI_FORMAT_R16G16B16A16_TYPELESS;
@@ -283,7 +283,7 @@ void test_clear_render_target_view(void)
             &heap_properties, D3D12_HEAP_FLAG_NONE, &resource_desc,
             D3D12_RESOURCE_STATE_RENDER_TARGET, NULL,
             &IID_ID3D12Resource, (void **)&resource);
-    ok(hr == S_OK, "Failed to create texture, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create texture, hr %#x.\n", hr);
 
     for (i = 0; i < ARRAY_SIZE(r16g16b16a16); ++i)
     {
@@ -305,7 +305,7 @@ void test_clear_render_target_view(void)
 
     /* 2D array texture */
     hr = ID3D12GraphicsCommandList_Close(command_list);
-    ok(hr == S_OK, "Failed to close command list, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to close command list, hr %#x.\n", hr);
     reset_command_list(command_list, context.allocator);
     ID3D12Resource_Release(resource);
     resource_desc.Format = DXGI_FORMAT_R8G8B8A8_TYPELESS;
@@ -314,7 +314,7 @@ void test_clear_render_target_view(void)
             &heap_properties, D3D12_HEAP_FLAG_NONE, &resource_desc,
             D3D12_RESOURCE_STATE_RENDER_TARGET, &clear_value,
             &IID_ID3D12Resource, (void **)&resource);
-    ok(hr == S_OK, "Failed to create texture, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create texture, hr %#x.\n", hr);
 
     for (i = 0; i < ARRAY_SIZE(array_colors); ++i)
     {
@@ -344,7 +344,7 @@ void test_clear_render_target_view(void)
             &heap_properties, D3D12_HEAP_FLAG_NONE, &resource_desc,
             D3D12_RESOURCE_STATE_RENDER_TARGET, &clear_value,
             &IID_ID3D12Resource, (void **)&resource);
-    ok(hr == S_OK, "Failed to create texture, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create texture, hr %#x.\n", hr);
 
     for (i = 0; i < ARRAY_SIZE(array_colors); ++i)
     {
@@ -376,7 +376,7 @@ void test_clear_render_target_view(void)
             &heap_properties, D3D12_HEAP_FLAG_NONE, &resource_desc,
             D3D12_RESOURCE_STATE_RENDER_TARGET, &clear_value,
             &IID_ID3D12Resource, (void **)&resource);
-    ok(hr == S_OK, "Failed to create texture, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create texture, hr %#x.\n", hr);
 
     ID3D12Device_CreateRenderTargetView(device, resource, NULL, rtv_handle);
 
@@ -649,8 +649,6 @@ void test_clear_unordered_access_view_buffer(void)
                 {0x1234, 0xabcd, 0, 0}, 0xabcd1234},
         {DXGI_FORMAT_R16G16_UINT, { 0, BUFFER_SIZE / sizeof(uint32_t), 0, 0, D3D12_BUFFER_UAV_FLAG_NONE},
                 {0x10000, 0, 0, 0}, 0},
-        {DXGI_FORMAT_R16G16B16A16_UINT, { 0, BUFFER_SIZE / sizeof(uint64_t), 0, 0, D3D12_BUFFER_UAV_FLAG_NONE},
-                {0x1234, 0x4567, 0x1234, 0x4567}, 0x45671234},
 
         {DXGI_FORMAT_R16G16_UNORM, { 0, BUFFER_SIZE / sizeof(uint32_t), 0, 0, D3D12_BUFFER_UAV_FLAG_NONE},
                 {0x1234, 0xabcd, 0, 0}, 0xabcd1234},
@@ -661,19 +659,11 @@ void test_clear_unordered_access_view_buffer(void)
         {DXGI_FORMAT_R16G16_UNORM, { 0, BUFFER_SIZE / sizeof(uint32_t), 0, 0, D3D12_BUFFER_UAV_FLAG_NONE},
                 {0xbf800000 /* -1.0f */, 0 /* 0.0f */, 0x3f000000 /* 1.0f */, 0x3f000000 /* 1.0f */}, 0, true},
 
-        {DXGI_FORMAT_R16_FLOAT, { 0, BUFFER_SIZE / sizeof(uint16_t), 0, 0, D3D12_BUFFER_UAV_FLAG_NONE},
-                {0x1234, 0, 0, 0}, 0x12341234},
         {DXGI_FORMAT_R16G16_FLOAT, { 0, BUFFER_SIZE / sizeof(uint32_t), 0, 0, D3D12_BUFFER_UAV_FLAG_NONE},
                 {0x1234, 0xabcd, 0, 0}, 0xabcd1234},
         {DXGI_FORMAT_R16G16_FLOAT, { 0, BUFFER_SIZE / sizeof(uint32_t), 0, 0, D3D12_BUFFER_UAV_FLAG_NONE},
                 {0x3f000000 /* 0.5f */, 0x3f800000 /* 1.0f */, 0, 0}, 0x3c003800, true},
-        {DXGI_FORMAT_R16G16B16A16_FLOAT, { 0, BUFFER_SIZE / sizeof(uint64_t), 0, 0, D3D12_BUFFER_UAV_FLAG_NONE},
-                {0x3f000000 /* 0.5f */, 0x3f800000 /* 1.0f */, 0x3f000000, 0x3f800000}, 0x3c003800, true},
 
-        {DXGI_FORMAT_R8_UINT, { 0, BUFFER_SIZE / sizeof(uint8_t), 0, 0, D3D12_BUFFER_UAV_FLAG_NONE},
-                {0x11, 0x22, 0x33, 0x44}, 0x11111111},
-        {DXGI_FORMAT_R8G8_UINT, { 0, BUFFER_SIZE / sizeof(uint16_t), 0, 0, D3D12_BUFFER_UAV_FLAG_NONE},
-                {0x11, 0x22, 0x33, 0x44}, 0x22112211},
         {DXGI_FORMAT_R8G8B8A8_UINT, { 0, BUFFER_SIZE / sizeof(uint32_t), 0, 0, D3D12_BUFFER_UAV_FLAG_NONE},
                 {0x11, 0x22, 0x33, 0x44}, 0x44332211},
         {DXGI_FORMAT_R8G8B8A8_UINT, { 0, BUFFER_SIZE / sizeof(uint32_t), 0, 0, D3D12_BUFFER_UAV_FLAG_NONE},
@@ -716,7 +706,7 @@ void test_clear_unordered_access_view_buffer(void)
     heap_desc.Alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
     heap_desc.Flags = D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS;
     hr = ID3D12Device_CreateHeap(device, &heap_desc, &IID_ID3D12Heap, (void **)&heap);
-    ok(hr == S_OK, "Failed to create heap, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create heap, hr %#x.\n", hr);
 
     for (i = 0; i < ARRAY_SIZE(tests); ++i)
     {
@@ -768,12 +758,12 @@ void test_clear_unordered_access_view_buffer(void)
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
         get_buffer_readback_with_command_list(buffer, DXGI_FORMAT_R32_TYPELESS, &rb, queue, command_list);
         box.left = 0;
-        box.right = uav_desc.Buffer.FirstElement * format_size(uav_desc.Format) / sizeof(uint32_t);
+        box.right = uav_desc.Buffer.FirstElement;
         check_readback_data_uint(&rb, &box, clear_value[0], 0);
-        box.left = uav_desc.Buffer.FirstElement * format_size(uav_desc.Format) / sizeof(uint32_t);
-        box.right = (uav_desc.Buffer.FirstElement + uav_desc.Buffer.NumElements) * format_size(uav_desc.Format) / sizeof(uint32_t);
+        box.left = uav_desc.Buffer.FirstElement;
+        box.right = uav_desc.Buffer.FirstElement + uav_desc.Buffer.NumElements;
         check_readback_data_uint(&rb, &box, tests[i].expected, tests[i].is_float ? 1 : 0);
-        box.left = (uav_desc.Buffer.FirstElement + uav_desc.Buffer.NumElements) * format_size(uav_desc.Format) / sizeof(uint32_t);
+        box.left = uav_desc.Buffer.FirstElement + uav_desc.Buffer.NumElements;
         box.right = BUFFER_SIZE / format_size(uav_desc.Format);
         check_readback_data_uint(&rb, &box, clear_value[0], 0);
         release_resource_readback(&rb);
@@ -948,7 +938,7 @@ void test_clear_unordered_access_view_image(void)
                     D3D12_HEAP_FLAG_NONE, &resource_desc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                     NULL, &IID_ID3D12Resource, (void **)&texture)))
             {
-                skip("Failed to create texture, hr %#x.\n", (int)hr);
+                skip("Failed to create texture, hr %#x.\n", hr);
                 continue;
             }
 
@@ -1093,16 +1083,11 @@ void test_clear_unordered_access_view_image(void)
 
 void test_uav_clear_exhaustive_descriptors(void)
 {
-    /* Engineer the range so that we get to test clear_uav_with_copy. */
-    const uint32_t SLOW_INDEX_LO = 32 * 1024 + 4000;
-    const uint32_t SLOW_INDEX_HI = 32 * 1024 + 4200;
-    struct resource_readback rb_rt;
     struct test_context context;
     struct resource_readback rb;
     ID3D12DescriptorHeap *gpu;
     ID3D12DescriptorHeap *cpu;
     ID3D12Resource *buffer;
-    ID3D12Resource *tex_rt;
     ID3D12Resource *tex;
     unsigned int i, j;
 
@@ -1117,10 +1102,6 @@ void test_uav_clear_exhaustive_descriptors(void)
     /* Pick a format that is deliberately hard to deal with w.r.t. NaN clears. */
     tex = create_default_texture2d(context.device, 64, 64, 1024, 1, DXGI_FORMAT_R16G16B16A16_FLOAT,
             D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    /* We don't end up with full uint MUTABLE on these resources. Need fallback clears most likely. */
-    tex_rt = create_default_texture2d(context.device, 64, 64, 1024, 1, DXGI_FORMAT_R16G16B16A16_FLOAT,
-            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS |
-            D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
     /* 64k descriptors. */
     for (j = 0; j < 64; j++)
@@ -1128,8 +1109,6 @@ void test_uav_clear_exhaustive_descriptors(void)
         for (i = 0; i < 1024; i++)
         {
             D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc;
-            unsigned int heap_index;
-            bool use_rtv_tex;
             memset(&uav_desc, 0, sizeof(uav_desc));
 
             uav_desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
@@ -1137,13 +1116,10 @@ void test_uav_clear_exhaustive_descriptors(void)
             uav_desc.Texture2DArray.FirstArraySlice = i;
             uav_desc.Texture2DArray.ArraySize = 1;
 
-            heap_index = i + 1024 * j;
-            use_rtv_tex = heap_index >= SLOW_INDEX_LO && heap_index <= SLOW_INDEX_HI;
-
-            ID3D12Device_CreateUnorderedAccessView(context.device, use_rtv_tex ? tex_rt : tex, NULL, &uav_desc,
-                    get_cpu_descriptor_handle(&context, cpu, heap_index));
-            ID3D12Device_CreateUnorderedAccessView(context.device, use_rtv_tex ? tex_rt : tex, NULL, &uav_desc,
-                    get_cpu_descriptor_handle(&context, gpu, heap_index));
+            ID3D12Device_CreateUnorderedAccessView(context.device, tex, NULL, &uav_desc,
+                    get_cpu_descriptor_handle(&context, cpu, i + 1024 * j));
+            ID3D12Device_CreateUnorderedAccessView(context.device, tex, NULL, &uav_desc,
+                    get_cpu_descriptor_handle(&context, gpu, i + 1024 * j));
         }
     }
 
@@ -1186,7 +1162,6 @@ void test_uav_clear_exhaustive_descriptors(void)
     for (i = 32 * 1024; i < 64 * 1024; i++)
     {
         uint32_t values[4] = { (i >> 0) & 0xff, (i >> 8) & 0xff, 0, 0 };
-        bool use_rtv_tex;
         D3D12_RECT rect;
 
         rect.left = 0;
@@ -1202,11 +1177,9 @@ void test_uav_clear_exhaustive_descriptors(void)
             values[3] = 0xffff;
         }
 
-        use_rtv_tex = i >= SLOW_INDEX_LO && i <= SLOW_INDEX_HI;
-
         ID3D12GraphicsCommandList_ClearUnorderedAccessViewUint(context.list,
                 get_gpu_descriptor_handle(&context, gpu, i),
-                get_cpu_descriptor_handle(&context, cpu, i), use_rtv_tex ? tex_rt : tex,
+                get_cpu_descriptor_handle(&context, cpu, i), tex,
                 values, 1, &rect);
     }
 
@@ -1256,16 +1229,11 @@ void test_uav_clear_exhaustive_descriptors(void)
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
     transition_resource_state(context.list, tex,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    transition_resource_state(context.list, tex_rt,
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
 
     for (i = 0; i < 1024; i++)
     {
-        bool use_rtv_tex;
         uint32_t y;
         get_texture_readback_with_command_list(tex, i, &rb, context.queue, context.list);
-        reset_command_list(context.list, context.allocator);
-        get_texture_readback_with_command_list(tex_rt, i, &rb_rt, context.queue, context.list);
 
         for (y = 0; y < 64; y++)
         {
@@ -1274,7 +1242,6 @@ void test_uav_clear_exhaustive_descriptors(void)
             uint64_t value;
 
             descriptor_index = i + y * 1024;
-            use_rtv_tex = descriptor_index >= SLOW_INDEX_LO && descriptor_index <= SLOW_INDEX_HI;
 
             if (descriptor_index < 32 * 1024)
             {
@@ -1291,13 +1258,12 @@ void test_uav_clear_exhaustive_descriptors(void)
                 expected = 0xfffffffefffdfffc;
             }
 
-            value = get_readback_uint64(use_rtv_tex ? &rb_rt : &rb, 0, y);
+            value = get_readback_uint64(&rb, 0, y);
             ok(expected == value, "desc %u, line %u: Expected %"PRIx64", got %"PRIx64".\n",
                     i, y, expected, value);
         }
 
         release_resource_readback(&rb);
-        release_resource_readback(&rb_rt);
         reset_command_list(context.list, context.allocator);
     }
 
@@ -1353,7 +1319,6 @@ void test_uav_clear_exhaustive_descriptors(void)
     ID3D12DescriptorHeap_Release(cpu);
     ID3D12Resource_Release(buffer);
     ID3D12Resource_Release(tex);
-    ID3D12Resource_Release(tex_rt);
     destroy_test_context(&context);
 }
 
@@ -1530,7 +1495,7 @@ void test_deferred_clears(void)
 
     hr = ID3D12Device_CreateGraphicsPipelineState(context.device, &pso_desc,
             &IID_ID3D12PipelineState, (void **)&context.pipeline_state);
-    ok(hr == S_OK, "Failed to create pipeline, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create pipeline, hr %#x.\n", hr);
 
     memset(&descriptor_heap_desc, 0u, sizeof(descriptor_heap_desc));
     descriptor_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
@@ -1538,14 +1503,14 @@ void test_deferred_clears(void)
 
     hr = ID3D12Device_CreateDescriptorHeap(context.device, &descriptor_heap_desc,
             &IID_ID3D12DescriptorHeap, (void**)&dsv_heap);
-    ok(hr == S_OK, "Failed to create DSV heap, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create DSV heap, hr %#x.\n", hr);
 
     descriptor_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     descriptor_heap_desc.NumDescriptors = ARRAY_SIZE(rt) + 2u;
 
     hr = ID3D12Device_CreateDescriptorHeap(context.device, &descriptor_heap_desc,
             &IID_ID3D12DescriptorHeap, (void**)&rtv_heap);
-    ok(hr == S_OK, "Failed to create RTV heap, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create RTV heap, hr %#x.\n", hr);
 
     memset(&heap_properties, 0, sizeof(heap_properties));
     heap_properties.Type = D3D12_HEAP_TYPE_DEFAULT;
@@ -1566,7 +1531,7 @@ void test_deferred_clears(void)
         hr = ID3D12Device_CreateCommittedResource(context.device, &heap_properties,
                 D3D12_HEAP_FLAG_NONE, &resource_desc[0], D3D12_RESOURCE_STATE_RENDER_TARGET, NULL,
                 &IID_ID3D12Resource, (void**)&rt[i]);
-        ok(hr == S_OK, "Failed to create resource, hr %#x.\n", (int)hr);
+        ok(hr == S_OK, "Failed to create resource, hr %#x.\n", hr);
     }
 
     /* Image with mismatched size */
@@ -1576,7 +1541,7 @@ void test_deferred_clears(void)
     hr = ID3D12Device_CreateCommittedResource(context.device, &heap_properties,
             D3D12_HEAP_FLAG_NONE, &resource_desc[0], D3D12_RESOURCE_STATE_RENDER_TARGET, NULL,
             &IID_ID3D12Resource, (void**)&rt[4]);
-    ok(hr == S_OK, "Failed to create resource, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create resource, hr %#x.\n", hr);
 
     /* Image with multiple layers */
     resource_desc[0].Width = 16;
@@ -1586,7 +1551,7 @@ void test_deferred_clears(void)
     hr = ID3D12Device_CreateCommittedResource(context.device, &heap_properties,
             D3D12_HEAP_FLAG_NONE, &resource_desc[0], D3D12_RESOURCE_STATE_RENDER_TARGET, NULL,
             &IID_ID3D12Resource, (void**)&rt[5]);
-    ok(hr == S_OK, "Failed to create resource, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create resource, hr %#x.\n", hr);
 
     for (i = 0u; i < ARRAY_SIZE(rt); i++)
     {
@@ -1626,7 +1591,7 @@ void test_deferred_clears(void)
     hr = ID3D12Device_CreateCommittedResource(context.device, &heap_properties,
             D3D12_HEAP_FLAG_NONE, &resource_desc[0], D3D12_RESOURCE_STATE_DEPTH_WRITE, NULL,
             &IID_ID3D12Resource, (void**)&ds);
-    ok(hr == S_OK, "Failed to create resource, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create resource, hr %#x.\n", hr);
 
     dsv = get_cpu_dsv_handle(&context, dsv_heap, 0u);
 
@@ -1958,13 +1923,13 @@ void test_deferred_clears(void)
     heap_desc.Alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
 
     hr = ID3D12Device_CreateHeap(context.device, &heap_desc, &IID_ID3D12Heap, (void**)&heap);
-    ok(hr == S_OK, "Failed to create heap, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create heap, hr %#x.\n", hr);
 
     for (i = 0u; i < 2u; i++)
     {
         hr = ID3D12Device_CreatePlacedResource(context.device, heap, 0, &resource_desc[i],
             D3D12_RESOURCE_STATE_RENDER_TARGET, NULL, &IID_ID3D12Resource, (void**)&rt[i]);
-        ok(hr == S_OK, "Failed to create resource, hr %#x.\n", (int)hr);
+        ok(hr == S_OK, "Failed to create resource, hr %#x.\n", hr);
 
         memset(&rtv_desc, 0, sizeof(rtv_desc));
         rtv_desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
@@ -2040,7 +2005,7 @@ void test_deferred_clears(void)
         hr = ID3D12Device10_CreateCommittedResource3(device10, &heap_properties, D3D12_HEAP_FLAG_NONE,
                 &resource_desc1, D3D12_BARRIER_LAYOUT_RENDER_TARGET, NULL, NULL, 0, NULL,
                 &IID_ID3D12Resource, (void**)&rt[0]);
-        ok(hr == S_OK, "Failed to create render target, hr %#x.\n", (int)hr);
+        ok(hr == S_OK, "Failed to create render target, hr %#x.\n", hr);
 
         rtv_base = get_cpu_rtv_handle(&context, rtv_heap, 0);
 
@@ -2090,7 +2055,7 @@ void test_deferred_clears(void)
         hr = ID3D12Device10_CreateCommittedResource3(device10, &heap_properties, D3D12_HEAP_FLAG_NONE,
                 &resource_desc1, D3D12_BARRIER_LAYOUT_DEPTH_STENCIL_WRITE, NULL, NULL, 0, NULL,
                 &IID_ID3D12Resource, (void**)&ds);
-        ok(hr == S_OK, "Failed to create depth-stencil resource, hr %#x.\n", (int)hr);
+        ok(hr == S_OK, "Failed to create depth-stencil resource, hr %#x.\n", hr);
 
         memset(&dsv_desc, 0, sizeof(dsv_desc));
         dsv_desc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;

@@ -569,7 +569,7 @@ void test_shader_sm66_wave_size(void)
 
         expected_hr = supported_wave_size ? S_OK : E_INVALIDARG;
         hr = ID3D12Device_CreateComputePipelineState(context.device, &compute_desc, &IID_ID3D12PipelineState, (void**)&pso);
-        ok(hr == expected_hr, "Got hr #%x, expected %#x.\n", (int)hr, (int)expected_hr);
+        ok(hr == expected_hr, "Got hr #%x, expected %#x.\n", hr, expected_hr);
 
         if (!supported_wave_size)
         {
@@ -907,7 +907,7 @@ void test_sv_barycentric(void)
     memset(&features3, 0, sizeof(features3));
     if (FAILED(hr = ID3D12Device_CheckFeatureSupport(context.device, D3D12_FEATURE_D3D12_OPTIONS3, &features3, sizeof(features3))) || !features3.BarycentricsSupported)
     {
-        skip("Context does not support barycentrics, hr #%x.\n", (int)hr);
+        skip("Context does not support barycentrics, hr #%x.\n", hr);
         destroy_test_context(&context);
         return;
     }
@@ -924,7 +924,7 @@ void test_sv_barycentric(void)
     pso_desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
 
     hr = ID3D12Device_CreateGraphicsPipelineState(context.device, &pso_desc, &IID_ID3D12PipelineState, (void **)&pso);
-    ok(SUCCEEDED(hr), "Failed to create pipeline, hr #%u.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create pipeline, hr #%u.\n", hr);
 
     ID3D12GraphicsCommandList_OMSetRenderTargets(context.list, 1, &context.rtv, TRUE, NULL);
     ibv.BufferLocation = ID3D12Resource_GetGPUVirtualAddress(ibo);
@@ -1085,15 +1085,14 @@ void test_shader_fp16(void)
         hr = ID3D12Device_CreateGraphicsPipelineState(context.device, &pso_desc, &IID_ID3D12PipelineState, (void **)&pso[i]);
 
         if (tests[i].native_fp16 && features4.Native16BitShaderOpsSupported)
-            ok(SUCCEEDED(hr), "Failed to create pipeline, hr #%u.\n", (int)hr);
+            ok(SUCCEEDED(hr), "Failed to create pipeline, hr #%u.\n", hr);
         else if (tests[i].native_fp16 && !features4.Native16BitShaderOpsSupported)
         {
-            /* Due to pragmatic reasons, we don't fail compilation here anymore, but technically we should. */
-            todo ok(hr == E_INVALIDARG, "Unexpected hr: %x.\n", (int)hr);
+            ok(hr == E_INVALIDARG, "Unexpected hr: %x.\n", hr);
             skip("NativeFP16 is not supported. Failing pipeline compilation is expected.\n");
         }
         else
-            ok(SUCCEEDED(hr), "Failed to create pipeline, hr #%u.\n", (int)hr);
+            ok(SUCCEEDED(hr), "Failed to create pipeline, hr #%u.\n", hr);
 
         if (FAILED(hr))
             pso[i] = NULL;
@@ -2036,7 +2035,7 @@ void test_shader_sm66_is_helper_lane(void)
             DXGI_FORMAT_R32G32B32A32_FLOAT, NULL, &ps_discard_atomic_loop_dxil, NULL);
     hr = ID3D12Device_CreateGraphicsPipelineState(context.device, &pso_desc,
             &IID_ID3D12PipelineState, (void **)&context.pipeline_state);
-    ok(hr == S_OK, "Failed to create state, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create state, hr %#x.\n", hr);
 
     input_keys = create_upload_buffer(context.device, sizeof(alpha_keys), alpha_keys);
     atomic_buffer = create_default_buffer(context.device, 4 * sizeof(uint32_t),
@@ -2086,7 +2085,7 @@ void test_shader_sm66_is_helper_lane(void)
     {
         uint32_t *ptr;
         hr = ID3D12Resource_Map(readback_buffer, 0, NULL, (void**)&ptr);
-        ok(SUCCEEDED(hr), "Failed to map buffer, hr #%x.\n", (int)hr);
+        ok(SUCCEEDED(hr), "Failed to map buffer, hr #%x.\n", hr);
         if (SUCCEEDED(hr))
         {
             static const uint32_t expected[] = { 101, 0, 0, 101 };
@@ -2524,144 +2523,6 @@ void test_denorm_behavior_dxil(void)
     test_denorm_behavior(true);
 }
 
-static float quant_fp16(float value)
-{
-    return half_to_float(float_to_half(value));
-}
-
-static float quant_fp16_rtz(float value)
-{
-    uint32_t u32;
-
-    if (isnan(value) || isinf(value))
-        return value;
-
-    /* Handle large finite FP32 values. */
-    if (value > 65504.0f)
-        value = 65504.0f;
-    else if (value < -65504.0f)
-        value = -65504.0f;
-
-    /* Deal with FP16 denorms. */
-    value *= 16.0f * 1024.0f * 1024.0f;
-    value = truncf(value);
-    value /= 16.0f * 1024.0f * 1024.0f;
-
-    memcpy(&u32, &value, sizeof(u32));
-    /* Chop off mantissa bits, don't care about large normal FP32 values here. */
-    u32 &= UINT32_MAX << (23 - 10);
-    memcpy(&value, &u32, sizeof(u32));
-    return half_to_float(float_to_half(value));
-}
-
-static void test_fp16_rounding_behavior(bool native_fp16)
-{
-    D3D12_FEATURE_DATA_D3D12_OPTIONS4 features4;
-    D3D12_ROOT_PARAMETER root_param[1];
-    D3D12_ROOT_SIGNATURE_DESC rs_desc;
-    struct test_context context;
-    struct resource_readback rb;
-    ID3D12Resource *dst;
-    bool support_16bit;
-    unsigned int i;
-    bool is_nv;
-
-#include "shaders/sm_advanced/headers/fp16_roundtrip_quant.h"
-#include "shaders/sm_advanced/headers/fp16_roundtrip_quant_legacy.h"
-
-    if (!init_compute_test_context(&context))
-        return;
-
-    if (native_fp16)
-    {
-        support_16bit =
-            SUCCEEDED(ID3D12Device_CheckFeatureSupport(context.device, D3D12_FEATURE_D3D12_OPTIONS4,
-                &features4, sizeof(features4))) &&
-            features4.Native16BitShaderOpsSupported;
-
-        if (!support_16bit)
-        {
-            skip("16-bit not supported.\n");
-            destroy_test_context(&context);
-            return;
-        }
-    }
-
-    is_nv = is_nvidia_device(context.device);
-
-    memset(&rs_desc, 0, sizeof(rs_desc));
-    memset(&root_param, 0, sizeof(root_param));
-    rs_desc.NumParameters = ARRAY_SIZE(root_param);
-    rs_desc.pParameters = root_param;
-    root_param[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    root_param[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-
-    create_root_signature(context.device, &rs_desc, &context.root_signature);
-
-    context.pipeline_state = create_compute_pipeline_state(
-        context.device, context.root_signature,
-        native_fp16 ? fp16_roundtrip_quant_dxil : fp16_roundtrip_quant_legacy_dxil);
-
-    dst = create_default_buffer(context.device, 16 * 1024 * 1024 * sizeof(float),
-        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-
-    ID3D12GraphicsCommandList_SetPipelineState(context.list, context.pipeline_state);
-    ID3D12GraphicsCommandList_SetComputeRootSignature(context.list, context.root_signature);
-    ID3D12GraphicsCommandList_SetComputeRootUnorderedAccessView(context.list, 0, ID3D12Resource_GetGPUVirtualAddress(dst));
-    ID3D12GraphicsCommandList_Dispatch(context.list, 16 * 1024 * 1024 / 1024, 1, 1);
-
-    transition_resource_state(context.list, dst, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    get_buffer_readback_with_command_list(dst, DXGI_FORMAT_UNKNOWN, &rb, context.queue, context.list);
-
-    for (i = 0; i < 16 * 1024 * 1024; i++)
-    {
-        uint32_t u32_input = i * 256;
-        uint32_t result_u32;
-        float f32_input;
-        float result;
-        bool pass;
-
-        memcpy(&f32_input, &u32_input, sizeof(f32_input));
-        result = get_readback_float(&rb, i, 0);
-        memcpy(&result_u32, &result, sizeof(result));
-
-        if (isnan(f32_input))
-        {
-            ok(isnan(result), "Value #%x: Expected NaN, but got %f.\n", i, result);
-        }
-        else if (isinf(f32_input))
-        {
-            ok(f32_input == result, "Value #%x: Expected %f, got %f.\n", i, f32_input, result);
-        }
-        else
-        {
-            pass = quant_fp16_rtz(f32_input) == result || ((native_fp16 || is_nv) && quant_fp16(f32_input) == result);
-            /* The only correct answer is RTZ, but allow RTE as well since native drivers do that too for native FP16. */
-            ok(pass, "Value #%x: RTZ is broken. Input %.6g, RTZ %.6g (RTE %.6g), got %.6g\n", i,
-                 f32_input, quant_fp16_rtz(f32_input), quant_fp16(f32_input), result);
-
-            /* Don't spam a million failures. */
-            if (!pass)
-                break;
-        }
-    }
-
-    release_resource_readback(&rb);
-    ID3D12Resource_Release(dst);
-
-    destroy_test_context(&context);
-}
-
-void test_fp16_rounding_behavior_sm62(void)
-{
-    test_fp16_rounding_behavior(true);
-}
-
-void test_fp16_rounding_behavior_legacy(void)
-{
-    test_fp16_rounding_behavior(false);
-}
-
 void test_sm67_helper_lane_wave_ops(void)
 {
     const float default_color[4] = { 1000.0f, 1000.0f, 1000.0f, 1000.0f };
@@ -2818,7 +2679,7 @@ void test_sm67_helper_lane_wave_ops(void)
     rs_params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
 
     hr = create_root_signature(context.device, &rs_desc, &context.root_signature);
-    ok(SUCCEEDED(hr), "Failed to create root signature, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create root signature, hr #%x.\n", hr);
 
     init_pipeline_state_desc_shaders(&pso_desc, context.root_signature, DXGI_FORMAT_R32_UINT, NULL, NULL, 0, NULL, 0);
     pso_desc.VS = vs_helper_lane_wave_ops_dxil;
@@ -2826,10 +2687,10 @@ void test_sm67_helper_lane_wave_ops(void)
     pso_desc.DepthStencilState.DepthEnable = FALSE;
     pso_desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
     hr = ID3D12Device_CreateGraphicsPipelineState(context.device, &pso_desc, &IID_ID3D12PipelineState, (void **)&psos[0]);
-    ok(SUCCEEDED(hr), "Failed to create PSO, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create PSO, hr #%x.\n", hr);
     pso_desc.PS = ps_helper_lane_wave_ops_enabled_dxil;
     hr = ID3D12Device_CreateGraphicsPipelineState(context.device, &pso_desc, &IID_ID3D12PipelineState, (void **)&psos[1]);
-    ok(SUCCEEDED(hr), "Failed to create PSO, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create PSO, hr #%x.\n", hr);
 
     for (i = 0; i < ARRAY_SIZE(tests) * 2; i++)
     {
@@ -2972,7 +2833,7 @@ void test_quad_vote_sm67_compute(void)
     rs_params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
 
     hr = create_root_signature(context.device, &rs_desc, &context.root_signature);
-    ok(SUCCEEDED(hr), "Failed to create root signature, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create root signature, hr #%x.\n", hr);
 
     context.pipeline_state = create_compute_pipeline_state(context.device, context.root_signature, cs_quad_vote_dxil);
     ok(!!context.pipeline_state, "Failed to create pipeline state.\n");
@@ -3093,11 +2954,11 @@ void test_sm67_multi_sample_uav(void)
 
     hr = ID3D12Device_CreateCommittedResource(context.device, &heap_properties, D3D12_HEAP_FLAG_CREATE_NOT_ZEROED,
             &resource_desc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, NULL, &IID_ID3D12Resource, (void**)&src);
-    ok(hr == E_INVALIDARG, "Unexpected hr #%x.\n", (int)hr);
+    ok(hr == E_INVALIDARG, "Unexpected hr #%x.\n", hr);
     resource_desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
     hr = ID3D12Device_CreateCommittedResource(context.device, &heap_properties, D3D12_HEAP_FLAG_CREATE_NOT_ZEROED,
             &resource_desc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, NULL, &IID_ID3D12Resource, (void **)&src);
-    ok(SUCCEEDED(hr), "Failed to create UAV MSAA texture, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create UAV MSAA texture, hr #%x.\n", hr);
 
     dst = create_default_buffer(context.device,
             resource_desc.Width * resource_desc.Height *
@@ -4081,16 +3942,16 @@ void test_sm67_integer_sampling(void)
     }
 
     hr = create_versioned_root_signature(context.device, &rs_desc, &context.root_signature);
-    ok(SUCCEEDED(hr), "Failed to create root signature, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create root signature, hr #%x.\n", hr);
     if (FAILED(hr))
     {
-        skip("Root signature v1.2 not supported, hr #%x.\n", (int)hr);
+        skip("Root signature v1.2 not supported, hr #%x.\n", hr);
         destroy_test_context(&context);
         return;
     }
 
     hr = ID3D12Device_QueryInterface(context.device, &IID_ID3D12Device11, (void **)&device11);
-    ok(SUCCEEDED(hr), "Failed to query ID3D12Device11, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to query ID3D12Device11, hr #%x.\n", hr);
     if (FAILED(hr))
     {
         skip("ID3D12Device11 is not supported.\n");
@@ -4263,7 +4124,7 @@ void test_sm68_draw_parameters(void)
     rs_desc.pParameters = root_params;
 
     hr = create_root_signature(context.device, &rs_desc, &context.root_signature);
-    ok(hr == S_OK, "Failed to create root signature, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create root signature, hr %#x.\n", hr);
 
     init_pipeline_state_desc_dxil(&pso_desc, context.root_signature,
             DXGI_FORMAT_UNKNOWN, &vs_draw_args_dxil, NULL, NULL);
@@ -4271,7 +4132,7 @@ void test_sm68_draw_parameters(void)
     memset(&pso_desc.PS, 0, sizeof(pso_desc.PS));
 
     hr = ID3D12Device_CreateGraphicsPipelineState(context.device, &pso_desc, &IID_ID3D12PipelineState, (void**)&context.pipeline_state);
-    ok(hr == S_OK, "Failed to create graphics pipeline, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create graphics pipeline, hr %#x.\n", hr);
 
     memset(sig_args, 0, sizeof(sig_args));
     sig_args[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
@@ -4286,7 +4147,7 @@ void test_sm68_draw_parameters(void)
     sig_desc.pArgumentDescs = &sig_args[1];
 
     hr = ID3D12Device_CreateCommandSignature(context.device, &sig_desc, NULL, &IID_ID3D12CommandSignature, (void**)&simple_sig);
-    ok(hr == S_OK, "Failed to create command signature, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create command signature, hr %#x.\n", hr);
 
     /* Be robust here in case the implementation does not support dgc */
     sig_desc.NumArgumentDescs = ARRAY_SIZE(sig_args);
@@ -4298,7 +4159,7 @@ void test_sm68_draw_parameters(void)
         is_vk_device_extension_supported(context.device, "VK_EXT_device_generated_commands"))
     {
         hr = ID3D12Device_CreateCommandSignature(context.device, &sig_desc, context.root_signature, &IID_ID3D12CommandSignature, (void**)&complex_sig);
-        todo_if(hr == E_NOTIMPL) ok(hr == S_OK, "Failed to create command signature, hr %#x.\n", (int)hr);
+        todo_if(hr == E_NOTIMPL) ok(hr == S_OK, "Failed to create command signature, hr %#x.\n", hr);
     }
 
     memset(&heap_properties, 0, sizeof(heap_properties));
@@ -4316,7 +4177,7 @@ void test_sm68_draw_parameters(void)
     resource_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
     hr = ID3D12Device_CreateCommittedResource(context.device, &heap_properties, D3D12_HEAP_FLAG_NONE, &resource_desc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, NULL, &IID_ID3D12Resource, (void**)&uav);
-    ok(hr == S_OK, "Failed to create UAV buffer, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create UAV buffer, hr %#x.\n", hr);
 
     uav_heap = create_gpu_descriptor_heap(context.device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1);
     uav_cpu_heap = create_cpu_descriptor_heap(context.device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1);
@@ -4339,10 +4200,10 @@ void test_sm68_draw_parameters(void)
     resource_desc.Flags = D3D12_RESOURCE_FLAG_NONE;
 
     hr = ID3D12Device_CreateCommittedResource(context.device, &heap_properties, D3D12_HEAP_FLAG_NONE, &resource_desc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, NULL, &IID_ID3D12Resource, (void**)&draw_buffer);
-    ok(hr == S_OK, "Failed to create draw buffer, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create draw buffer, hr %#x.\n", hr);
 
     hr = ID3D12Resource_Map(draw_buffer, 0, NULL, (void**)&draw_args);
-    ok(hr == S_OK, "Failed to map draw buffer, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to map draw buffer, hr %#x.\n", hr);
     memcpy(draw_args, tests, sizeof(tests));
 
     viewport.TopLeftX = 0.0f;
@@ -4535,7 +4396,7 @@ void test_sm68_wave_size_range(void)
 
         expected_hr = supported_wave_size ? S_OK : E_INVALIDARG;
         hr = ID3D12Device_CreateComputePipelineState(context.device, &compute_desc, &IID_ID3D12PipelineState, (void**)&pso);
-        ok(hr == expected_hr, "Got hr #%x, expected %#x.\n", (int)hr, (int)expected_hr);
+        ok(hr == expected_hr, "Got hr #%x, expected %#x.\n", hr, expected_hr);
 
         if (!supported_wave_size)
         {
@@ -4728,12 +4589,12 @@ void test_sm68_sample_cmp_bias_grad(void)
     rs_desc.pStaticSamplers = &sampler_desc;
 
     hr = create_root_signature(context.device, &rs_desc, &context.root_signature);
-    ok(hr == S_OK, "Failed to create root signature, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create root signature, hr %#x.\n", hr);
 
     init_pipeline_state_desc_dxil(&pso_desc, context.root_signature,
             DXGI_FORMAT_R32G32B32A32_FLOAT, &vs_sample_cmp_grad_bias_dxil, &ps_sample_cmp_grad_bias_dxil, NULL);
     hr = ID3D12Device_CreateGraphicsPipelineState(context.device, &pso_desc, &IID_ID3D12PipelineState, (void**)&context.pipeline_state);
-    ok(hr == S_OK, "Failed to create graphics pipeline, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create graphics pipeline, hr %#x.\n", hr);
 
     memset(&heap_properties, 0, sizeof(heap_properties));
     heap_properties.Type = D3D12_HEAP_TYPE_DEFAULT;
@@ -4751,7 +4612,7 @@ void test_sm68_sample_cmp_bias_grad(void)
 
     hr = ID3D12Device_CreateCommittedResource(context.device, &heap_properties, D3D12_HEAP_FLAG_NONE,
             &resource_desc, D3D12_RESOURCE_STATE_DEPTH_WRITE, NULL, &IID_ID3D12Resource, (void**)&ds_resource);
-    ok(hr == S_OK, "Failed to create depth image, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create depth image, hr %#x.\n", hr);
 
     dsv_heap = create_cpu_descriptor_heap(context.device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, resource_desc.MipLevels);
     srv_heap = create_gpu_descriptor_heap(context.device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1);
@@ -4896,7 +4757,7 @@ void test_sm67_helper_lane_only_wave_ops(void)
     rs_params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
 
     hr = create_root_signature(context.device, &rs_desc, &context.root_signature);
-    ok(SUCCEEDED(hr), "Failed to create root signature, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create root signature, hr #%x.\n", hr);
 
     init_pipeline_state_desc_shaders(&pso_desc, context.root_signature, DXGI_FORMAT_R32G32B32A32_FLOAT, NULL, NULL, 0, NULL, 0);
     pso_desc.VS = vs_helper_lane_wave_ops_dxil;
@@ -4904,10 +4765,10 @@ void test_sm67_helper_lane_only_wave_ops(void)
     pso_desc.DepthStencilState.DepthEnable = FALSE;
     pso_desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
     hr = ID3D12Device_CreateGraphicsPipelineState(context.device, &pso_desc, &IID_ID3D12PipelineState, (void **)&psos[0]);
-    ok(SUCCEEDED(hr), "Failed to create PSO, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create PSO, hr #%x.\n", hr);
     pso_desc.PS = helper_lane_only_wave_ops_sm67_dxil;
     hr = ID3D12Device_CreateGraphicsPipelineState(context.device, &pso_desc, &IID_ID3D12PipelineState, (void **)&psos[1]);
-    ok(SUCCEEDED(hr), "Failed to create PSO, hr #%x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create PSO, hr #%x.\n", hr);
 
     src = create_upload_buffer(context.device, sizeof(input_data), input_data);
 
@@ -5125,23 +4986,15 @@ static float quant_fp8(float value)
     return fp8_to_float(float_to_fp8(value, true));
 }
 
-static float quant_fp16_fp8_fast(float value)
+static float quant_fp16(float value)
 {
-    /* dxil-spirv implements it like this, which isn't 100% theoretically correct in RTE, but good enough. */
-    uint16_t f16;
-    uint8_t u8;
+    return half_to_float(float_to_half(value));
+}
 
-    if (value > 448.0f)
-        value = 448.0f;
-    else if (value < -448.0f)
-        value = -448.0f;
-
-    /* dxil-spirv does the 1/256 scale after conversion.
-     * Probably doesn't matter? Maybe affects denorm rounding order somehow. */
-    f16 = float_to_half(value / 256.0f);
-    u8 = ((f16 >> 8) & 0x80) | ((f16 + 0x3f) >> 7);
-
-    return fp8_to_float(u8);
+static float quant_fp16_fp8(float value)
+{
+    /* dxil-spirv implements it like this, which isn't 100% theoretically correct in RTE. */
+    return quant_fp8(quant_fp16(value));
 }
 
 static ID3D12PipelineState *create_wmma_pso(ID3D12Device *device, ID3D12RootSignature *rs, D3D12_SHADER_BYTECODE code)
@@ -5155,11 +5008,9 @@ static ID3D12PipelineState *create_wmma_pso(ID3D12Device *device, ID3D12RootSign
     pipeline_state_desc.CS = code;
     pipeline_state_desc.NodeMask = 0;
     pipeline_state_desc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
-    vkd3d_mute_validation_message("10165", "We intentionally skirt the spec w.r.t. 8-bit C matrix.");
     hr = ID3D12Device_CreateComputePipelineState(device, &pipeline_state_desc,
             &IID_ID3D12PipelineState, (void **)&pipeline_state);
-    vkd3d_unmute_validation_message("10165");
-    todo ok(SUCCEEDED(hr), "Failed to create compute pipeline state, hr %#x.\n", (int)hr);
+    todo ok(SUCCEEDED(hr), "Failed to create compute pipeline state, hr %#x.\n", hr);
     return pipeline_state;
 }
 
@@ -5381,7 +5232,7 @@ void test_wmma_matmul(void)
                 {
                     /* Emulation path doesn't have a dedicated FP32 -> FP8 RTE path,
                      * so double quant it is. */
-                    expected_alt = quant_fp16_fp8_fast(expected);
+                    expected_alt = quant_fp16_fp8(expected);
                     expected = quant_fp8(expected);
                 }
                 else if (tests[test_index].quant.type == TYPE_FP16)
@@ -6325,12 +6176,12 @@ void test_wmma_copy_transpose(void)
             ok(value_fp32 == expected, "FP32: Row %u, Col %u: Expected %f, got %f\n", j, i, expected, value_fp32);
 
             todo_if(is_todo)
-            ok(value_fp8 == quant_fp8(expected) || value_fp8 == quant_fp16_fp8_fast(expected),
+            ok(value_fp8 == quant_fp8(expected) || value_fp8 == quant_fp16_fp8(expected),
                     "FP8: Row %u, Col %u: Expected %f (rounded from %f), got %f\n",
                     j, i, quant_fp8(expected), expected, value_fp8);
 
             todo_if(is_todo)
-            ok(value_roundtrip_fp32 == quant_fp8(expected) || value_fp8 == quant_fp16_fp8_fast(expected),
+            ok(value_roundtrip_fp32 == quant_fp8(expected) || value_fp8 == quant_fp16_fp8(expected),
                     "FP8 -> FP32: Row %u, Col %u: Expected %f (rounded from %f), got %f\n",
                     j, i, quant_fp8(expected), expected, value_roundtrip_fp32);
         }
@@ -6850,8 +6701,8 @@ void test_ags_float8_conversion(void)
 
         if ((i & 0x7f) == 0x7f)
         {
-            ok(isnan(fp8_to_fp32_value), "value %u: expected nan, got %f\n", i, fp8_to_fp32_value);
-            ok(isnan(fp8_to_fp32_sat_value), "value %u: expected nan, got %f\n", i, fp8_to_fp32_sat_value);
+            ok(isnan(fp8_to_fp32_value), "value %u: expected nan, got %f\n", fp8_to_fp32_value);
+            ok(isnan(fp8_to_fp32_sat_value), "value %u: expected nan, got %f\n", fp8_to_fp32_sat_value);
         }
         else
         {
@@ -6863,8 +6714,8 @@ void test_ags_float8_conversion(void)
 
         if ((i & 0x7f) > 0x7c)
         {
-            ok(isnan(bf8_to_fp32_value), "value %u: expected nan, got %f\n", i, bf8_to_fp32_value);
-            ok(isnan(bf8_to_fp32_sat_value), "value %u: expected nan, got %f\n", i, bf8_to_fp32_sat_value);
+            ok(isnan(bf8_to_fp32_value), "value %u: expected nan, got %f\n", bf8_to_fp32_value);
+            ok(isnan(bf8_to_fp32_sat_value), "value %u: expected nan, got %f\n", bf8_to_fp32_sat_value);
         }
         else
         {
@@ -7006,7 +6857,7 @@ void test_vs_instance_input_nonuniform_workarounds(void)
     }
 
     hr = ID3D12Device_CreateGraphicsPipelineState(context.device, &pso_desc, &IID_ID3D12PipelineState, (void **)&context.pipeline_state);
-    ok(SUCCEEDED(hr), "Failed to create PSO, hr #%x\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create PSO, hr #%x\n", hr);
 
     ID3D12GraphicsCommandList_SetGraphicsRootSignature(context.list, context.root_signature);
     ID3D12GraphicsCommandList_SetDescriptorHeaps(context.list, 1, &heap);
@@ -7245,1018 +7096,4 @@ void test_nvx_cubin(void)
     for (i = 0; i < ARRAY_SIZE(tex); i++)
         ID3D12Resource_Release(tex[i]);
     destroy_test_context(&context);
-}
-
-void test_fp_truncate_roundtrips(void)
-{
-    D3D12_FEATURE_DATA_D3D12_OPTIONS4 features4;
-    D3D12_ROOT_SIGNATURE_DESC rs_desc;
-    D3D12_ROOT_PARAMETER rs_param[2];
-    struct test_context context;
-    struct resource_readback rb;
-    ID3D12Resource *output;
-    ID3D12Resource *input;
-    unsigned int i;
-
-#include "shaders/sm_advanced/headers/cs_fp_truncate_roundtrip.h"
-
-    static const struct test_input
-    {
-        float input_a;
-        float add_a;
-        float input_b;
-        float add_b;
-    } inputs[] = {
-        { 1.0f, 1.0f / (8.0f * 1024.0f), 1.0f, 1.0f / (8.0f * 1024.0f) },
-        /* Verify denorm behavior. We cannot flush FP16 denorms which the old QuantizeFP16 path used. */
-        { 1.0f / (4.0f * 1024.0f * 1024.0f), 0.0f, 1.0f / (4.0f * 1024.0f * 1024.0f), 0.0f },
-        { -1.0f, 1.0f / (8.0f * 1024.0f), -1.0f, 1.0f / (8.0f * 1024.0f) },
-        { -1.0f / (4.0f * 1024.0f * 1024.0f), 0.0f, -1.0f / (4.0f * 1024.0f * 1024.0f), 0.0f },
-    };
-
-    if (!init_compute_test_context(&context))
-        return;
-
-    memset(&rs_desc, 0, sizeof(rs_desc));
-    memset(rs_param, 0, sizeof(rs_param));
-    rs_param[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-    rs_param[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    rs_param[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-    rs_param[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    rs_desc.NumParameters = ARRAY_SIZE(rs_param);
-    rs_desc.pParameters = rs_param;
-
-    memset(&features4, 0, sizeof(features4));
-    if (FAILED(ID3D12Device_CheckFeatureSupport(context.device, D3D12_FEATURE_D3D12_OPTIONS4,
-        &features4, sizeof(features4))) || !features4.Native16BitShaderOpsSupported)
-    {
-        skip("Native FP16 not supported. Skipping test.\n");
-        destroy_test_context(&context);
-        return;
-    }
-
-    input = create_upload_buffer(context.device, sizeof(inputs), inputs);
-    output = create_default_buffer(context.device, sizeof(inputs), D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
-
-    create_root_signature(context.device, &rs_desc, &context.root_signature);
-    context.pipeline_state = create_compute_pipeline_state(
-        context.device, context.root_signature, cs_fp_truncate_roundtrip_dxil);
-
-    ID3D12GraphicsCommandList_SetComputeRootSignature(context.list, context.root_signature);
-    ID3D12GraphicsCommandList_SetPipelineState(context.list, context.pipeline_state);
-    ID3D12GraphicsCommandList_SetComputeRootShaderResourceView(context.list, 0,
-            ID3D12Resource_GetGPUVirtualAddress(input));
-    ID3D12GraphicsCommandList_SetComputeRootShaderResourceView(context.list, 1,
-            ID3D12Resource_GetGPUVirtualAddress(output));
-    ID3D12GraphicsCommandList_Dispatch(context.list, 1, 1, 1);
-    transition_resource_state(context.list, output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    get_buffer_readback_with_command_list(output, DXGI_FORMAT_UNKNOWN, &rb, context.queue, context.list);
-
-    for (i = 0; i < ARRAY_SIZE(inputs); i++)
-    {
-        struct result
-        {
-            float fp32_native;
-            float fp16_native;
-            float fp32_legacy_fast;
-            float fp32_legacy_precise;
-        };
-
-        float a = inputs[i].input_a + inputs[i].add_a;
-        float b = inputs[i].input_b + inputs[i].add_b;
-        const struct result *value;
-
-        value = (const struct result *)get_readback_vec4(&rb, i, 0);
-
-        ok(value->fp32_native == a + b, "FP32 native value %u: Expected %f, got %f\n", i, a + b, value->fp32_native);
-
-        /* D3D12 is a bit messed up and it's unclear if it should be RTZ or RTE since D3D11.3 and LLVM don't agree.
-         * AMD native emits RTZ while NV emits RTE. */
-        ok(value->fp16_native == quant_fp16(a) + quant_fp16(b) ||
-            value->fp16_native == quant_fp16_rtz(a) + quant_fp16_rtz(b),
-            "FP16 native value %u: Expected %.8g (RTE) or %.8g (RTZ), got %.8g\n", i,
-            quant_fp16(a) + quant_fp16(b),
-            quant_fp16_rtz(a) + quant_fp16_rtz(b),
-            value->fp16_native);
-
-        ok(value->fp32_legacy_precise == quant_fp16(a) + quant_fp16(b) ||
-            value->fp32_legacy_precise == quant_fp16_rtz(a) + quant_fp16_rtz(b),
-            "FP16 legacy precise value %u: Expected %.8g (RTE, *shrug*) or %.8g (RTZ, ideal), got %.8g\n", i,
-            quant_fp16(a) + quant_fp16(b),
-            quant_fp16_rtz(a) + quant_fp16_rtz(b),
-            value->fp32_legacy_precise);
-
-        ok(value->fp32_legacy_fast == quant_fp16(a) + quant_fp16(b) ||
-        value->fp32_legacy_fast == quant_fp16_rtz(a) + quant_fp16_rtz(b) ||
-            value->fp32_legacy_fast == a + b,
-            "FP16 legacy fast value %u: Expected %.8g (RTE, *shrug*), or %.8g (RTZ, ideal) or %.8g (dubious), got %.8g\n", i,
-            quant_fp16(a) + quant_fp16(b),
-            quant_fp16_rtz(a) + quant_fp16_rtz(b),
-            a + b, value->fp32_legacy_fast);
-    }
-
-    release_resource_readback(&rb);
-    ID3D12Resource_Release(input);
-    ID3D12Resource_Release(output);
-    destroy_test_context(&context);
-}
-
-void test_sm69_fp16_isspecial(void)
-{
-    D3D12_FEATURE_DATA_SHADER_MODEL sm;
-    D3D12_ROOT_SIGNATURE_DESC rs_desc;
-    D3D12_ROOT_PARAMETER rs_param[2];
-    struct test_context context;
-    struct resource_readback rb;
-    ID3D12Resource *output;
-    ID3D12Resource *input;
-    unsigned int i;
-
-#include "shaders/sm_advanced/headers/cs_isspecial_fp16.h"
-
-    uint16_t inputs[64 * 1024];
-
-    if (!init_compute_test_context(&context))
-        return;
-
-    sm.HighestShaderModel = D3D_SHADER_MODEL_6_9;
-    if (FAILED(ID3D12Device_CheckFeatureSupport(context.device, D3D12_FEATURE_SHADER_MODEL, &sm, sizeof(sm))) ||
-            sm.HighestShaderModel < D3D_SHADER_MODEL_6_9)
-    {
-        skip("SM 6.9 not supported, skipping.\n");
-        destroy_test_context(&context);
-        return;
-    }
-
-    memset(&rs_desc, 0, sizeof(rs_desc));
-    memset(rs_param, 0, sizeof(rs_param));
-    rs_desc.pParameters = rs_param;
-    rs_desc.NumParameters = ARRAY_SIZE(rs_param);
-    rs_param[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    rs_param[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-    rs_param[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    rs_param[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-
-    create_root_signature(context.device, &rs_desc, &context.root_signature);
-    context.pipeline_state = create_compute_pipeline_state(context.device, context.root_signature, cs_isspecial_fp16_dxil);
-
-    for (i = 0; i < 64 * 1024; i++)
-        inputs[i] = i;
-
-    input = create_upload_buffer(context.device, sizeof(inputs), inputs);
-    output = create_default_buffer(context.device, 12 * 64 * 1024, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
-    ID3D12GraphicsCommandList_SetComputeRootSignature(context.list, context.root_signature);
-    ID3D12GraphicsCommandList_SetPipelineState(context.list, context.pipeline_state);
-    ID3D12GraphicsCommandList_SetComputeRootUnorderedAccessView(context.list, 0, ID3D12Resource_GetGPUVirtualAddress(output));
-    ID3D12GraphicsCommandList_SetComputeRootShaderResourceView(context.list, 1, ID3D12Resource_GetGPUVirtualAddress(input));
-    ID3D12GraphicsCommandList_Dispatch(context.list, 64 * 1024 / 256, 1, 1);
-    transition_resource_state(context.list, output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    get_buffer_readback_with_command_list(output, DXGI_FORMAT_UNKNOWN, &rb, context.queue, context.list);
-
-#define fp16_isinf(v) (((v) & 0x7fff) == 0x7c00)
-#define fp16_isnan(v) (((v) & 0x7fff) > 0x7c00)
-#define fp16_isnormal(v) (!fp16_isinf(v) && !fp16_isnan(v) && ((v) & 0x7fff) >= (1 << 10))
-
-    for (i = 0; i < 64 * 1024; i += 4)
-    {
-        struct uvec4 expected_infs, expected_nans, expected_normals;
-        const struct uvec4 *infs, *nans, *normals;
-        infs = get_readback_uvec4(&rb, (i / 4) * 3 + 0, 0);
-        nans = get_readback_uvec4(&rb, (i / 4) * 3 + 1, 0);
-        normals = get_readback_uvec4(&rb, (i / 4) * 3 + 2, 0);
-
-        expected_infs.x = fp16_isinf(i + 0);
-        expected_infs.y = fp16_isinf(i + 1);
-        expected_infs.z = fp16_isinf(i + 2);
-        expected_infs.w = fp16_isinf(i + 3);
-
-        expected_nans.x = fp16_isnan(i + 0);
-        expected_nans.y = fp16_isnan(i + 1);
-        expected_nans.z = fp16_isnan(i + 2);
-        expected_nans.w = fp16_isnan(i + 3);
-
-        expected_normals.x = fp16_isnormal(i + 0);
-        expected_normals.y = fp16_isnormal(i + 1);
-        expected_normals.z = fp16_isnormal(i + 2);
-        expected_normals.w = fp16_isnormal(i + 3);
-
-        ok(compare_uvec4(&expected_infs, infs), "Failed inf checks for [#%x, #%x)\n", i, i + 4);
-        ok(compare_uvec4(&expected_nans, nans), "Failed nan checks for [#%x, #%x)\n", i, i + 4);
-        ok(compare_uvec4(&expected_normals, normals), "Failed normal checks for [#%x, #%x)\n", i, i + 4);
-    }
-
-    release_resource_readback(&rb);
-    ID3D12Resource_Release(input);
-    ID3D12Resource_Release(output);
-    destroy_test_context(&context);
-}
-
-void test_sm69_long_vector_storage(void)
-{
-    D3D12_FEATURE_DATA_SHADER_MODEL sm;
-    D3D12_ROOT_SIGNATURE_DESC rs_desc;
-    D3D12_ROOT_PARAMETER rs_param[3];
-    D3D12_DESCRIPTOR_RANGE rs_range;
-    struct test_context context;
-    struct resource_readback rb;
-    ID3D12DescriptorHeap *heap;
-    ID3D12Resource *output;
-    ID3D12Resource *input;
-    unsigned int i;
-
-#include "shaders/sm_advanced/headers/cs_long_vector_storage.h"
-
-    float input_data[1024];
-
-    if (!init_compute_test_context(&context))
-        return;
-
-    sm.HighestShaderModel = D3D_SHADER_MODEL_6_9;
-    if (FAILED(ID3D12Device_CheckFeatureSupport(context.device, D3D12_FEATURE_SHADER_MODEL, &sm, sizeof(sm))) ||
-        sm.HighestShaderModel < D3D_SHADER_MODEL_6_9)
-    {
-        skip("SM 6.9 not supported, skipping.\n");
-        destroy_test_context(&context);
-        return;
-    }
-
-    memset(&rs_desc, 0, sizeof(rs_desc));
-    memset(rs_param, 0, sizeof(rs_param));
-    memset(&rs_range, 0, sizeof(rs_range));
-    rs_desc.pParameters = rs_param;
-    rs_desc.NumParameters = ARRAY_SIZE(rs_param);
-    rs_param[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    rs_param[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-    rs_param[0].Descriptor.ShaderRegister = 2;
-    rs_param[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    rs_param[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-    rs_param[1].Descriptor.ShaderRegister = 3;
-    rs_param[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    rs_param[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    rs_param[2].DescriptorTable.NumDescriptorRanges = 1;
-    rs_param[2].DescriptorTable.pDescriptorRanges = &rs_range;
-
-    rs_range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-    rs_range.BaseShaderRegister = 0;
-    rs_range.NumDescriptors = 2;
-
-    create_root_signature(context.device, &rs_desc, &context.root_signature);
-    context.pipeline_state = create_compute_pipeline_state(context.device, context.root_signature, cs_long_vector_storage_dxil);
-
-    heap = create_gpu_descriptor_heap(context.device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 2);
-
-    for (i = 0; i < 1024; i++)
-        input_data[i] = 1.0f + (float)i;
-
-    input = create_upload_buffer(context.device, sizeof(input_data), input_data);
-    output = create_default_buffer(context.device, sizeof(input_data), D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
-
-    {
-        D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc;
-        memset(&uav_desc, 0, sizeof(uav_desc));
-        uav_desc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-        uav_desc.Buffer.FirstElement = 0;
-        uav_desc.Buffer.NumElements = 4;
-        uav_desc.Buffer.StructureByteStride = 17 * sizeof(float);
-        ID3D12Device_CreateUnorderedAccessView(context.device, output, NULL, &uav_desc, get_cpu_descriptor_handle(&context, heap, 0));
-
-        uav_desc.Buffer.FirstElement = 1 * 1024 / sizeof(uint32_t);
-        uav_desc.Buffer.NumElements = 17 * 4;
-        uav_desc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
-        uav_desc.Buffer.StructureByteStride = 0;
-        uav_desc.Format = DXGI_FORMAT_R32_TYPELESS;
-        ID3D12Device_CreateUnorderedAccessView(context.device, output, NULL, &uav_desc, get_cpu_descriptor_handle(&context, heap, 1));
-    }
-
-    ID3D12GraphicsCommandList_CopyResource(context.list, output, input);
-    transition_resource_state(context.list, output, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    ID3D12GraphicsCommandList_SetDescriptorHeaps(context.list, 1, &heap);
-    ID3D12GraphicsCommandList_SetComputeRootSignature(context.list, context.root_signature);
-    ID3D12GraphicsCommandList_SetPipelineState(context.list, context.pipeline_state);
-    ID3D12GraphicsCommandList_SetComputeRootUnorderedAccessView(context.list, 0, ID3D12Resource_GetGPUVirtualAddress(output) + 2 * 1024);
-    ID3D12GraphicsCommandList_SetComputeRootUnorderedAccessView(context.list, 1, ID3D12Resource_GetGPUVirtualAddress(output) + 3 * 1024);
-    ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(context.list, 2, get_gpu_descriptor_handle(&context, heap, 0));
-    ID3D12GraphicsCommandList_Dispatch(context.list, 1, 1, 1);
-    transition_resource_state(context.list, output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    get_buffer_readback_with_command_list(output, DXGI_FORMAT_UNKNOWN, &rb, context.queue, context.list);
-
-    /* Validate first structure buffer output. */
-    {
-        uint32_t local_index, i;
-        float expected[4][17];
-
-        /* Load */
-        for (local_index = 0; local_index < ARRAY_SIZE(expected); local_index++)
-            for (i = 0; i < ARRAY_SIZE(expected[local_index]); i++)
-                expected[local_index][i] = 1.0f + 17.0f * (float)local_index + (float)i;
-
-        for (local_index = 0; local_index < 4; local_index++)
-        {
-            expected[local_index][13] = expected[local_index][2];
-        }
-
-        for (local_index = 0; local_index < 4; local_index++)
-        {
-            expected[local_index][12 + local_index] = expected[local_index][12 + (local_index ^ 1)] + 1.0f;
-            for (i = 0; i < 6; i++)
-                expected[local_index][6 * (local_index & 1) + i] = expected[local_index][6 * ((local_index & 1) ^ 1) + i];
-        }
-
-        for (local_index = 0; local_index < 4; local_index++)
-        {
-            expected[local_index][12 + local_index] = expected[local_index][12 + (local_index ^ 1)] + 4.0f;
-            for (i = 0; i < 6; i++)
-                expected[local_index][6 * (local_index & 1) + i] = expected[local_index][6 * ((local_index & 1) ^ 1) + i];
-        }
-
-        for (local_index = 0; local_index < 4; local_index++)
-        {
-            for (i = 0; i < 17; i++)
-            {
-                float v = get_readback_float(&rb, 17 * local_index + i, 0);
-                ok(v == expected[local_index][i], "Value [%u][%u]: expected %f, got %f\n", local_index, i, expected[local_index][i], v);
-            }
-        }
-    }
-
-    /* Validate the other buffers. */
-    {
-        uint32_t local_index, i, j;
-
-        for (j = 256; j < 1024; j += 256)
-        {
-            for (local_index = 0; local_index < 4; local_index++)
-            {
-                for (i = 0; i < 17; i++)
-                {
-                    float v = get_readback_float(&rb, j + 17 * local_index + i, 0);
-                    float expected;
-
-                    expected = 1.0f + j + 17.0f * ((local_index) ^ 1) + i;
-                    ok(v == expected, "Value [%u][%u]: expected %f, got %f\n", local_index, i, expected, v);
-                }
-            }
-        }
-    }
-
-    ID3D12DescriptorHeap_Release(heap);
-    release_resource_readback(&rb);
-    ID3D12Resource_Release(input);
-    ID3D12Resource_Release(output);
-    destroy_test_context(&context);
-}
-
-static float frac_helper(float v)
-{
-    return v - floorf(v);
-}
-
-static float rsqrt_helper(float v)
-{
-    return 1.0f / sqrtf(v);
-}
-
-static float degrees_helper(float v)
-{
-    return v * (180.0f / 3.1415628f);
-}
-
-static float radians_helper(float v)
-{
-    return v * (3.1415628f / 180.0f);
-}
-
-static float rcp_helper(float v)
-{
-    return 1.0f / v;
-}
-
-static float sign_helper(float v)
-{
-    if (v > 0.0f)
-        return 1.0f;
-    else if (v < 0.0f)
-        return -1.0f;
-    else
-        return 0.0f;
-}
-
-static float modf_helper(float a, float b)
-{
-    float r;
-    modff(a, &r);
-    a -= r;
-    return a;
-}
-
-static float reverse_helper(float v)
-{
-    union
-    {
-        float f32;
-        uint32_t u32;
-    } u;
-    uint32_t reversed = 0, i;
-
-    u.u32 = (uint32_t)v;
-
-    for (i = 0; i < 32; i++)
-        reversed |= ((u.u32 >> i) & 1) << (31 - i);
-
-    u.u32 = reversed;
-    return u.f32;
-}
-
-static float countbits_helper(float v)
-{
-    union
-    {
-        float f32;
-        uint32_t u32;
-    } u;
-    uint32_t count = 0, i;
-
-    u.u32 = (uint32_t)v;
-
-    for (i = 0; i < 32; i++)
-        count += (u.u32 >> i) & 1;
-
-    u.u32 = count;
-    return u.f32;
-}
-
-static float firstbithigh_helper(float v)
-{
-    union
-    {
-        float f32;
-        uint32_t u32;
-    } u;
-    int i;
-
-    u.u32 = (uint32_t)v;
-
-    for (i = 31; i >= 0; i--)
-    {
-        if ((u.u32 >> i) & 1)
-        {
-            u.u32 = i;
-            return u.f32;
-        }
-    }
-
-    u.u32 = UINT32_MAX;
-    return u.f32;
-}
-
-static float firstbitlow_helper(float v)
-{
-    union
-    {
-        float f32;
-        uint32_t u32;
-    } u;
-    int i;
-
-    u.u32 = (uint32_t)v;
-
-    for (i = 0; i <= 31; i++)
-    {
-        if ((u.u32 >> i) & 1)
-        {
-            u.u32 = i;
-            return u.f32;
-        }
-    }
-
-    u.u32 = UINT32_MAX;
-    return u.f32;
-}
-
-static float f16tof32_helper(float v)
-{
-    /* Cast to integer, then f16tof32, just rescale the denorm. Minimum hack for test purposes. */
-    return ldexpf(v, -24);
-}
-
-static float f32tof16_helper(float v)
-{
-    uint16_t fp16 = float_to_half(v);
-    union
-    {
-        float f32;
-        uint32_t u32;
-    } u;
-
-    u.u32 = fp16;
-    return u.f32;
-}
-
-void test_sm69_long_vector_intrinsics(void)
-{
-    D3D12_FEATURE_DATA_SHADER_MODEL sm;
-    D3D12_ROOT_SIGNATURE_DESC rs_desc;
-    D3D12_ROOT_PARAMETER rs_param[2];
-    struct test_context context;
-    struct resource_readback rb;
-    ID3D12Resource *output;
-    ID3D12Resource *input;
-    unsigned int i;
-
-#include "shaders/sm_advanced/headers/cs_long_vector_intrinsics_float.h"
-
-#define TRANCENDENTAL_TEST(func) {{ 0.0f, -0.1f, 0.1f, -0.2f, 0.2f, -0.3f, 0.3f, 0.5f }, {0}, {0}, \
-    { func(0.0f), func(-0.1f), func(0.1f), func(-0.2f), func(0.2f), func(-0.3f), func(0.3f), func(0.5f) }, 256}
-#define POS_NUMBER_TEST(func, ulp) {{ 0.01f, 0.51f, 1.01f, 1.51f, 2.01f, 2.51f, 3.01f, 3.51f }, {0}, {0}, \
-    { func(0.01f), func(0.51f), func(1.01f), func(1.51f), func(2.01f), func(2.51f), func(3.01f), func(3.51f) }, ulp}
-#define POS_NUMBER_TEST_INEXACT(func) POS_NUMBER_TEST(func, 256)
-#define POS_NUMBER_TEST_EXACT(func) POS_NUMBER_TEST(func, 0)
-#define TRANCENDENTAL_TEST2(func) { \
-    { 0.1f, 0.2f, 0.3f, 0.4f, -0.1f, -0.2f, -0.3f, -0.4f }, \
-    { 0.2f, -0.2f, 0.3f, -0.3f, 1.4f, -0.4f, 1.5f, -0.5f }, \
-    {0}, { func(0.1f, 0.2f), func(0.2f, -0.2f), func(0.3f, 0.3f), func(0.4f, -0.3f), \
-           func(-0.1f, 1.4f), func(-0.2f, -0.4f), func(-0.3f, 1.5f), func(-0.4f, -0.5f) }, 256}
-
-#define BITMANIP_TEST(func) {{ 0, 1, 2, 3, 4, 5, 6, 7 }, {0}, {0}, \
-    { func(0), func(1), func(2), func(3), func(4), func(5), func(6), func(7) }, 0, true}
-
-    const struct
-    {
-        float input0[8];
-        float input1[8];
-        float input2[8];
-        float reference[8];
-        int ulp;
-        bool bitexact;
-    } tests[] = {
-        {{ 1, -1, 2, -2, 3, -3, 0, 0 }, {0}, {0}, { 1, 1, 2, 2, 3, 3, 0, 0 }, 0, }, /* abs */
-        {{ -1, 0, 1, 2, INFINITY, -INFINITY, NAN }, {0}, {0}, { 0, 0, 1, 1, 1, 0 }, }, /* saturate */
-        {{ INFINITY, -INFINITY, NAN, 0 }, {0}, {0}, { 0, 0, 1 }, 0 }, /* isnan */
-        {{ INFINITY, -INFINITY, NAN, 0 }, {0}, {0}, { 1, 1, 0 }, 0 }, /* isinf */
-        {{ INFINITY, -INFINITY, NAN, 0 }, {0}, {0}, { 0, 0, 0, 1, 1, 1, 1, 1 }, 0 }, /* isfinite */
-        {{ INFINITY, -INFINITY, NAN, 0, 1e-20 }, {0}, {0}, { 0, 0, 0, 0, 1, 0, 0, 0 }, 0 }, /* isnormal */
-        TRANCENDENTAL_TEST(cosf), TRANCENDENTAL_TEST(sinf), TRANCENDENTAL_TEST(tanf),
-        TRANCENDENTAL_TEST(acosf), TRANCENDENTAL_TEST(asinf), TRANCENDENTAL_TEST(atanf),
-        TRANCENDENTAL_TEST(coshf), TRANCENDENTAL_TEST(sinhf), TRANCENDENTAL_TEST(tanhf),
-        TRANCENDENTAL_TEST(exp2f), TRANCENDENTAL_TEST(frac_helper), POS_NUMBER_TEST_INEXACT(log2f),
-        POS_NUMBER_TEST_INEXACT(sqrtf), POS_NUMBER_TEST_INEXACT(rsqrt_helper),
-        POS_NUMBER_TEST_EXACT(roundf), POS_NUMBER_TEST_EXACT(truncf), POS_NUMBER_TEST_EXACT(ceilf), POS_NUMBER_TEST_EXACT(floorf),
-        {{ 1, 2, 3, 4, 5, 6, 7, 8}, { -1, -2, -3, -4, NAN, -INFINITY, NAN, INFINITY }, {0}, { 1, 2, 3, 4, 5, 6, 7, INFINITY}, 0}, /* max */
-        {{ 1, 2, 3, 4, 5, 6, 7, 8}, { -1, -2, -3, -4, NAN, -INFINITY, NAN, INFINITY }, {0}, { -1, -2, -3, -4, 5, -INFINITY, 7, 8}, 0}, /* min */
-        {{ 1, 2, 3, 4, 5, 6, 7, 8}, {9, 10, 11, 12, 13, 14, 15, 16}, {-1, -2, -3, -4, -5, -6, -7, -8}, {8, 18, 30, 44, 60, 78, 98, 120}, 0}, /* mad */
-        {{ 1, 2, 3, 4, 5, 6, 7, 8}, {9, 10, 11, 12, 13, 14, 15, 16}, {-1, -2, -3, -4, -5, -6, -7, -8}, {8, 18, 30, 44, 60, 78, 98, 120}, 0}, /* fma */
-        /* These four tests form a quad group. */
-        {{ 1, 2, 3, 4, 5, 6, 7, 8}, {0}, {0}, {-2, -4, -6, -8, -10, -12, -14, -16}}, /* ddx_coarse */
-        {{ -1, -2, -3, -4, -5, -6, -7, -8}, {0}, {0}, {9, 9, 9, 9, 9, 9, 9, 9}}, /* ddy_coarse */
-        {{ 10, 11, 12, 13, 14, 15, 16, 17}, {0}, {0}, {-30, -32, -34, -36, -38, -40, -42, -44}}, /* ddx_fine */
-        {{ -20, -21, -22, -23, -24, -25, -26, -27}, {0}, {0}, {-19, -19, -19, -19, -19, -19, -19, -19}}, /* ddy_fine */
-        TRANCENDENTAL_TEST2(atan2f),
-        TRANCENDENTAL_TEST(degrees_helper),
-        TRANCENDENTAL_TEST(radians_helper),
-        {{ NAN, 1, 2, 3, 4, -INFINITY, INFINITY, 7 }, { 1, 1, 1, 1, 1, 1, 1, 1 }, { 2, 2, 2, 2, 2, 2, 2, 2}, { 1, 1, 2, 2, 2, 1, 2, 2 }, 0}, /* clamp */
-        TRANCENDENTAL_TEST2(fmodf),
-        {{ 1, 2, 3, 4, 5, 6, 7, 8}, {2, 3, 4, 5, 6, 7, 8, 9}, { 0.1f, 0.1f, 0.2f, 0.2f, 0.3f, 0.3f, 0.4f, 0.4f}, { 1.1f, 2.1f, 3.2f, 4.2f, 5.3f, 6.3f, 7.4f, 8.4f}, 4}, /* lerp */
-        TRANCENDENTAL_TEST2(powf),
-        TRANCENDENTAL_TEST(rcp_helper),
-        TRANCENDENTAL_TEST(sign_helper),
-        {{ 1, 2, 3, 4, 5, 6, 7, 8}, {2, 3, 4, 5, 6, 7, 8, 9}, { 1.5f, 2.5f, 3.5f, 4.5f, 5.5f, 6.5f, 7, 9}, { 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0, 1}, 16}, /* smoothstep */
-        {{ 0, 1, 2, 3, 4, 5, 6, 7}, {3.5f, 3.5f, 3.5f, 3.5f, 3.5f, 3.5f, 3.5f, 3.5f}, {0}, { 1, 1, 1, 1, 0, 0, 0, 0 }}, /* step */
-        TRANCENDENTAL_TEST2(modf_helper),
-        {{ 1, 2, 3, 4, 5, 6, 7, 8}, {1, 1, 1, 1, 1, 1, 1, 1}, {2, 2, 2, 2, 2, 2, 2, 2}, { 36, 72, 16 }}, /* dot */
-        BITMANIP_TEST(reverse_helper), BITMANIP_TEST(countbits_helper), BITMANIP_TEST(firstbithigh_helper), BITMANIP_TEST(firstbitlow_helper),
-        BITMANIP_TEST(f16tof32_helper), BITMANIP_TEST(f32tof16_helper),
-        {{ 1, 0, 1, 0, 1, 1, 1, 1}, {1, 1, 1, 1, 1, 0, 0, 0}, {0}, {1, 0, 1, 0, 1, 0, 0, 0}}, /* and */
-        {{ 1, 0, 1, 0, 1, 1, 0, 1}, {1, 1, 1, 1, 1, 0, 0, 0}, {0}, {1, 1, 1, 1, 1, 1, 0, 1}}, /* or */
-        {{ 0, 1, 0, 1, 0, 0, 1, 0}, {10, 11, 12, 13, 14, 15, 16, 17}, {-1, -2, -3, -4, -5, -6, -7, -8}, {-1, 11, -3, 13, -5, -6, 16, -8}}, /* select */
-        {{ 1, 1, 1, 1, 1, 1, 1, 1}, {1, 1, 1, 1, 1, 1, 1, 0}, {0, 0, 0, 0, 1, 1, 1, 1}, {1}}, /* all */
-        {{ 0 }, {0, 0, 0, 0, 0, 0, 0, 1}, {1}, {0, 1, 1}}, /* any */
-        /* These four tests form a quad group. */
-        {{ 1, 2, 3, 4, 5, 6, 7, 8}, {0}, {0}, {-1, -2, -3, -4, -5, -6, -7, -8}}, /* QuadReadLane(1) */
-        {{ -1, -2, -3, -4, -5, -6, -7, -8}, {0}, {0}, {1, 2, 3, 4, 5, 6, 7, 8}}, /* ReadAcrossX */
-        {{ 10, 11, 12, 13, 14, 15, 16, 17}, {0}, {0}, {1, 2, 3, 4, 5, 6, 7, 8}}, /* ReadAcrossY */
-        {{ -20, -21, -22, -23, -24, -25, -26, -27}, {0}, {0}, {1, 2, 3, 4, 5, 6, 7, 8}}, /* ReadAcrossDiag */
-    };
-#undef TRANCENDENTAL_TEST
-#undef POS_NUMBER_TEST_EXACT
-#undef POS_NUMBER_TEST_INEXACT
-#undef POS_NUMBER_TEST
-#undef BITMANIP_TEST
-
-    float input_buffer[64][24];
-
-    if (!init_compute_test_context(&context))
-        return;
-
-    sm.HighestShaderModel = D3D_SHADER_MODEL_6_9;
-    if (FAILED(ID3D12Device_CheckFeatureSupport(context.device, D3D12_FEATURE_SHADER_MODEL, &sm, sizeof(sm))) ||
-        sm.HighestShaderModel < D3D_SHADER_MODEL_6_9)
-    {
-        skip("SM 6.9 not supported, skipping.\n");
-        destroy_test_context(&context);
-        return;
-    }
-
-    memset(input_buffer, 0, sizeof(input_buffer));
-    for (i = 0; i < ARRAY_SIZE(tests); i++)
-    {
-        memcpy(&input_buffer[i][0], tests[i].input0, sizeof(tests[i].input0));
-        memcpy(&input_buffer[i][8], tests[i].input1, sizeof(tests[i].input1));
-        memcpy(&input_buffer[i][16], tests[i].input2, sizeof(tests[i].input2));
-    }
-
-    input = create_upload_buffer(context.device, sizeof(input_buffer), input_buffer);
-    output = create_default_buffer(context.device, 64 * sizeof(float) * 8,
-            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
-
-    memset(&rs_desc, 0, sizeof(rs_desc));
-    memset(rs_param, 0, sizeof(rs_param));
-    rs_desc.pParameters = rs_param;
-    rs_desc.NumParameters = ARRAY_SIZE(rs_param);
-    rs_param[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    rs_param[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-    rs_param[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    rs_param[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-
-    create_root_signature(context.device, &rs_desc, &context.root_signature);
-    context.pipeline_state = create_compute_pipeline_state(context.device, context.root_signature, cs_long_vector_intrinsics_float_dxil);
-
-    ID3D12GraphicsCommandList_SetComputeRootSignature(context.list, context.root_signature);
-    ID3D12GraphicsCommandList_SetPipelineState(context.list, context.pipeline_state);
-    ID3D12GraphicsCommandList_SetComputeRootUnorderedAccessView(context.list, 0, ID3D12Resource_GetGPUVirtualAddress(output));
-    ID3D12GraphicsCommandList_SetComputeRootShaderResourceView(context.list, 1, ID3D12Resource_GetGPUVirtualAddress(input));
-    ID3D12GraphicsCommandList_Dispatch(context.list, 1, 1, 1);
-    transition_resource_state(context.list, output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    get_buffer_readback_with_command_list(output, DXGI_FORMAT_UNKNOWN, &rb, context.queue, context.list);
-
-    for (i = 0; i < ARRAY_SIZE(tests); i++)
-    {
-        unsigned int j;
-
-        for (j = 0; j < 8; j++)
-        {
-            float value = get_readback_float(&rb, 8 * i + j, 0);
-            float expected = tests[i].reference[j];
-
-            if (tests[i].bitexact)
-            {
-                uint32_t uvalue;
-                uint32_t uexpected;
-                memcpy(&uvalue, &value, sizeof(value));
-                memcpy(&uexpected, &expected, sizeof(expected));
-                ok(uvalue == uexpected, "Test %u, value %u: Expected %u, got %u\n", i, j, uexpected, uvalue);
-            }
-            else
-            {
-                if (isnan(expected) && isnan(value))
-                {
-                    expected = NAN;
-                    value = NAN;
-                }
-
-                ok(compare_float(expected, value, tests[i].ulp),
-                    "Test %u, value %u: Expected %.6g, got %.6g\n",
-                    i, j, expected, value);
-            }
-        }
-    }
-
-    release_resource_readback(&rb);
-    ID3D12Resource_Release(input);
-    ID3D12Resource_Release(output);
-    destroy_test_context(&context);
-}
-
-void test_sm69_long_vector_waveops(void)
-{
-    D3D12_FEATURE_DATA_SHADER_MODEL sm;
-    D3D12_ROOT_SIGNATURE_DESC rs_desc;
-    D3D12_ROOT_PARAMETER rs_param[2];
-    struct test_context context;
-    struct resource_readback rb;
-    ID3D12Resource *output;
-    ID3D12Resource *input;
-    unsigned int i;
-
-#include "shaders/sm_advanced/headers/cs_long_vector_intrinsics_waveops.h"
-
-    const struct
-    {
-        uint32_t input0[8];
-        uint32_t input1[8];
-        uint32_t input2[8];
-        uint32_t reference[8];
-    } tests[] = {
-        {{ 1, 2, 3, 4, 5, 6, 7, 8 }, {(1u << 12) - 1}, {0, 1}, {1}}, /* WaveActiveBitAnd */
-        {{ 1, 0, 2, 3, 4, 5, 6, 7 }, {(1u << 12) - 1}, {0}, {1, 3, 3, 7, 7, 7, 7, 15}}, /* WaveActiveBitOr */
-        {{ 1, 2, 0, 0, 3, 4, 5, 6 }, {(1u << 12) - 1}, {0, 0, 1}, {0, 1, 3, 1, 5, 7, 6, 5}}, /* WaveActiveBitXor */
-        {{ 1, 2, 3, 4, 5, 6, 7, 8 }, {(1u << 12) - 1}, {0}, {1, 0, 0, 0, 32400, 51840, 94080, 0}}, /* WaveActiveProduct */
-        {{ 1, 1, 2, 2, 3, 3, 4, 4 }, {(1u << 12) - 1}, {0}, {18, 21, 27, 29, 39, 43, 48, 51}}, /* WaveActiveSum */
-        {{ 1, 1, 2, 2, 3, 3, 4, 4 }, {(1u << 12) - 1}, {0}, {1, 0, 0, 0, 1, 1, 1, 0}}, /* WaveActiveMin */
-        {{ 1, 2, 3, 3, 3, 4, 4, 4 }, {(1u << 12) - 1}, {0}, {1, 2, 3, 4, 5, 6, 7, 8}}, /* WaveActiveMax */
-        {{ 1, 1, 1, 1, 1, 1, 1, 1 }, {(1u << 12) - 1}, {0}, {7, 10, 15, 18, 26, 31, 37, 41}}, /* WavePrefixSum */
-        {{ 1, 1, 1, 1, 2, 1, 1, 1 }, {(1u << 12) - 1}, {0}, {1, 0, 0, 0, 8100, 25920, 94080, 172032}}, /* WavePrefixProduct */
-        {{ 1, 1, 1, 1, 1, 1, 1, 1 }, {(1u << 12) - 1}, {0}, {4095}}, /* WaveReadLaneAt */
-        {{ 1, 1, 1, 1, 1, 2, 1, 1 }, {(1u << 12) - 1}, {0}, {4095}}, /* WaveReadLaneFirst */
-        {{ 1, 1, 1, 1, 1, 1, 1, 1 }, {(1u << 12) - 1}, {0}, {65537, 256, 256, 65792, 65792, 65792, 65792, 65792}}, /* WaveActiveAllEqual */
-        {{ 1, 1, 1, 1, 1, 1, 1, 1 }, {0x3f << 12}, {0}, {121472, 0x3f << 12, ((1u << 18) - 1) & ~5}}, /* WaveMatch */
-        {{ 1, 1, 2, 1, 2, 1, 1, 1 }, {0x3f << 12}, {0}, {1, 1, 1, 1, 1, 1, 1, 1}}, /* WaveMultiPrefixBitAnd */
-        {{ 1, 1, 1, 1, 1, 1, 1, 1 }, {0x3f << 12}, {0}, {1, 1, 3, 1, 3, 1, 1, 1}}, /* WaveMultiPrefixBitOr */
-        {{ 1, 1, 1, 1, 1, 1, 1, 1 }, {0x3f << 12}, {0}, {1, 1, 2, 1, 2, 1, 1, 1}}, /* WaveMultiPrefixBitXor */
-        {{ 1, 1, 1, 1, 1, 1, 1, 1 }, {0x3f << 12}, {0}, {1, 1, 2, 1, 2, 1, 1, 1}}, /* WaveMultiPrefixProduct */
-        {{ 1, 1, 1, 1, 1, 1, 1, 0 }, {0x3f << 12}, {0}, {5, 5, 6, 5, 6, 5, 5, 5}}, /* WaveMultiPrefixSum */
-    };
-
-    uint32_t input_buffer[32][24];
-
-    if (!init_compute_test_context(&context))
-        return;
-
-    sm.HighestShaderModel = D3D_SHADER_MODEL_6_9;
-    if (FAILED(ID3D12Device_CheckFeatureSupport(context.device, D3D12_FEATURE_SHADER_MODEL, &sm, sizeof(sm))) ||
-        sm.HighestShaderModel < D3D_SHADER_MODEL_6_9)
-    {
-        skip("SM 6.9 not supported, skipping.\n");
-        destroy_test_context(&context);
-        return;
-    }
-
-    memset(input_buffer, 0, sizeof(input_buffer));
-    for (i = 0; i < ARRAY_SIZE(tests); i++)
-    {
-        memcpy(&input_buffer[i][0], tests[i].input0, sizeof(tests[i].input0));
-        memcpy(&input_buffer[i][8], tests[i].input1, sizeof(tests[i].input1));
-        memcpy(&input_buffer[i][16], tests[i].input2, sizeof(tests[i].input2));
-    }
-
-    input = create_upload_buffer(context.device, sizeof(input_buffer), input_buffer);
-    output = create_default_buffer(context.device, 64 * sizeof(float) * 8,
-        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
-
-    memset(&rs_desc, 0, sizeof(rs_desc));
-    memset(rs_param, 0, sizeof(rs_param));
-    rs_desc.pParameters = rs_param;
-    rs_desc.NumParameters = ARRAY_SIZE(rs_param);
-    rs_param[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    rs_param[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-    rs_param[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    rs_param[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-
-    create_root_signature(context.device, &rs_desc, &context.root_signature);
-    context.pipeline_state = create_compute_pipeline_state(context.device, context.root_signature, cs_long_vector_intrinsics_waveops_dxil);
-
-    ID3D12GraphicsCommandList_SetComputeRootSignature(context.list, context.root_signature);
-    ID3D12GraphicsCommandList_SetPipelineState(context.list, context.pipeline_state);
-    ID3D12GraphicsCommandList_SetComputeRootUnorderedAccessView(context.list, 0, ID3D12Resource_GetGPUVirtualAddress(output));
-    ID3D12GraphicsCommandList_SetComputeRootShaderResourceView(context.list, 1, ID3D12Resource_GetGPUVirtualAddress(input));
-    ID3D12GraphicsCommandList_Dispatch(context.list, 1, 1, 1);
-    transition_resource_state(context.list, output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    get_buffer_readback_with_command_list(output, DXGI_FORMAT_UNKNOWN, &rb, context.queue, context.list);
-
-    for (i = 0; i < ARRAY_SIZE(tests); i++)
-    {
-        unsigned int j;
-        bool is_bug;
-
-        for (j = 0; j < 8; j++)
-        {
-            uint32_t value = get_readback_uint(&rb, 8 * i + j, 0, 0);
-            uint32_t expected = tests[i].reference[j];
-
-            /* WaveMatch is broken. */
-            is_bug = is_amd_windows_device(context.device) && i == 12 && j < 3;
-
-            bug_if(is_bug) ok(value == expected, "Test %u, value %u: Expected %u, got %u\n",
-                i, j, expected, value);
-        }
-    }
-
-    release_resource_readback(&rb);
-    ID3D12Resource_Release(input);
-    ID3D12Resource_Release(output);
-    destroy_test_context(&context);
-}
-
-static void test_sm69_long_vector_load_store_inner(bool root_desc)
-{
-    static const uint32_t strides[] = { 10, 12, 14, 16, 32 };
-    D3D12_FEATURE_DATA_D3D12_OPTIONS22 options22;
-    D3D12_FEATURE_DATA_SHADER_MODEL sm;
-    D3D12_DESCRIPTOR_RANGE rs_range[2];
-    D3D12_ROOT_SIGNATURE_DESC rs_desc;
-    D3D12_ROOT_PARAMETER rs_param[12];
-    struct test_context context;
-    struct resource_readback rb;
-    ID3D12DescriptorHeap *heap;
-    ID3D12Resource *output;
-    ID3D12Resource *input;
-    unsigned int i, j;
-
-#include "shaders/sm_advanced/headers/cs_long_vector_load_store.h"
-
-    uint16_t input_buffer[1024];
-
-    if (!init_compute_test_context(&context))
-        return;
-
-    sm.HighestShaderModel = D3D_SHADER_MODEL_6_9;
-    if (FAILED(ID3D12Device_CheckFeatureSupport(context.device, D3D12_FEATURE_SHADER_MODEL, &sm, sizeof(sm))) ||
-        sm.HighestShaderModel < D3D_SHADER_MODEL_6_9)
-    {
-        skip("SM 6.9 not supported, skipping.\n");
-        destroy_test_context(&context);
-        return;
-    }
-
-    if (FAILED(ID3D12Device_CheckFeatureSupport(context.device, D3D12_FEATURE_D3D12_OPTIONS22, &options22, sizeof(options22))) ||
-        !options22.CreateByteOffsetViewsSupported)
-    {
-        skip("ByteOffset views not supported.\n");
-        destroy_test_context(&context);
-        return;
-    }
-
-    for (i = 0; i < ARRAY_SIZE(input_buffer); i++)
-        input_buffer[i] = float_to_half((float)i);
-
-    input = create_upload_buffer(context.device, sizeof(input_buffer), input_buffer);
-    output = create_default_buffer(context.device, 6 * sizeof(input_buffer),
-        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
-
-    memset(&rs_desc, 0, sizeof(rs_desc));
-    memset(rs_param, 0, sizeof(rs_param));
-    memset(rs_range, 0, sizeof(rs_range));
-    rs_desc.pParameters = rs_param;
-
-    if (root_desc)
-    {
-        rs_desc.NumParameters = ARRAY_SIZE(rs_param);
-
-        for (i = 0; i < 6; i++)
-        {
-            rs_param[0 + i].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-            rs_param[0 + i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-            rs_param[0 + i].Descriptor.ShaderRegister = i;
-            rs_param[6 + i].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-            rs_param[6 + i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-            rs_param[6 + i].Descriptor.ShaderRegister = i;
-        }
-    }
-    else
-    {
-        rs_desc.NumParameters = 1;
-        rs_param[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-        rs_param[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        rs_param[0].DescriptorTable.NumDescriptorRanges = ARRAY_SIZE(rs_range);
-        rs_param[0].DescriptorTable.pDescriptorRanges = rs_range;
-
-        rs_range[0].NumDescriptors = 6;
-        rs_range[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-        rs_range[0].OffsetInDescriptorsFromTableStart = 0;
-
-        rs_range[1].NumDescriptors = 6;
-        rs_range[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-        rs_range[1].OffsetInDescriptorsFromTableStart = 6;
-    }
-
-    create_root_signature(context.device, &rs_desc, &context.root_signature);
-    context.pipeline_state = create_compute_pipeline_state(context.device, context.root_signature, cs_long_vector_load_store_dxil);
-
-    heap = create_gpu_descriptor_heap(context.device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 12);
-
-    ID3D12GraphicsCommandList_SetDescriptorHeaps(context.list, 1, &heap);
-    ID3D12GraphicsCommandList_SetComputeRootSignature(context.list, context.root_signature);
-    ID3D12GraphicsCommandList_SetPipelineState(context.list, context.pipeline_state);
-
-    if (root_desc)
-    {
-        for (i = 0; i < 6; i++)
-        {
-            ID3D12GraphicsCommandList_SetComputeRootShaderResourceView(context.list, i, ID3D12Resource_GetGPUVirtualAddress(input));
-            ID3D12GraphicsCommandList_SetComputeRootUnorderedAccessView(context.list, 6 + i,
-                ID3D12Resource_GetGPUVirtualAddress(output) + i * sizeof(input_buffer));
-        }
-    }
-    else
-    {
-        D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc;
-        D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc;
-
-        memset(&uav_desc, 0, sizeof(uav_desc));
-        memset(&srv_desc, 0, sizeof(srv_desc));
-
-        srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER_BYTE_OFFSET;
-        uav_desc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER_BYTE_OFFSET;
-
-        for (i = 0; i < ARRAY_SIZE(strides); i++)
-        {
-            srv_desc.BufferByteOffset.Size = 4 * strides[i]; /* Expose robustness behavior */
-            uav_desc.BufferByteOffset.Size = 5 * strides[i]; /* Expose robustness behavior */
-            uav_desc.BufferByteOffset.Offset = sizeof(input_buffer) * i;
-            srv_desc.BufferByteOffset.StructureByteStride = strides[i];
-            uav_desc.BufferByteOffset.StructureByteStride = strides[i];
-            ID3D12Device_CreateShaderResourceView(context.device, input, &srv_desc, get_cpu_descriptor_handle(&context, heap, i));
-            ID3D12Device_CreateUnorderedAccessView(context.device, output, NULL, &uav_desc, get_cpu_descriptor_handle(&context, heap, 6 + i));
-        }
-
-        srv_desc.BufferByteOffset.StructureByteStride = 0;
-        uav_desc.BufferByteOffset.StructureByteStride = 0;
-        srv_desc.Format = DXGI_FORMAT_R32_TYPELESS;
-        uav_desc.Format = DXGI_FORMAT_R32_TYPELESS;
-        srv_desc.BufferByteOffset.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
-        uav_desc.BufferByteOffset.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
-        srv_desc.BufferByteOffset.Size = sizeof(input_buffer);
-        uav_desc.BufferByteOffset.Offset = sizeof(input_buffer) * 5;
-        uav_desc.BufferByteOffset.Size = sizeof(input_buffer);
-        ID3D12Device_CreateShaderResourceView(context.device, input, &srv_desc, get_cpu_descriptor_handle(&context, heap, 5));
-        ID3D12Device_CreateUnorderedAccessView(context.device, output, NULL, &uav_desc, get_cpu_descriptor_handle(&context, heap, 11));
-
-        ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(context.list, 0, ID3D12DescriptorHeap_GetGPUDescriptorHandleForHeapStart(heap));
-    }
-
-    ID3D12GraphicsCommandList_Dispatch(context.list, 1, 1, 1);
-    transition_resource_state(context.list, output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    get_buffer_readback_with_command_list(output, DXGI_FORMAT_UNKNOWN, &rb, context.queue, context.list);
-
-    /* f16vec{5, 6, 7, 8, 16} */
-    for (j = 0; j < ARRAY_SIZE(strides); j++)
-    {
-        unsigned int vecsize = strides[j] / 2;
-        unsigned int elem, component;
-
-        for (i = 0; i < vecsize * 8; i++)
-        {
-            bool is_bug = false;
-            float expected = i;
-            float value;
-
-            elem = i / vecsize;
-            component = i % vecsize;
-
-            /* Read robustness. */
-            if (elem >= 4 && !root_desc)
-            {
-                expected = 0.0f;
-                is_bug = is_nvidia_device(context.device);
-            }
-
-            expected += 1.0f + component;
-
-            /* Write robustness. */
-            if (elem >= 5 && !root_desc)
-                expected = 0.0f;
-
-            /* No threads wrote here. */
-            if (elem >= 6)
-            {
-                expected = 0.0f;
-                is_bug = false;
-            }
-
-            /* stride = 10, 14, read robustness is broken? :| */
-            if (is_nvidia_windows_device(context.device) && strides[j] % 4 && elem == 4 && !root_desc)
-                is_bug = true;
-
-            value = half_to_float(get_readback_uint16(&rb, sizeof(input_buffer) / 2 * j + i, 0));
-            bug_if(is_bug) ok(expected == value, "Structured: f16vec%u value %u: expected %f, got %f\n", strides[j] / 2, i, expected, value);
-        }
-    }
-
-    /* BAB variant */
-    for (j = 0; j < ARRAY_SIZE(strides); j++)
-    {
-        unsigned int vecsize = strides[j] / 2;
-        unsigned int elem, component, offset;
-
-        for (i = 0; i < vecsize * 6; i++)
-        {
-            float expected = i;
-            float value;
-
-            elem = i / vecsize;
-            component = i % vecsize;
-            expected += 1.0f + component;
-
-            offset = (elem + 8 * j) * strides[j] + 2 * component;
-
-            value = half_to_float(get_readback_uint16(&rb, (sizeof(input_buffer) * 5 + offset) / 2, 0));
-            ok(expected == value, "BAB: f16vec%u value %u: expected %f, got %f\n", strides[j] / 2, i, expected, value);
-        }
-    }
-
-    ID3D12DescriptorHeap_Release(heap);
-    release_resource_readback(&rb);
-    ID3D12Resource_Release(input);
-    ID3D12Resource_Release(output);
-    destroy_test_context(&context);
-}
-
-void test_sm69_long_vector_load_store_heap_desc(void)
-{
-    test_sm69_long_vector_load_store_inner(false);
-}
-
-void test_sm69_long_vector_load_store_root_desc(void)
-{
-    test_sm69_long_vector_load_store_inner(true);
 }

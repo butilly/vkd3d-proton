@@ -250,7 +250,7 @@ const struct vkd3d_unique_resource *vkd3d_va_map_deref(struct vkd3d_va_map *va_m
 void vkd3d_va_map_try_read_rtas(struct vkd3d_va_map *va_map,
         struct d3d12_device *device, VkDeviceAddress va,
         VkAccelerationStructureKHR *acceleration_structure,
-        enum vkd3d_rtas_kind *rtas_kind)
+        VkMicromapEXT *micromap)
 {
     const struct vkd3d_unique_resource *resource;
     struct vkd3d_view_map *view_map;
@@ -258,7 +258,7 @@ void vkd3d_va_map_try_read_rtas(struct vkd3d_va_map *va_map,
     struct vkd3d_view_key key;
 
     *acceleration_structure = VK_NULL_HANDLE;
-    *rtas_kind = VKD3D_RTAS_KIND_UNKNOWN;
+    *micromap = VK_NULL_HANDLE;
 
     resource = vkd3d_va_map_deref(va_map, va);
     if (!resource || !resource->va)
@@ -268,49 +268,39 @@ void vkd3d_va_map_try_read_rtas(struct vkd3d_va_map *va_map,
     if (!view_map)
         return;
 
-    key.view_type = VKD3D_VIEW_TYPE_ACCELERATION_STRUCTURE;
+    key.view_type = VKD3D_VIEW_TYPE_ACCELERATION_STRUCTURE_OR_OPACITY_MICROMAP;
     key.u.buffer.buffer = resource->vk_buffer;
     key.u.buffer.offset = va - resource->va;
     key.u.buffer.size = resource->size - key.u.buffer.offset;
     key.u.buffer.format = NULL;
-    key.u.buffer.usage = 0;
 
     view = vkd3d_view_map_get_view(view_map, device, &key);
     if (!view)
         return;
-
-    *acceleration_structure = view->vk_acceleration_structure;
-    *rtas_kind = (enum vkd3d_rtas_kind)
-        vkd3d_atomic_uint32_load_explicit(&view->info.buffer.rtas_kind, vkd3d_memory_order_relaxed);
+    
+    if (view->info.buffer.rtas_is_micromap)
+        *micromap = view->vk_micromap;
+    else
+        *acceleration_structure = view->vk_acceleration_structure;
 }
 
-const char *vkd3d_get_rtas_kind_string(enum vkd3d_rtas_kind rtas_kind)
+static void vkd3d_va_map_try_place_rtas(struct vkd3d_va_map *va_map,
+        struct d3d12_device *device, VkDeviceAddress va, bool rtas_is_omm,
+        VkAccelerationStructureKHR *acceleration_structure,
+        VkMicromapEXT *micromap)
 {
-    switch (rtas_kind)
-    {
-        case VKD3D_RTAS_KIND_UNKNOWN: return "Unknown";
-        case VKD3D_RTAS_KIND_TLAS: return "TLAS";
-        case VKD3D_RTAS_KIND_NON_TLAS: return "non-TLAS";
-        case VKD3D_RTAS_KIND_MUTATED: return "mutated";
-        default: return "**Invalid**";
-    }
-}
-
-VkAccelerationStructureKHR vkd3d_va_map_place_acceleration_structure(struct vkd3d_va_map *va_map,
-        struct d3d12_device *device,
-        VkDeviceAddress va,
-        enum vkd3d_rtas_kind rtas_kind)
-{
-    enum vkd3d_rtas_kind previous_rtas_kind, expected_rtas_kind, desired_rtas_kind;
     struct vkd3d_unique_resource *resource;
     struct vkd3d_view_map *old_view_map;
     struct vkd3d_view_map *view_map;
+    const struct vkd3d_view *view;
     struct vkd3d_view_key key;
-    struct vkd3d_view *view;
+
+    *acceleration_structure = VK_NULL_HANDLE;
+    *micromap = VK_NULL_HANDLE;
 
     resource = vkd3d_va_map_deref_mutable(va_map, va);
     if (!resource || !resource->va)
-        return VK_NULL_HANDLE;
+        return;
 
     view_map = vkd3d_atomic_ptr_load_explicit(&resource->view_map, vkd3d_memory_order_acquire);
     if (!view_map)
@@ -319,12 +309,12 @@ VkAccelerationStructureKHR vkd3d_va_map_place_acceleration_structure(struct vkd3
          * CAS in a pointer. */
         view_map = vkd3d_malloc(sizeof(*view_map));
         if (!view_map)
-            return VK_NULL_HANDLE;
+            return;
 
         if (FAILED(vkd3d_view_map_init(view_map)))
         {
             vkd3d_free(view_map);
-            return VK_NULL_HANDLE;
+            return;
         }
 
         /* Need to release in case other RTASes are placed at the same time, so they observe
@@ -339,52 +329,50 @@ VkAccelerationStructureKHR vkd3d_va_map_place_acceleration_structure(struct vkd3
         }
     }
 
-    key.view_type = VKD3D_VIEW_TYPE_ACCELERATION_STRUCTURE;
+    key.view_type = VKD3D_VIEW_TYPE_ACCELERATION_STRUCTURE_OR_OPACITY_MICROMAP;
     key.u.buffer.buffer = resource->vk_buffer;
     key.u.buffer.offset = va - resource->va;
     key.u.buffer.size = resource->size - key.u.buffer.offset;
     key.u.buffer.format = NULL;
-    key.u.buffer.usage = 0;
 
-    view = vkd3d_view_map_create_view2(view_map, device, &key, rtas_kind);
+    view = vkd3d_view_map_create_view2(view_map, device, &key, rtas_is_omm);
     if (!view)
-        return VK_NULL_HANDLE;
+        return;
+    
+    if (view->info.buffer.rtas_is_micromap)
+        *micromap = view->vk_micromap;
+    else
+        *acceleration_structure = view->vk_acceleration_structure;
+}
 
-    /* Atomic CAS loop maintaining the rtas_kind state machine:
-     *   UNKNOWN -> TLAS | NON_TLAS  (upgrade on first known place)
-     *   TLAS | NON_TLAS -> MUTATED  (collapse on cross-kind place)
-     *   MUTATED                     (sticky, terminal)
-     * place(UNKNOWN) is a no-op and never overwrites an established kind. */
-    previous_rtas_kind = (enum vkd3d_rtas_kind)
-            vkd3d_atomic_uint32_load_explicit(&view->info.buffer.rtas_kind, vkd3d_memory_order_acquire);
-    for (;;)
-    {
-        expected_rtas_kind = previous_rtas_kind;
-        desired_rtas_kind = rtas_kind == VKD3D_RTAS_KIND_UNKNOWN ? previous_rtas_kind : rtas_kind;
+VkAccelerationStructureKHR vkd3d_va_map_place_acceleration_structure(struct vkd3d_va_map *va_map,
+        struct d3d12_device *device,
+        VkDeviceAddress va)
+{
+    VkAccelerationStructureKHR acceleration_structure;
+    VkMicromapEXT micromap;
 
-        if (rtas_kind != previous_rtas_kind &&
-                previous_rtas_kind != VKD3D_RTAS_KIND_UNKNOWN &&
-                rtas_kind != VKD3D_RTAS_KIND_UNKNOWN)
-            desired_rtas_kind = VKD3D_RTAS_KIND_MUTATED;
+    vkd3d_va_map_try_place_rtas(va_map, device, va, false, &acceleration_structure, &micromap);
 
-        if (desired_rtas_kind == previous_rtas_kind)
-            break;
+    if (micromap)
+        FIXME("Attempted to place RTAS on VA #%"PRIx64" previously used by OMM.\n", va);
 
-        previous_rtas_kind = vkd3d_atomic_uint32_compare_exchange(&view->info.buffer.rtas_kind, expected_rtas_kind,
-                desired_rtas_kind, vkd3d_memory_order_release, vkd3d_memory_order_acquire);
-        if (previous_rtas_kind == expected_rtas_kind)
-        {
-            if (desired_rtas_kind == VKD3D_RTAS_KIND_MUTATED)
-            {
-                WARN("Attempted to place %s on VA #%"PRIx64" previously used by %s, marking mutated.\n",
-                        vkd3d_get_rtas_kind_string(rtas_kind), va,
-                        vkd3d_get_rtas_kind_string(previous_rtas_kind));
-            }
-            break;
-        }
-    }
+    return acceleration_structure;
+}
 
-    return view->vk_acceleration_structure;
+VkMicromapEXT vkd3d_va_map_place_opacity_micromap(struct vkd3d_va_map *va_map,
+        struct d3d12_device *device,
+        VkDeviceAddress va)
+{
+    VkAccelerationStructureKHR acceleration_structure;
+    VkMicromapEXT micromap;
+
+    vkd3d_va_map_try_place_rtas(va_map, device, va, true, &acceleration_structure, &micromap);
+
+    if (acceleration_structure)
+        FIXME("Attempted to place OMM on VA #%"PRIx64" previously used by RTAS.\n", va);
+
+    return micromap;
 }
 
 void vkd3d_va_map_init(struct vkd3d_va_map *va_map)
@@ -398,93 +386,5 @@ void vkd3d_va_map_cleanup(struct vkd3d_va_map *va_map)
     vkd3d_va_map_cleanup_tree(&va_map->va_tree);
     pthread_mutex_destroy(&va_map->mutex);
     vkd3d_free(va_map->small_entries);
-    vkd3d_free(va_map->resource_mappings);
-    vkd3d_free(va_map->sampler_mappings);
 }
 
-void vkd3d_va_map_insert_descriptor_heap(struct vkd3d_va_map *va_map,
-        uintptr_t va, size_t range, D3D12_DESCRIPTOR_HEAP_TYPE type)
-{
-    struct vkd3d_descriptor_heap_mapping *mapping;
-    pthread_mutex_lock(&va_map->mutex);
-
-    if (type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV)
-    {
-        vkd3d_array_reserve((void **)&va_map->resource_mappings, &va_map->resource_mappings_size,
-            va_map->resource_mappings_count + 1, sizeof(*va_map->resource_mappings));
-        mapping = &va_map->resource_mappings[va_map->resource_mappings_count++];
-    }
-    else
-    {
-        vkd3d_array_reserve((void **)&va_map->sampler_mappings, &va_map->sampler_mappings_size,
-            va_map->sampler_mappings_count + 1, sizeof(*va_map->sampler_mappings));
-        mapping = &va_map->sampler_mappings[va_map->sampler_mappings_count++];
-    }
-
-    mapping->va = va;
-    mapping->range = range;
-
-    pthread_mutex_unlock(&va_map->mutex);
-}
-
-void vkd3d_va_map_remove_descriptor_heap(struct vkd3d_va_map *va_map,
-        uintptr_t va, D3D12_DESCRIPTOR_HEAP_TYPE type)
-{
-    size_t i;
-
-    pthread_mutex_lock(&va_map->mutex);
-
-    if (type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV)
-    {
-        for (i = 0; i < va_map->resource_mappings_count; i++)
-        {
-            if (va_map->resource_mappings[i].va == va)
-            {
-                va_map->resource_mappings[i] = va_map->resource_mappings[--va_map->resource_mappings_count];
-                break;
-            }
-        }
-    }
-    else
-    {
-        for (i = 0; i < va_map->sampler_mappings_count; i++)
-        {
-            if (va_map->sampler_mappings[i].va == va)
-            {
-                va_map->sampler_mappings[i] = va_map->sampler_mappings[--va_map->sampler_mappings_count];
-                break;
-            }
-        }
-    }
-
-    pthread_mutex_unlock(&va_map->mutex);
-}
-
-size_t vkd3d_va_map_query_descriptor_heap_offset(struct vkd3d_va_map *va_map,
-        uintptr_t va, D3D12_DESCRIPTOR_HEAP_TYPE type)
-{
-    const struct vkd3d_descriptor_heap_mapping *mappings = type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV
-            ? va_map->resource_mappings : va_map->sampler_mappings;
-    size_t ret = SIZE_MAX;
-    size_t count;
-    size_t i;
-
-    pthread_mutex_lock(&va_map->mutex);
-
-    count = type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV ?
-            va_map->resource_mappings_count : va_map->sampler_mappings_count;
-
-    /* We don't expect there to be that many shader visible descriptor heaps live on the device,
-     * so a simple linear search is perfectly fine. */
-    for (i = 0; i < count; i++)
-    {
-        if (va >= mappings[i].va && va < mappings[i].va + mappings[i].range)
-        {
-            ret = va - mappings[i].va;
-            break;
-        }
-    }
-
-    pthread_mutex_unlock(&va_map->mutex);
-    return ret;
-}
