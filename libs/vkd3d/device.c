@@ -10741,6 +10741,16 @@ bool d3d12_device_validate_shader_meta(struct d3d12_device *device, const struct
         !d3d12_device_supports_16bit_shader_ops(device, true))
     {
         WARN("Attempting to use 16-bit operations in shader %016"PRIx64", but this is not supported.\n", meta->hash);
+        WARN("16-bit validation capabilities for shader %016"PRIx64": shaderFloat16=%u, shaderInt16=%u, "
+                "storageBuffer16BitAccess=%u, shaderDenormPreserveFloat16=%u, denormBehaviorIndependence=%u, "
+                "minStorageBufferOffsetAlignment=%"PRIu64", allow_non_compliant_denorm=1.\n",
+                meta->hash,
+                device->device_info.vulkan_1_2_features.shaderFloat16,
+                device->device_info.features2.features.shaderInt16,
+                device->device_info.vulkan_1_1_features.storageBuffer16BitAccess,
+                device->device_info.vulkan_1_2_properties.shaderDenormPreserveFloat16,
+                device->device_info.vulkan_1_2_properties.denormBehaviorIndependence,
+                device->device_info.properties2.properties.limits.minStorageBufferOffsetAlignment);
         return false;
     }
 
