@@ -19,7 +19,6 @@
 
 #define VKD3D_DBG_CHANNEL VKD3D_DBG_CHANNEL_API
 #include "d3d12_crosstest.h"
-#include "vkd3d_command_queue_vkd3d_ext.h"
 
 void test_vkd3d_dxvk_cmdbuf_interop(void)
 {
@@ -67,7 +66,7 @@ void test_vkd3d_dxvk_cmdbuf_interop(void)
         &vkPhysicalDevice,
         &vkDevice)))
     {
-        ok(hr == S_OK, "ID3D12DXVKInteropDevice1_GetVulkanHandles failed %#x.\n", (int)hr);
+        ok(hr == S_OK, "ID3D12DXVKInteropDevice1_GetVulkanHandles failed %#x.\n", hr);
         destroy_test_context(&context);
         return;
     }
@@ -85,7 +84,7 @@ void test_vkd3d_dxvk_cmdbuf_interop(void)
         VK_QUEUE_FAMILY_IGNORED,
         &allocator)))
     {
-        ok(hr == S_OK, "ID3D12DXVKInteropDevice1_CreateInteropCommandAllocator failed %#x.\n", (int)hr);
+        ok(hr == S_OK, "ID3D12DXVKInteropDevice1_CreateInteropCommandAllocator failed %#x.\n", hr);
         destroy_test_context(&context);
         return;
     }
@@ -93,7 +92,7 @@ void test_vkd3d_dxvk_cmdbuf_interop(void)
     if (FAILED(hr = ID3D12Device_CreateCommandList(device, 0, D3D12_COMMAND_LIST_TYPE_DIRECT,
             allocator, NULL, &IID_ID3D12GraphicsCommandList, (void **)&command_list)))
     {
-        ok(hr == S_OK, "ID3D12Device_CreateCommandList failed %#x.\n", (int)hr);
+        ok(hr == S_OK, "ID3D12Device_CreateCommandList failed %#x.\n", hr);
         destroy_test_context(&context);
         return;
     }
@@ -102,7 +101,7 @@ void test_vkd3d_dxvk_cmdbuf_interop(void)
         (ID3D12CommandList*)command_list,
         &vkCmdBuf)))
     {
-        ok(hr == S_OK, "ID3D12DXVKInteropDevice1_BeginVulkanCmdHandles failed %#x.\n", (int)hr);
+        ok(hr == S_OK, "ID3D12DXVKInteropDevice1_BeginVulkanCmdHandles failed %#x.\n", hr);
         destroy_test_context(&context);
         return;
     }
@@ -132,14 +131,14 @@ void test_vkd3d_dxvk_cmdbuf_interop(void)
     if (FAILED(hr = ID3D12DXVKInteropDevice1_EndVkCommandBufferInterop(interop_device,
         (ID3D12CommandList*)command_list)))
     {
-        ok(hr == S_OK, "ID3D12DXVKInteropDevice1_EndVulkanCmdHandles failed %#x.\n", (int)hr);
+        ok(hr == S_OK, "ID3D12DXVKInteropDevice1_EndVulkanCmdHandles failed %#x.\n", hr);
         destroy_test_context(&context);
         return;
     }
 
     // Back to D3D12 logic, close the command list + execute it
     hr = ID3D12GraphicsCommandList_Close(command_list);
-    ok(hr == S_OK, "Got unexpected hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Got unexpected hr %#x.\n", hr);
     exec_command_list(queue, command_list);
     wait_queue_idle(device, queue);
     reset_command_list(command_list, allocator);
@@ -162,37 +161,5 @@ void test_vkd3d_dxvk_cmdbuf_interop(void)
     ID3D12GraphicsCommandList_Release(command_list);
     ID3D12CommandAllocator_Release(allocator);
     ID3D12DXVKInteropDevice1_Release(interop_device);
-    destroy_test_context(&context);
-}
-
-void test_vkd3d_out_of_band_interop(void)
-{
-    /* Just verify that it doesn't explode. */
-    D3D12_COMMAND_QUEUE_DESC queue_desc;
-    ID3D12CommandQueueExt *queue_ext;
-    ID3D12CommandQueue *queues[2];
-    struct test_context context;
-    unsigned int i;
-
-    if (!init_compute_test_context(&context))
-        return;
-
-    memset(&queue_desc, 0, sizeof(queue_desc));
-    queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-    for (i = 0; i < ARRAY_SIZE(queues); i++)
-        ID3D12Device_CreateCommandQueue(context.device, &queue_desc, &IID_ID3D12CommandQueue, (void**)&queues[i]);
-
-    for (i = 0; i < ARRAY_SIZE(queues); i++)
-    {
-        if (SUCCEEDED(ID3D12CommandQueue_QueryInterface(queues[i], &IID_ID3D12CommandQueueExt, (void **)&queue_ext)))
-        {
-            ID3D12CommandQueueExt_NotifyOutOfBandCommandQueue(queue_ext, D3D12_OUT_OF_BAND_CQ_TYPE_PRESENT);
-            ID3D12CommandQueueExt_Release(queue_ext);
-        }
-    }
-
-    for (i = 0; i < ARRAY_SIZE(queues); i++)
-        ID3D12CommandQueue_Release(queues[i]);
-
     destroy_test_context(&context);
 }

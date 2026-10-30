@@ -27,7 +27,7 @@ void test_create_descriptor_heap(void)
     D3D12_DESCRIPTOR_HEAP_DESC heap_desc;
     ID3D12Device *device, *tmp_device;
     ID3D12DescriptorHeap *heap;
-    unsigned int refcount;
+    ULONG refcount;
     HRESULT hr;
 
     if (!(device = create_device()))
@@ -41,16 +41,16 @@ void test_create_descriptor_heap(void)
     heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
     heap_desc.NodeMask = 0;
     hr = ID3D12Device_CreateDescriptorHeap(device, &heap_desc, &IID_ID3D12DescriptorHeap, (void **)&heap);
-    ok(hr == S_OK, "Failed to create descriptor heap, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create descriptor heap, hr %#x.\n", hr);
 
     refcount = get_refcount(device);
-    ok(refcount == 2, "Got unexpected refcount %u.\n", refcount);
+    ok(refcount == 2, "Got unexpected refcount %u.\n", (unsigned int)refcount);
     hr = ID3D12DescriptorHeap_GetDevice(heap, &IID_ID3D12Device, (void **)&tmp_device);
-    ok(hr == S_OK, "Failed to get device, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to get device, hr %#x.\n", hr);
     refcount = get_refcount(device);
-    ok(refcount == 3, "Got unexpected refcount %u.\n", refcount);
+    ok(refcount == 3, "Got unexpected refcount %u.\n", (unsigned int)refcount);
     refcount = ID3D12Device_Release(tmp_device);
-    ok(refcount == 2, "Got unexpected refcount %u.\n", refcount);
+    ok(refcount == 2, "Got unexpected refcount %u.\n", (unsigned int)refcount);
 
     check_interface(heap, &IID_ID3D12Object, true);
     check_interface(heap, &IID_ID3D12DeviceChild, true);
@@ -58,46 +58,46 @@ void test_create_descriptor_heap(void)
     check_interface(heap, &IID_ID3D12DescriptorHeap, true);
 
     refcount = ID3D12DescriptorHeap_Release(heap);
-    ok(!refcount, "ID3D12DescriptorHeap has %u references left.\n", refcount);
+    ok(!refcount, "ID3D12DescriptorHeap has %u references left.\n", (unsigned int)refcount);
 
     heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     hr = ID3D12Device_CreateDescriptorHeap(device, &heap_desc, &IID_ID3D12DescriptorHeap, (void **)&heap);
-    ok(hr == S_OK, "Failed to create descriptor heap, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create descriptor heap, hr %#x.\n", hr);
     refcount = ID3D12DescriptorHeap_Release(heap);
-    ok(!refcount, "ID3D12DescriptorHeap has %u references left.\n", refcount);
+    ok(!refcount, "ID3D12DescriptorHeap has %u references left.\n", (unsigned int)refcount);
 
     heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
     heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     hr = ID3D12Device_CreateDescriptorHeap(device, &heap_desc, &IID_ID3D12DescriptorHeap, (void **)&heap);
-    ok(hr == S_OK, "Failed to create descriptor heap, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create descriptor heap, hr %#x.\n", hr);
     refcount = ID3D12DescriptorHeap_Release(heap);
-    ok(!refcount, "ID3D12DescriptorHeap has %u references left.\n", refcount);
+    ok(!refcount, "ID3D12DescriptorHeap has %u references left.\n", (unsigned int)refcount);
 
     heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
     hr = ID3D12Device_CreateDescriptorHeap(device, &heap_desc, &IID_ID3D12DescriptorHeap, (void **)&heap);
-    ok(hr == S_OK, "Failed to create descriptor heap, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create descriptor heap, hr %#x.\n", hr);
     refcount = ID3D12DescriptorHeap_Release(heap);
-    ok(!refcount, "ID3D12DescriptorHeap has %u references left.\n", refcount);
+    ok(!refcount, "ID3D12DescriptorHeap has %u references left.\n", (unsigned int)refcount);
 
     heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     hr = ID3D12Device_CreateDescriptorHeap(device, &heap_desc, &IID_ID3D12DescriptorHeap, (void **)&heap);
-    ok(hr == E_INVALIDARG, "Got unexpected hr %#x.\n", (int)hr);
+    ok(hr == E_INVALIDARG, "Got unexpected hr %#x.\n", hr);
 
     heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
     heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
     hr = ID3D12Device_CreateDescriptorHeap(device, &heap_desc, &IID_ID3D12DescriptorHeap, (void **)&heap);
-    ok(hr == S_OK, "Failed to create descriptor heap, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create descriptor heap, hr %#x.\n", hr);
     refcount = ID3D12DescriptorHeap_Release(heap);
-    ok(!refcount, "ID3D12DescriptorHeap has %u references left.\n", refcount);
+    ok(!refcount, "ID3D12DescriptorHeap has %u references left.\n", (unsigned int)refcount);
 
     heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     hr = ID3D12Device_CreateDescriptorHeap(device, &heap_desc, &IID_ID3D12DescriptorHeap, (void **)&heap);
-    ok(hr == E_INVALIDARG, "Got unexpected hr %#x.\n", (int)hr);
+    ok(hr == E_INVALIDARG, "Got unexpected hr %#x.\n", hr);
 
     refcount = ID3D12Device_Release(device);
-    ok(!refcount, "ID3D12Device has %u references left.\n", refcount);
+    ok(!refcount, "ID3D12Device has %u references left.\n", (unsigned int)refcount);
 }
 
 void test_descriptor_tables(void)
@@ -216,7 +216,7 @@ void test_descriptor_tables(void)
     root_signature_desc.NumParameters = 3;
     root_signature_desc.pParameters = root_parameters;
     hr = create_root_signature(context.device, &root_signature_desc, &context.root_signature);
-    ok(SUCCEEDED(hr), "Failed to create root signature, hr %#x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create root signature, hr %#x.\n", hr);
 
     context.pipeline_state = create_pipeline_state(context.device,
             context.root_signature, context.render_target_desc.Format, NULL, &ps, NULL);
@@ -357,7 +357,7 @@ void test_descriptor_tables_overlapping_bindings(void)
     root_signature_desc.NumParameters = 3;
     root_signature_desc.pParameters = root_parameters;
     hr = create_root_signature(device, &root_signature_desc, &context.root_signature);
-    ok(SUCCEEDED(hr), "Failed to create root signature, hr %#x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create root signature, hr %#x.\n", hr);
 
     context.pipeline_state = create_compute_pipeline_state(device, context.root_signature, overlapping_bindings_dxbc);
 
@@ -508,9 +508,9 @@ void test_update_root_descriptors(void)
     root_signature_desc.NumParameters = 2;
     root_signature_desc.pParameters = root_parameters;
     hr = create_root_signature(device, &root_signature_desc, &root_signature);
-    ok(SUCCEEDED(hr), "Failed to create root signature, hr %#x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create root signature, hr %#x.\n", hr);
 
-    pipeline_state = create_compute_pipeline_state(device, root_signature, update_root_descriptors_dxil);
+    pipeline_state = create_compute_pipeline_state(device, root_signature, update_root_descriptors_dxbc);
 
     ID3D12GraphicsCommandList_SetPipelineState(command_list, pipeline_state);
     ID3D12GraphicsCommandList_SetComputeRootSignature(command_list, root_signature);
@@ -600,7 +600,7 @@ void test_update_descriptor_tables(void)
     root_signature_desc.NumStaticSamplers = 1;
     root_signature_desc.pStaticSamplers = &sampler_desc;
     hr = create_root_signature(context.device, &root_signature_desc, &context.root_signature);
-    ok(SUCCEEDED(hr), "Failed to create root signature, hr %#x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create root signature, hr %#x.\n", hr);
 
     context.pipeline_state = create_pipeline_state(context.device,
             context.root_signature, context.render_target_desc.Format, NULL, &update_descriptor_tables_dxbc, NULL);
@@ -611,12 +611,12 @@ void test_update_descriptor_tables(void)
     heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     hr = ID3D12Device_CreateDescriptorHeap(context.device, &heap_desc,
             &IID_ID3D12DescriptorHeap, (void **)&heap);
-    ok(SUCCEEDED(hr), "Failed to create descriptor heap, hr %#x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create descriptor heap, hr %#x.\n", hr);
 
     heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
     hr = ID3D12Device_CreateDescriptorHeap(context.device, &heap_desc,
             &IID_ID3D12DescriptorHeap, (void **)&cpu_heap);
-    ok(SUCCEEDED(hr), "Failed to create descriptor heap, hr %#x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create descriptor heap, hr %#x.\n", hr);
 
     for (i = 0; i < ARRAY_SIZE(textures); ++i)
     {
@@ -763,7 +763,7 @@ void test_update_descriptor_heap_after_closing_command_list(void)
     ID3D12GraphicsCommandList_DrawInstanced(command_list, 3, 1, 0, 0);
 
     hr = ID3D12GraphicsCommandList_Close(command_list);
-    ok(SUCCEEDED(hr), "Failed to close command list, hr %#x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to close command list, hr %#x.\n", hr);
 
     /* Update the descriptor heap used by the closed command list. */
     ID3D12Device_CreateShaderResourceView(context.device, green_texture, NULL, cpu_handle);
@@ -902,7 +902,7 @@ void test_update_compute_descriptor_tables(void)
     root_signature_desc.pStaticSamplers = NULL;
     root_signature_desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
     hr = create_root_signature(device, &root_signature_desc, &context.root_signature);
-    ok(SUCCEEDED(hr), "Failed to create root signature, hr %#x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create root signature, hr %#x.\n", hr);
 
     buffer_pso = create_compute_pipeline_state(device, context.root_signature,
         update_compute_descriptor_tables_buffer_dxbc);
@@ -1214,10 +1214,10 @@ void test_update_descriptor_tables_after_root_signature_change(void)
     root_signature_desc.NumParameters = ARRAY_SIZE(root_parameters);
     root_signature_desc.pParameters = root_parameters;
     hr = create_root_signature(context.device, &root_signature_desc, &root_signature);
-    ok(hr == S_OK, "Failed to create root signature, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create root signature, hr %#x.\n", hr);
     root_signature_desc.NumParameters = ARRAY_SIZE(root_parameters) - 1;
     hr = create_root_signature(context.device, &root_signature_desc, &root_signature2);
-    ok(hr == S_OK, "Failed to create root signature, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create root signature, hr %#x.\n", hr);
 
     pipeline_state = create_pipeline_state(context.device,
             root_signature, context.render_target_desc.Format, NULL,
@@ -1619,7 +1619,7 @@ void test_copy_descriptors(void)
     root_signature_desc.NumParameters = 4;
     root_signature_desc.pParameters = root_parameters;
     hr = create_root_signature(device, &root_signature_desc, &context.root_signature);
-    ok(SUCCEEDED(hr), "Failed to create root signature, hr %#x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create root signature, hr %#x.\n", hr);
 
     context.pipeline_state = create_compute_pipeline_state(device, context.root_signature,
             copy_descriptors_dxbc);
@@ -1995,7 +1995,7 @@ void test_copy_rtv_descriptors(void)
             &heap_properties, D3D12_HEAP_FLAG_NONE, &rt_desc,
             D3D12_RESOURCE_STATE_RENDER_TARGET, NULL,
             &IID_ID3D12Resource, (void **)&rt_texture);
-    ok(hr == S_OK, "Failed to create committed resource, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create committed resource, hr %#x.\n", hr);
 
     rtv_heap = create_cpu_descriptor_heap(device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 9);
 
@@ -2143,7 +2143,7 @@ void test_descriptors_visibility(void)
     root_signature_desc.NumStaticSamplers = 2;
     root_signature_desc.pStaticSamplers = sampler_desc;
     hr = create_root_signature(device, &root_signature_desc, &context.root_signature);
-    ok(SUCCEEDED(hr), "Failed to create root signature, hr %#x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create root signature, hr %#x.\n", hr);
 
     context.pipeline_state = create_pipeline_state(device,
             context.root_signature, context.render_target_desc.Format,
@@ -2396,7 +2396,7 @@ void test_create_null_descriptors(void)
     heap_desc.NodeMask = 0;
     hr = ID3D12Device_CreateDescriptorHeap(device, &heap_desc,
             &IID_ID3D12DescriptorHeap, (void **)&heap);
-    ok(SUCCEEDED(hr), "Failed to create descriptor heap, hr %#x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create descriptor heap, hr %#x.\n", hr);
 
     cbv_desc.BufferLocation = 0;
     cbv_desc.SizeInBytes = 0;
@@ -2488,7 +2488,7 @@ void test_null_cbv(void)
     root_signature_desc.NumParameters = ARRAY_SIZE(root_parameters);
     root_signature_desc.pParameters = root_parameters;
     hr = create_root_signature(device, &root_signature_desc, &context.root_signature);
-    ok(hr == S_OK, "Failed to create root signature, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create root signature, hr %#x.\n", hr);
 
     context.pipeline_state = create_pipeline_state(context.device,
             context.root_signature, context.render_target_desc.Format, NULL,
@@ -2763,7 +2763,7 @@ void test_null_uav(void)
     root_signature_desc.pStaticSamplers = NULL;
     root_signature_desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
     hr = create_root_signature(device, &root_signature_desc, &context.root_signature);
-    ok(hr == S_OK, "Failed to create root signature, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create root signature, hr %#x.\n", hr);
 
     uav_heap = create_gpu_descriptor_heap(device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1);
 
@@ -2906,7 +2906,7 @@ void test_cpu_descriptors_lifetime(void)
             &heap_properties, D3D12_HEAP_FLAG_NONE, &resource_desc,
             D3D12_RESOURCE_STATE_RENDER_TARGET, &clear_value,
             &IID_ID3D12Resource, (void **)&red_resource);
-    ok(hr == S_OK, "Failed to create texture, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create texture, hr %#x.\n", hr);
     clear_value.Color[0] = 0.0f;
     clear_value.Color[1] = 0.0f;
     clear_value.Color[2] = 1.0f;
@@ -2915,7 +2915,7 @@ void test_cpu_descriptors_lifetime(void)
             &heap_properties, D3D12_HEAP_FLAG_NONE, &resource_desc,
             D3D12_RESOURCE_STATE_RENDER_TARGET, &clear_value,
             &IID_ID3D12Resource, (void **)&blue_resource);
-    ok(hr == S_OK, "Failed to create texture, hr %#x.\n", (int)hr);
+    ok(hr == S_OK, "Failed to create texture, hr %#x.\n", hr);
 
     ID3D12Device_CreateRenderTargetView(device, red_resource, NULL, rtv_handle);
     ID3D12GraphicsCommandList_ClearRenderTargetView(command_list, rtv_handle, red, 0, NULL);
@@ -2993,9 +2993,9 @@ void test_create_sampler(void)
     unsigned int sampler_increment_size;
     D3D12_SAMPLER_DESC sampler_desc;
     ID3D12DescriptorHeap *heap;
-    unsigned int refcount;
     ID3D12Device *device;
     unsigned int i;
+    ULONG refcount;
     HRESULT hr;
 
     if (!(device = create_device()))
@@ -3014,7 +3014,7 @@ void test_create_sampler(void)
     heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     heap_desc.NodeMask = 0;
     hr = ID3D12Device_CreateDescriptorHeap(device, &heap_desc, &IID_ID3D12DescriptorHeap, (void **)&heap);
-    ok(SUCCEEDED(hr), "Failed to create descriptor heap, hr %#x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create descriptor heap, hr %#x.\n", hr);
 
     cpu_handle = ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(heap);
     memset(&sampler_desc, 0, sizeof(sampler_desc));
@@ -3051,9 +3051,9 @@ void test_create_sampler(void)
     ID3D12Device_CreateSampler(device, &sampler_desc, cpu_handle);
 
     refcount = ID3D12DescriptorHeap_Release(heap);
-    ok(!refcount, "ID3D12DescriptorHeap has %u references left.\n", refcount);
+    ok(!refcount, "ID3D12DescriptorHeap has %u references left.\n", (unsigned int)refcount);
     refcount = ID3D12Device_Release(device);
-    ok(!refcount, "ID3D12Device has %u references left.\n", refcount);
+    ok(!refcount, "ID3D12Device has %u references left.\n", (unsigned int)refcount);
 }
 
 void test_create_sampler2(void)
@@ -3065,8 +3065,8 @@ void test_create_sampler2(void)
     D3D12_SAMPLER_DESC2 sampler_desc;
     ID3D12DescriptorHeap *heap;
     ID3D12Device11 *device11;
-    unsigned int refcount;
     ID3D12Device *device;
+    ULONG refcount;
     HRESULT hr;
 
     if (!(device = create_device()))
@@ -3087,7 +3087,7 @@ void test_create_sampler2(void)
     heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     heap_desc.NodeMask = 0;
     hr = ID3D12Device_CreateDescriptorHeap(device, &heap_desc, &IID_ID3D12DescriptorHeap, (void **)&heap);
-    ok(SUCCEEDED(hr), "Failed to create descriptor heap, hr %#x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create descriptor heap, hr %#x.\n", hr);
 
     cpu_handle = ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(heap);
     memset(&sampler_desc, 0, sizeof(sampler_desc));
@@ -3101,9 +3101,9 @@ void test_create_sampler2(void)
     ID3D12Device11_Release(device11);
 
     refcount = ID3D12DescriptorHeap_Release(heap);
-    ok(!refcount, "ID3D12DescriptorHeap has %u references left.\n", refcount);
+    ok(!refcount, "ID3D12DescriptorHeap has %u references left.\n", (unsigned int)refcount);
     refcount = ID3D12Device_Release(device);
-    ok(!refcount, "ID3D12Device has %u references left.\n", refcount);
+    ok(!refcount, "ID3D12Device has %u references left.\n", (unsigned int)refcount);
 }
 
 void test_create_unordered_access_view(void)
@@ -3113,8 +3113,8 @@ void test_create_unordered_access_view(void)
     ID3D12Resource *buffer, *texture;
     unsigned int descriptor_size;
     ID3D12DescriptorHeap *heap;
-    unsigned int refcount;
     ID3D12Device *device;
+    ULONG refcount;
 
     if (!(device = create_device()))
     {
@@ -3157,9 +3157,9 @@ void test_create_unordered_access_view(void)
     ID3D12Resource_Release(buffer);
     ID3D12Resource_Release(texture);
     refcount = ID3D12DescriptorHeap_Release(heap);
-    ok(!refcount, "ID3D12DescriptorHeap has %u references left.\n", refcount);
+    ok(!refcount, "ID3D12DescriptorHeap has %u references left.\n", (unsigned int)refcount);
     refcount = ID3D12Device_Release(device);
-    ok(!refcount, "ID3D12Device has %u references left.\n", refcount);
+    ok(!refcount, "ID3D12Device has %u references left.\n", (unsigned int)refcount);
 }
 
 void test_sampler_border_color(void)
@@ -3293,7 +3293,7 @@ void test_sampler_border_color(void)
         }
 
         hr = create_root_signature(device, &root_signature_desc, &root_signature);
-        ok(hr == S_OK, "Failed to create root signature, hr %#x.\n", (int)hr);
+        ok(hr == S_OK, "Failed to create root signature, hr %#x.\n", hr);
 
         pipeline_state = create_pipeline_state(device, root_signature,
                 context.render_target_desc.Format, NULL, &sampler_border_color_dxbc, NULL);
@@ -3406,7 +3406,7 @@ static void test_typed_buffers_many_objects(bool use_dxil)
     descriptor_ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
 
     hr = create_root_signature(context.device, &root_signature_desc, &context.root_signature);
-    ok(SUCCEEDED(hr), "Failed to create root signature, hr %#x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create root signature, hr %#x.\n", hr);
 
     output_buffer = create_default_buffer(context.device, 64 * 1024 * 1024, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     input_buffer = create_default_buffer(context.device, 64 * 1024 * 1024, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST);
@@ -3710,7 +3710,7 @@ void test_view_min_lod(void)
             pso_desc.PS = *tests[i].ps;
             hr = ID3D12Device_CreateGraphicsPipelineState(context.device, &pso_desc,
                     &IID_ID3D12PipelineState, (void **)&pso);
-            ok(hr == S_OK, "Failed to create graphics pipeline state, hr %#x.\n", (int)hr);
+            ok(hr == S_OK, "Failed to create graphics pipeline state, hr %#x.\n", hr);
         }
 
         view_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -3934,7 +3934,7 @@ void test_typed_srv_uav_cast(void)
                     hr = E_FAIL;
                 }
 
-                ok(FAILED(hr), "Unexpected hr %#x\n", (int)hr);
+                ok(FAILED(hr), "Unexpected hr %#x\n", hr);
                 PURGE_CONTEXT();
                 BEGIN();
             }
@@ -3954,7 +3954,7 @@ void test_typed_srv_uav_cast(void)
                     hr = E_FAIL;
                 }
 
-                ok(FAILED(hr), "Unexpected hr %#x\n", (int)hr);
+                ok(FAILED(hr), "Unexpected hr %#x\n", hr);
                 PURGE_CONTEXT();
                 BEGIN();
             }
@@ -3977,14 +3977,14 @@ void test_typed_srv_uav_cast(void)
                     hr = E_FAIL;
                 }
 
-                ok(FAILED(hr), "Unexpected hr %#x\n", (int)hr);
+                ok(FAILED(hr), "Unexpected hr %#x\n", hr);
                 PURGE_CONTEXT();
                 BEGIN();
             }
         }
 
         hr = ID3D12Device_GetDeviceRemovedReason(context.device);
-        ok(SUCCEEDED(hr), "Unexpected hr %#x\n", (int)hr);
+        ok(SUCCEEDED(hr), "Unexpected hr %#x\n", hr);
 
         if (SUCCEEDED(hr))
         {
@@ -4742,7 +4742,6 @@ void test_undefined_descriptor_heap_mismatch_types(void)
     ID3D12Resource *buf;
     float float_value;
     unsigned int i, j;
-    bool heap;
 
 #include "shaders/descriptors/headers/undefined_descriptor_heap_mismatch_types_srv_raw.h"
 #include "shaders/descriptors/headers/undefined_descriptor_heap_mismatch_types_srv_tex.h"
@@ -4897,11 +4896,8 @@ void test_undefined_descriptor_heap_mismatch_types(void)
     reset_command_list(context.list, context.allocator);
 
     radv_32b_layout = is_radv_device(context.device) &&
-            (is_vk_device_extension_supported(context.device, "VK_EXT_descriptor_buffer") ||
-             is_vk_device_extension_supported(context.device, "VK_EXT_descriptor_heap")) &&
+            is_vk_device_extension_supported(context.device, "VK_EXT_descriptor_buffer") &&
             ID3D12Device_GetDescriptorHandleIncrementSize(context.device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV) == 32;
-
-    heap = is_vk_device_extension_supported(context.device, "VK_EXT_descriptor_heap");
 
     for (j = 0; j < TYPE_COUNT; j++)
     {
@@ -4929,7 +4925,7 @@ void test_undefined_descriptor_heap_mismatch_types(void)
 
             /* On current NVIDIA, images are 4 byte, but texel buffers are 16 byte,
              * but we have to alias them together. */
-            if (!is_nvidia_windows_device(context.device) && (is_nvidia_device(context.device) || is_nvk_device(context.device)))
+            if (!is_nvidia_windows_device(context.device) && is_nvidia_device(context.device))
             {
                 if ((access_type == SRV_TEX || access_type == UAV_TEX) &&
                         (descriptor_type == SRV_TYPED_BUFFER || descriptor_type == UAV_TYPED_BUFFER))
@@ -4946,12 +4942,6 @@ void test_undefined_descriptor_heap_mismatch_types(void)
                 else if ((access_type == SRV_RAW_BUFFER || access_type == UAV_RAW_BUFFER) && descriptor_type == CBV)
                 {
                     skip("Skipping CBV accessed as raw buffer on NVIDIA since it will hang GPU.\n");
-                    continue;
-                }
-
-                if (heap && access_type != descriptor_type && (access_type == CBV || descriptor_type == CBV))
-                {
-                    skip("Skipping CBV mismatch since it will hang GPU.\n");
                     continue;
                 }
             }
@@ -5288,7 +5278,7 @@ void test_sampler_non_normalized_coordinates(void)
     rs_desc.Desc_1_2.pStaticSamplers = &static_sampler_desc;
 
     hr = create_versioned_root_signature(context.device, &rs_desc, &rs_static_sampler);
-    ok(SUCCEEDED(hr), "Failed to create root signature, hr %#x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create root signature, hr %#x.\n", hr);
 
     memset(&rs_desc, 0, sizeof(rs_desc));
     rs_desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_2;
@@ -5296,17 +5286,17 @@ void test_sampler_non_normalized_coordinates(void)
     rs_desc.Desc_1_2.pParameters = rs_params;
 
     hr = create_versioned_root_signature(context.device, &rs_desc, &rs_sampler_descriptor);
-    ok(SUCCEEDED(hr), "Failed to create root signature, hr %#x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create root signature, hr %#x.\n", hr);
 
     init_pipeline_state_desc(&pso_desc, rs_static_sampler, DXGI_FORMAT_R8_UNORM, NULL,
             &sampler_non_normalized_coordinates_dxbc, NULL);
     hr = ID3D12Device_CreateGraphicsPipelineState(context.device, &pso_desc, &IID_ID3D12PipelineState, (void **)&pso_static_sampler);
-    ok(SUCCEEDED(hr), "Failed to create graphics pipeline, hr %#x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create graphics pipeline, hr %#x.\n", hr);
 
     init_pipeline_state_desc(&pso_desc, rs_sampler_descriptor, DXGI_FORMAT_R8_UNORM, NULL,
             &sampler_non_normalized_coordinates_dxbc, NULL);
     hr = ID3D12Device_CreateGraphicsPipelineState(context.device, &pso_desc, &IID_ID3D12PipelineState, (void **)&pso_sampler_descriptor);
-    ok(SUCCEEDED(hr), "Failed to create graphics pipeline, hr %#x.\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create graphics pipeline, hr %#x.\n", hr);
 
     rtv_heap = create_cpu_descriptor_heap(context.device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1);
     srv_heap = create_gpu_descriptor_heap(context.device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1);
@@ -6046,10 +6036,9 @@ void test_rwtex1d_array_reinterpretation_dxil(void)
     test_tex_array_reinterpretation(true, D3D12_RESOURCE_DIMENSION_TEXTURE1D, true);
 }
 
-static void test_custom_border_color_limits_inner(bool is_compute)
+void test_custom_border_color_limits(void)
 {
     ID3D12DescriptorHeap *sampler_heaps[4];
-    struct test_context_desc context_desc;
     D3D12_DESCRIPTOR_RANGE desc_range[2];
     D3D12_ROOT_SIGNATURE_DESC rs_desc;
     D3D12_ROOT_PARAMETER rs_params[3];
@@ -6062,21 +6051,8 @@ static void test_custom_border_color_limits_inner(bool is_compute)
 
 #include "shaders/descriptors/headers/custom_border_color.h"
 
-    memset(&context_desc, 0, sizeof(context_desc));
-    context_desc.no_pipeline = true;
-    context_desc.no_root_signature = true;
-    context_desc.no_render_target = true;
-
-    if (is_compute)
-    {
-        if (!init_compute_test_context(&context))
-            return;
-    }
-    else
-    {
-        if (!init_test_context(&context, &context_desc))
-            return;
-    }
+    if (!init_compute_test_context(&context))
+        return;
 
     memset(&rs_desc, 0, sizeof(rs_desc));
     memset(rs_params, 0, sizeof(rs_params));
@@ -6193,19 +6169,13 @@ static void test_custom_border_color_limits_inner(bool is_compute)
 
         /* NV will fail around 4k unique samplers. */
         if (is_nvidia_device(context.device))
-            is_todo = !is_vk_device_extension_supported(context.device, "VK_EXT_descriptor_heap") && flat_index >= 4000;
+            is_todo = flat_index >= 4000;
         else if (is_amd_vulkan_device(context.device) ||
                 is_adreno_device(context.device) ||
                 is_mesa_intel_device(context.device))
             is_todo = flat_index >= 4096;
         else
             is_todo = false;
-
-        /* Custom border color on AMD is broken on compute queues due to a hardware issue
-         * that cannot be worked around. Newer RADV nops out custom border colors on compute queue
-         * instead of being mostly correct with risk of GPU hangs or broken colors. */
-        if (is_compute && is_radv_device(context.device))
-            is_todo = true;
 
         /* Apparently, even native AMD breaks here too! :D */
         if (is_amd_windows_device(context.device))
@@ -6234,16 +6204,6 @@ static void test_custom_border_color_limits_inner(bool is_compute)
     destroy_test_context(&context);
 }
 
-void test_custom_border_color_limits(void)
-{
-    test_custom_border_color_limits_inner(false);
-}
-
-void test_custom_border_color_limits_compute(void)
-{
-    test_custom_border_color_limits_inner(true);
-}
-
 static float decode_srgb(float v)
 {
     if (v < 0.0404482362f)
@@ -6262,7 +6222,6 @@ static float encode_srgb(float v)
 
 void test_custom_border_color_srgb(void)
 {
-    struct test_context_desc context_desc;
     D3D12_DESCRIPTOR_RANGE desc_range[2];
     ID3D12DescriptorHeap *sampler_heap;
     D3D12_ROOT_SIGNATURE_DESC rs_desc;
@@ -6277,12 +6236,7 @@ void test_custom_border_color_srgb(void)
 
 #include "shaders/descriptors/headers/custom_border_color_swizzle.h"
 
-    memset(&context_desc, 0, sizeof(context_desc));
-    context_desc.no_pipeline = true;
-    context_desc.no_render_target = true;
-    context_desc.no_root_signature = true;
-
-    if (!init_test_context(&context, &context_desc))
+    if (!init_compute_test_context(&context))
         return;
 
     memset(&rs_desc, 0, sizeof(rs_desc));
@@ -6543,7 +6497,7 @@ void test_large_buffer_descriptors(void)
     hr = ID3D12Device_CreateReservedResource(context.device, &res_desc, D3D12_RESOURCE_STATE_COMMON, NULL, &IID_ID3D12Resource, (void **)&sparse);
     if (is_radv_device(context.device))
         vkd3d_unmute_validation_message("06409");
-    ok(SUCCEEDED(hr), "Failed to create reserved resource, hr #%x\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create reserved resource, hr #%x\n", hr);
 
     memset(&heap_desc, 0, sizeof(heap_desc));
     heap_desc.Properties.Type = D3D12_HEAP_TYPE_UPLOAD;
@@ -6551,11 +6505,11 @@ void test_large_buffer_descriptors(void)
     heap_desc.Flags = D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS;
 
     hr = ID3D12Device_CreateHeap(context.device, &heap_desc, &IID_ID3D12Heap, (void **)&heap);
-    ok(SUCCEEDED(hr), "Failed to create heap, hr #%x\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create heap, hr #%x\n", hr);
 
     res_desc.Width = 128 * 1024;
     hr = ID3D12Device_CreatePlacedResource(context.device, heap, 0, &res_desc, D3D12_RESOURCE_STATE_COMMON, NULL, &IID_ID3D12Resource, (void **)&input);
-    ok(SUCCEEDED(hr), "Failed to create placed resource, hr #%x\n", (int)hr);
+    ok(SUCCEEDED(hr), "Failed to create placed resource, hr #%x\n", hr);
 
     hr = ID3D12Resource_Map(input, 0, NULL, (void **)&ptr);
     ok(SUCCEEDED(hr), "Failed to map buffer.\n");
@@ -6781,653 +6735,3 @@ void test_static_sampler_dynamic_index(void)
     destroy_test_context(&context);
 }
 
-void test_descriptor_heap_broken_table_va(void)
-{
-    /* Somewhat of a sandbox to explore deep Eldritch horror UB with OOB table access.
-     * We don't consider descriptor heap robustness when descriptor indexing is not used,
-     * and these are cases that could in theory be caught at CPU time, but drivers don't really
-     * seem to do anything special to validate heap offsets. */
-    D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc;
-    D3D12_GPU_DESCRIPTOR_HANDLE gpu_handle;
-    struct test_context_desc context_desc;
-    D3D12_DESCRIPTOR_RANGE rs_range[2];
-    D3D12_ROOT_SIGNATURE_DESC rs_desc;
-    D3D12_ROOT_PARAMETER rs_param[3];
-    struct test_context context;
-    struct resource_readback rb;
-    ID3D12DescriptorHeap *heap;
-    ID3D12Resource *output;
-    ID3D12Resource *input;
-    int i;
-
-#include "shaders/descriptors/headers/broken_table.h"
-
-    float input_data[1024];
-    for (i = 0; i < 1024; i++)
-        input_data[i] = 1.0f + i;
-
-    memset(&context_desc, 0, sizeof(context_desc));
-    context_desc.no_pipeline = true;
-    context_desc.no_render_target = true;
-    context_desc.no_root_signature = true;
-
-    /* Compute ring crash on AMD Windows just locks up the system completely, requiring a hard reboot ... */
-    if (!init_test_context(&context, &context_desc))
-        return;
-
-    memset(&rs_desc, 0, sizeof(rs_desc));
-    memset(rs_range, 0, sizeof(rs_range));
-    memset(rs_param, 0, sizeof(rs_param));
-    rs_desc.NumParameters = ARRAY_SIZE(rs_param);
-    rs_desc.pParameters = rs_param;
-
-    rs_param[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    rs_param[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    rs_param[0].DescriptorTable.NumDescriptorRanges = 1;
-    rs_param[0].DescriptorTable.pDescriptorRanges = &rs_range[0];
-    rs_param[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    rs_param[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    rs_param[1].DescriptorTable.NumDescriptorRanges = 1;
-    rs_param[1].DescriptorTable.pDescriptorRanges = &rs_range[1];
-    rs_param[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    rs_param[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-
-    rs_range[0].NumDescriptors = 1024;
-    rs_range[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    rs_range[1].NumDescriptors = 1024;
-    rs_range[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    rs_range[1].RegisterSpace = 1;
-
-    create_root_signature(context.device, &rs_desc, &context.root_signature);
-    context.pipeline_state = create_compute_pipeline_state(context.device, context.root_signature, broken_table_dxbc);
-
-#define NUM_GROUPS_X (1)
-    output = create_default_buffer(context.device, NUM_GROUPS_X * 64 * sizeof(float), D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    input = create_upload_buffer(context.device, sizeof(input_data), input_data);
-    heap = create_gpu_descriptor_heap(context.device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1024);
-
-    for (i = 0; i < 1024; i++)
-    {
-        memset(&srv_desc, 0, sizeof(srv_desc));
-        srv_desc.Format = DXGI_FORMAT_R32_FLOAT;
-        srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-        srv_desc.Buffer.NumElements = 1;
-        srv_desc.Buffer.FirstElement = i;
-        ID3D12Device_CreateShaderResourceView(context.device, input, &srv_desc, get_cpu_descriptor_handle(&context, heap, i));
-    }
-
-    ID3D12GraphicsCommandList_SetDescriptorHeaps(context.list, 1, &heap);
-    ID3D12GraphicsCommandList_SetComputeRootSignature(context.list, context.root_signature);
-    ID3D12GraphicsCommandList_SetPipelineState(context.list, context.pipeline_state);
-
-    /* There are no guard descriptors on AMD. I have observed GPU hangs when reading descriptor 1024 which is exactly out of bounds. */
-    ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(context.list, 0, get_gpu_descriptor_handle(&context, heap, 1013));
-
-    /* Reads from this descriptor goes through no matter what, so we shouldn't nop the entire draw. */
-    ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(context.list, 1, get_gpu_descriptor_handle(&context, heap, 1));
-
-    /* NV is sort of robust against this case. It seems to wrap around the 20-bit index and within that range it's robust. */
-    gpu_handle = ID3D12DescriptorHeap_GetGPUDescriptorHandleForHeapStart(heap);
-    gpu_handle.ptr |= UINT64_MAX << 5;
-
-    if (is_amd_windows_device(context.device))
-    {
-        /* The final VA will fall exactly out of the 32-bit VA range and somehow this translates to a null descriptor.
-         * It's possible the native driver has guard pages in place to handle these cases, or page faults outside 32-bit VA range
-         * are ignored by kernel somehow??? */
-        gpu_handle.ptr -= 9 << 5;
-    }
-    else
-    {
-        /* The final VA falls exactly inside the 32-bit VA range and crashes the GPU as we would expect. */
-        gpu_handle.ptr -= 10 << 5;
-    }
-
-    /* For vkd3d-proton we have no reasonable way to implement this but to ignore obviously broken GPU VAs being passed down
-     * since we cannot control this deep vendor-specific behavior.
-     * In the known broken application case, UINT64_MAX is passed directly. */
-    ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(context.list, 0, gpu_handle);
-
-    ID3D12GraphicsCommandList_SetComputeRootUnorderedAccessView(context.list, 2, ID3D12Resource_GetGPUVirtualAddress(output));
-    ID3D12GraphicsCommandList_Dispatch(context.list, NUM_GROUPS_X, 1, 1);
-    transition_resource_state(context.list, output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    get_buffer_readback_with_command_list(output, DXGI_FORMAT_UNKNOWN, &rb, context.queue, context.list);
-
-    for (i = 0; i < NUM_GROUPS_X * 64; i++)
-    {
-        float value, expected, expected_alt;
-        value = get_readback_float(&rb, i, 0);
-        expected = 20.0f + 2.0f;
-        expected_alt = expected + 1024.0f; /* For vkd3d-proton we ignore bogus VAs and let the valid 1023 offset come through. */
-        ok(value == expected || value == expected_alt, "value %u: expected %f or %f, got %f\n", i, expected, expected_alt, value);
-    }
-
-    release_resource_readback(&rb);
-    ID3D12Resource_Release(output);
-    ID3D12Resource_Release(input);
-    ID3D12DescriptorHeap_Release(heap);
-    destroy_test_context(&context);
-}
-
-void test_buffer_descriptor_byte_offset(void)
-{
-    D3D12_FEATURE_DATA_D3D12_OPTIONS22 options22;
-    D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc;
-    D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc;
-    D3D12_DESCRIPTOR_RANGE rs_range[2];
-    D3D12_ROOT_SIGNATURE_DESC rs_desc;
-    D3D12_ROOT_PARAMETER rs_param[2];
-    struct test_context context;
-    struct resource_readback rb;
-    ID3D12DescriptorHeap *heap;
-    ID3D12Resource *output;
-    ID3D12Resource *input;
-    unsigned int i;
-    bool is_vkd3d;
-
-#include "shaders/descriptors/headers/byte_offset_descriptors.h"
-
-    uint32_t input_data[1025];
-    for (i = 0; i < ARRAY_SIZE(input_data); i++)
-        input_data[i] = i;
-
-    if (!init_compute_test_context(&context))
-        return;
-
-    if (FAILED(ID3D12Device_CheckFeatureSupport(context.device, D3D12_FEATURE_D3D12_OPTIONS22,
-            &options22, sizeof(options22))) || !options22.CreateByteOffsetViewsSupported)
-    {
-        skip("CreateByteOffsetViewsSupported not set.\n");
-        destroy_test_context(&context);
-        return;
-    }
-
-    memset(&rs_desc, 0, sizeof(rs_desc));
-    memset(rs_range, 0, sizeof(rs_range));
-    memset(rs_param, 0, sizeof(rs_param));
-
-    rs_desc.NumParameters = ARRAY_SIZE(rs_param);
-    rs_desc.pParameters = rs_param;
-    rs_param[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-    rs_param[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    rs_param[0].Descriptor.ShaderRegister = 6;
-    rs_param[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    rs_param[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    rs_param[1].DescriptorTable.NumDescriptorRanges = ARRAY_SIZE(rs_range);
-    rs_param[1].DescriptorTable.pDescriptorRanges = rs_range;
-
-    rs_range[0].NumDescriptors = 6;
-    rs_range[0].OffsetInDescriptorsFromTableStart = 0;
-    rs_range[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    rs_range[1].NumDescriptors = 6;
-    rs_range[1].OffsetInDescriptorsFromTableStart = 6;
-    rs_range[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-
-    create_root_signature(context.device, &rs_desc, &context.root_signature);
-    context.pipeline_state = create_compute_pipeline_state(context.device, context.root_signature, byte_offset_descriptors_dxil);
-
-    input = create_upload_buffer(context.device, sizeof(input_data), input_data);
-    output = create_default_buffer(context.device, sizeof(input_data), D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-                                   D3D12_RESOURCE_STATE_COMMON);
-    heap = create_gpu_descriptor_heap(context.device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 16);
-
-    ID3D12GraphicsCommandList_CopyResource(context.list, output, input);
-    transition_resource_state(context.list, output, D3D12_RESOURCE_STATE_COPY_DEST,
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-
-    memset(&uav_desc, 0, sizeof(uav_desc));
-    memset(&srv_desc, 0, sizeof(srv_desc));
-
-    is_vkd3d = is_vkd3d_proton_device(context.device);
-
-    {
-        srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER_BYTE_OFFSET;
-        srv_desc.Format = DXGI_FORMAT_UNKNOWN;
-        srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srv_desc.BufferByteOffset.StructureByteStride = 12;
-        srv_desc.BufferByteOffset.Offset = 4;
-
-        srv_desc.BufferByteOffset.Size = 24;
-        ID3D12Device_CreateShaderResourceView(context.device, input, &srv_desc,
-                get_cpu_descriptor_handle(&context, heap, 0));
-
-        /* Implicit size. Question is if we have to align ourselves. The implied size will not be aligned to stride.
-         * Native runtime is totally broken here ... */
-        if (is_vkd3d)
-        {
-            srv_desc.BufferByteOffset.Size = 0;
-        }
-        else
-        {
-            srv_desc.BufferByteOffset.Size = ((sizeof(input_data) - srv_desc.BufferByteOffset.Offset) /
-                srv_desc.BufferByteOffset.StructureByteStride) *
-                srv_desc.BufferByteOffset.StructureByteStride;
-        }
-
-        ID3D12Device_CreateShaderResourceView(context.device, input, &srv_desc,
-                get_cpu_descriptor_handle(&context, heap, 3));
-
-        srv_desc.Format = DXGI_FORMAT_R32_TYPELESS;
-        srv_desc.BufferByteOffset.Offset = 16;
-        srv_desc.BufferByteOffset.StructureByteStride = 0;
-        srv_desc.BufferByteOffset.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
-
-        srv_desc.BufferByteOffset.Size = 16;
-        ID3D12Device_CreateShaderResourceView(context.device, input, &srv_desc,
-                get_cpu_descriptor_handle(&context, heap, 1));
-
-        /* Implicit size. Question is if we have to align ourselves. The implied size will not be aligned to 16b. */
-        /* BAB works ... somehow. */
-        srv_desc.BufferByteOffset.Size = 0;
-        ID3D12Device_CreateShaderResourceView(context.device, input, &srv_desc,
-                get_cpu_descriptor_handle(&context, heap, 4));
-
-        srv_desc.Format = DXGI_FORMAT_R32G32B32_UINT;
-        srv_desc.BufferByteOffset.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-        srv_desc.BufferByteOffset.Offset = 4; /* This was not possible to express before, but NPOT formats support this. */
-
-        srv_desc.BufferByteOffset.Size = 12 * 3;
-        ID3D12Device_CreateShaderResourceView(context.device, input, &srv_desc,
-                get_cpu_descriptor_handle(&context, heap, 2));
-
-        if (is_vkd3d)
-            srv_desc.BufferByteOffset.Size = 0;
-        else
-            srv_desc.BufferByteOffset.Size = ((sizeof(input_data) - srv_desc.BufferByteOffset.Offset) / 12) * 12;
-
-        ID3D12Device_CreateShaderResourceView(context.device, input, &srv_desc,
-                get_cpu_descriptor_handle(&context, heap, 5));
-    }
-
-    {
-        uav_desc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER_BYTE_OFFSET;
-        uav_desc.Format = DXGI_FORMAT_UNKNOWN;
-        uav_desc.BufferByteOffset.StructureByteStride = 12;
-        uav_desc.BufferByteOffset.Offset = 4;
-        uav_desc.BufferByteOffset.CounterOffsetInBytes = is_vkd3d ? D3D12_UAV_COUNTER_PLACEMENT_ALIGNMENT : 0;
-
-        uav_desc.BufferByteOffset.Size = 24;
-
-        /* UAV counter offset check seems to be botched on 619 SDK.
-         * Theory is that it still checks Buffer.CounterOffsetInBytes instead, which is not the same thing. */
-        ID3D12Device_CreateUnorderedAccessView(context.device, output, is_vkd3d ? output : NULL, &uav_desc,
-                get_cpu_descriptor_handle(&context, heap, 6));
-
-        if (is_vkd3d)
-        {
-            uav_desc.BufferByteOffset.Size = 0;
-        }
-        else
-        {
-            uav_desc.BufferByteOffset.Size = ((sizeof(input_data) - uav_desc.BufferByteOffset.Offset) /
-                uav_desc.BufferByteOffset.StructureByteStride) *
-                uav_desc.BufferByteOffset.StructureByteStride;
-        }
-
-        ID3D12Device_CreateUnorderedAccessView(context.device, output, is_vkd3d ? output : NULL, &uav_desc,
-                get_cpu_descriptor_handle(&context, heap, 9));
-
-        uav_desc.Format = DXGI_FORMAT_R32_TYPELESS;
-        uav_desc.BufferByteOffset.Offset = 16;
-        uav_desc.BufferByteOffset.StructureByteStride = 0;
-        uav_desc.BufferByteOffset.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
-        uav_desc.BufferByteOffset.CounterOffsetInBytes = 0;
-
-        uav_desc.BufferByteOffset.Size = 16;
-        ID3D12Device_CreateUnorderedAccessView(context.device, output, NULL, &uav_desc,
-                get_cpu_descriptor_handle(&context, heap, 7));
-
-        /* Implicit size. Question is if we have to align ourselves. The implied size will not be aligned to 16b. */
-        uav_desc.BufferByteOffset.Size = 0;
-        ID3D12Device_CreateUnorderedAccessView(context.device, output, NULL, &uav_desc,
-                get_cpu_descriptor_handle(&context, heap, 10));
-
-        uav_desc.Format = DXGI_FORMAT_R32_UINT;
-        uav_desc.BufferByteOffset.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
-        uav_desc.BufferByteOffset.Offset = 4;
-
-        uav_desc.BufferByteOffset.Size = 4 * 3;
-        ID3D12Device_CreateUnorderedAccessView(context.device, output, NULL, &uav_desc,
-                get_cpu_descriptor_handle(&context, heap, 8));
-
-        if (is_vkd3d)
-            uav_desc.BufferByteOffset.Size = 0;
-        else
-            uav_desc.BufferByteOffset.Size = ((sizeof(input_data) - uav_desc.BufferByteOffset.Offset) / 4) * 4;
-
-        ID3D12Device_CreateUnorderedAccessView(context.device, output, NULL, &uav_desc,
-                get_cpu_descriptor_handle(&context, heap, 11));
-    }
-
-    ID3D12GraphicsCommandList_SetDescriptorHeaps(context.list, 1, &heap);
-    ID3D12GraphicsCommandList_SetComputeRootSignature(context.list, context.root_signature);
-    ID3D12GraphicsCommandList_SetPipelineState(context.list, context.pipeline_state);
-    ID3D12GraphicsCommandList_SetComputeRootUnorderedAccessView(context.list, 0,
-            ID3D12Resource_GetGPUVirtualAddress(output) + 1024);
-    ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(context.list, 1,
-            ID3D12DescriptorHeap_GetGPUDescriptorHandleForHeapStart(heap));
-    ID3D12GraphicsCommandList_Dispatch(context.list, 1, 1, 1);
-
-    transition_resource_state(context.list, output,
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            D3D12_RESOURCE_STATE_COPY_SOURCE);
-    get_buffer_readback_with_command_list(output, DXGI_FORMAT_UNKNOWN, &rb, context.queue, context.list);
-
-    {
-        static const uint32_t expected_data[] = {
-            1 + 3, 2,
-            4 + 1, 16,
-            1 + 3, 3,
-            1 + 3, (sizeof(input_data) - 4) / 12,
-            4 + 1, sizeof(input_data) - 16,
-            1 + 3, (sizeof(input_data) - 4) / 12,
-
-            1 + 3, 2,
-            4 + 1, 16,
-            1 + 1, 3,
-            1 + 3, (sizeof(input_data) - 4) / 12,
-            4 + 1, sizeof(input_data) - 16,
-            1 + 1, (sizeof(input_data) - 4) / 4,
-        };
-
-        uint32_t v = get_readback_uint(&rb, D3D12_UAV_COUNTER_PLACEMENT_ALIGNMENT / sizeof(uint32_t), 0, 0);
-
-        /* Runtime is broken, so cannot test UAV counters. */
-        bug_if(!is_vkd3d) ok(v == 1024 + 4, "Unexpected UAV counter result %u, expected 1028.\n", v);
-
-        for (i = 0; i < ARRAY_SIZE(expected_data); i++)
-        {
-            /* 0 size turns into null desc instead of as specced on AMD ... Works on NV. */
-            bool bugged_bab = !is_vkd3d && (i / 2 == 4 || i / 2 == 10) && is_amd_windows_device(context.device);
-
-            v = get_readback_uint(&rb, 1024 / sizeof(uint32_t) + i, 0, 0);
-            bug_if(bugged_bab)
-            ok(expected_data[i] == v, "Value %u (%s): expected %u, got %u\n",
-                    i / 2, (i % 2 ? "size" : "data"), expected_data[i], v);
-        }
-    }
-
-    release_resource_readback(&rb);
-    ID3D12Resource_Release(input);
-    ID3D12Resource_Release(output);
-    ID3D12DescriptorHeap_Release(heap);
-    destroy_test_context(&context);
-}
-
-void test_r16_texel_buffer_atomic(void)
-{
-    /* More UB bullshit exposed by IL-2: Korea */
-    D3D12_UNORDERED_ACCESS_VIEW_DESC uav_desc;
-    D3D12_ROOT_SIGNATURE_DESC rs_desc;
-    D3D12_ROOT_PARAMETER rs_param[2];
-    D3D12_DESCRIPTOR_RANGE rs_range;
-    struct resource_readback rb;
-    struct test_context context;
-    ID3D12DescriptorHeap *heap;
-    ID3D12Resource *output;
-    unsigned int i;
-
-#include "shaders/descriptors/headers/r16_atomic.h"
-
-    if (!init_compute_test_context(&context))
-        return;
-
-    memset(&rs_desc, 0, sizeof(rs_desc));
-    memset(rs_param, 0, sizeof(rs_param));
-    memset(&rs_range, 0, sizeof(rs_range));
-    rs_desc.NumParameters = ARRAY_SIZE(rs_param);
-    rs_desc.pParameters = rs_param;
-    rs_param[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    rs_param[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    rs_param[0].DescriptorTable.NumDescriptorRanges = 1;
-    rs_param[0].DescriptorTable.pDescriptorRanges = &rs_range;
-
-    rs_range.NumDescriptors = 1;
-    rs_range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-
-    rs_param[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    rs_param[1].Constants.Num32BitValues = 2;
-
-    create_root_signature(context.device, &rs_desc, &context.root_signature);
-    context.pipeline_state = create_compute_pipeline_state(context.device, context.root_signature, r16_atomic_dxbc);
-
-    output = create_default_buffer(context.device, 1024, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
-    heap = create_gpu_descriptor_heap(context.device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 2);
-
-    memset(&uav_desc, 0, sizeof(uav_desc));
-    uav_desc.Format = DXGI_FORMAT_R16_UINT;
-    uav_desc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-    uav_desc.Buffer.FirstElement = 0;
-    uav_desc.Buffer.NumElements = 64;
-    ID3D12Device_CreateUnorderedAccessView(context.device, output, NULL, &uav_desc, get_cpu_descriptor_handle(&context, heap, 0));
-    uav_desc.Buffer.FirstElement = 15;
-    ID3D12Device_CreateUnorderedAccessView(context.device, output, NULL, &uav_desc, get_cpu_descriptor_handle(&context, heap, 1));
-
-    ID3D12GraphicsCommandList_SetDescriptorHeaps(context.list, 1, &heap);
-    ID3D12GraphicsCommandList_SetComputeRootSignature(context.list, context.root_signature);
-    ID3D12GraphicsCommandList_SetPipelineState(context.list, context.pipeline_state);
-
-    for (i = 0; i < 2; i++)
-    {
-        if (i == 1 && !is_nvidia_device(context.device) && !is_nvidia_windows_device(context.device))
-            continue;
-
-        ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(context.list, 0, get_gpu_descriptor_handle(&context, heap, i));
-
-        ID3D12GraphicsCommandList_SetComputeRoot32BitConstant(context.list, 1, 0, 0);
-        ID3D12GraphicsCommandList_SetComputeRoot32BitConstant(context.list, 1, 100000, 1);
-        ID3D12GraphicsCommandList_Dispatch(context.list, 1, 1, 1);
-
-        if (i == 1)
-        {
-            ID3D12GraphicsCommandList_SetComputeRoot32BitConstant(context.list, 1, 1, 0);
-            ID3D12GraphicsCommandList_SetComputeRoot32BitConstant(context.list, 1, 300000, 1);
-            ID3D12GraphicsCommandList_Dispatch(context.list, 1, 1, 1);
-        }
-
-        ID3D12GraphicsCommandList_SetComputeRoot32BitConstant(context.list, 1, 2, 0);
-        ID3D12GraphicsCommandList_SetComputeRoot32BitConstant(context.list, 1, 200000, 1);
-        ID3D12GraphicsCommandList_Dispatch(context.list, 1, 1, 1);
-    }
-
-    transition_resource_state(context.list, output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    get_buffer_readback_with_command_list(output, DXGI_FORMAT_UNKNOWN, &rb, context.queue, context.list);
-
-    {
-        uint32_t value = get_readback_uint(&rb, 0, 0, 0);
-        uint32_t expected = 100000;
-        ok(value == expected, "Value 0, expected %u, got %u\n", expected, value);
-    }
-
-    {
-        /* AMD behavior: value1 is used, likely because the final address is computed to be 4 byte.
-         * NV behavior: value2 is used, likely because it uses SSBO path for texel buffer atomic. */
-        uint32_t value1 = get_readback_uint(&rb, 1, 0, 0);
-        uint32_t value2 = get_readback_uint(&rb, 2, 0, 0);
-        uint32_t expected = 200000;
-        ok(value1 == expected || value2 == expected, "Expected value[1] or value[2] to be 200000.\n");
-    }
-
-    /* Behavior with unaligned atomic seems to be that address rounds down.
-     * On AMD, the GPU hangs. */
-    if (is_nvidia_device(context.device) || is_nvidia_windows_device(context.device))
-    {
-        uint32_t value = get_readback_uint(&rb, 7, 0, 0);
-        uint32_t expected = 100000;
-        ok(value == expected, "Value 7, expected %u, got %u\n", expected, value);
-
-        value = get_readback_uint(&rb, 9, 0, 0);
-        expected = 200000;
-        ok(value == expected, "Value 9, expected %u, got %u\n", expected, value);
-
-        value = get_readback_uint(&rb, 8, 0, 0);
-        expected = 300000;
-        ok(value == expected, "Value 8, expected %u, got %u\n", expected, value);
-    }
-
-    release_resource_readback(&rb);
-    ID3D12DescriptorHeap_Release(heap);
-    ID3D12Resource_Release(output);
-    destroy_test_context(&context);
-}
-
-static void test_conservative_ssbo_vectorization_inner(bool use_dxil, bool root_desc)
-{
-    D3D12_ROOT_SIGNATURE_DESC rs_desc;
-    D3D12_DESCRIPTOR_RANGE desc_range;
-    D3D12_ROOT_PARAMETER rs_param[2];
-    struct test_context context;
-    struct resource_readback rb;
-    ID3D12DescriptorHeap *heap;
-    uint32_t input_data[1024];
-    ID3D12Resource *output;
-    ID3D12Resource *input;
-    unsigned int i, j;
-
-#include "shaders/descriptors/headers/conservative_ssbo_vectorization.h"
-
-    if (!init_compute_test_context(&context))
-        return;
-
-    for (i = 0; i < ARRAY_SIZE(input_data); i++)
-        input_data[i] = i;
-
-    memset(&rs_desc, 0, sizeof(rs_desc));
-    memset(rs_param, 0, sizeof(rs_param));
-    memset(&desc_range, 0, sizeof(desc_range));
-    rs_desc.NumParameters = ARRAY_SIZE(rs_param);
-    rs_desc.pParameters = rs_param;
-
-    if (root_desc)
-    {
-        rs_param[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-        rs_param[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    }
-    else
-    {
-        rs_param[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        rs_param[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-        rs_param[0].DescriptorTable.NumDescriptorRanges = 1;
-        rs_param[0].DescriptorTable.pDescriptorRanges = &desc_range;
-
-        desc_range.NumDescriptors = 1;
-        desc_range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    }
-
-    rs_param[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-    rs_param[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    create_root_signature(context.device, &rs_desc, &context.root_signature);
-
-    input = create_upload_buffer(context.device, sizeof(input_data), input_data);
-    output = create_default_buffer(context.device, 4 * 4 * sizeof(struct uvec4),
-                                   D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COMMON);
-    heap = create_gpu_descriptor_heap(context.device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1);
-
-    context.pipeline_state = create_compute_pipeline_state(context.device,
-        context.root_signature,
-        use_dxil ? conservative_ssbo_vectorization_dxil : conservative_ssbo_vectorization_dxbc);
-
-    if (!root_desc)
-    {
-        D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc;
-        memset(&srv_desc, 0, sizeof(srv_desc));
-
-        srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-        srv_desc.Buffer.FirstElement = 1;
-        srv_desc.Buffer.NumElements = 16;
-        srv_desc.Buffer.StructureByteStride = 20;
-
-        if (is_nvidia_device(context.device))
-        {
-            vkd3d_mute_validation_message("12266", "Expected low alignment");
-            vkd3d_mute_validation_message("12351", "Expected low alignment");
-        }
-
-        ID3D12Device_CreateShaderResourceView(context.device, input, &srv_desc,
-            get_cpu_descriptor_handle(&context, heap, 0));
-
-        if (is_nvidia_device(context.device))
-        {
-            vkd3d_unmute_validation_message("12266");
-            vkd3d_unmute_validation_message("12351");
-        }
-
-        ID3D12GraphicsCommandList_SetDescriptorHeaps(context.list, 1, &heap);
-    }
-
-    ID3D12GraphicsCommandList_SetComputeRootSignature(context.list, context.root_signature);
-    ID3D12GraphicsCommandList_SetPipelineState(context.list, context.pipeline_state);
-
-    if (root_desc)
-    {
-        ID3D12GraphicsCommandList_SetComputeRootShaderResourceView(context.list, 0,
-            ID3D12Resource_GetGPUVirtualAddress(input) + 20);
-    }
-    else
-    {
-        ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(context.list, 0,
-            get_gpu_descriptor_handle(&context, heap, 0));
-    }
-
-    ID3D12GraphicsCommandList_SetComputeRootUnorderedAccessView(context.list, 1,
-        ID3D12Resource_GetGPUVirtualAddress(output));
-
-    ID3D12GraphicsCommandList_Dispatch(context.list, 1, 1, 1);
-    transition_resource_state(context.list, output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-        D3D12_RESOURCE_STATE_COPY_SOURCE);
-    get_buffer_readback_with_command_list(output, DXGI_FORMAT_UNKNOWN, &rb, context.queue, context.list);
-
-    for (i = 0; i < 4; i++)
-    {
-        const struct uvec4 *v[4] = {
-            get_readback_uvec4(&rb, 4 * i + 0, 0),
-            get_readback_uvec4(&rb, 4 * i + 1, 0),
-            get_readback_uvec4(&rb, 4 * i + 2, 0),
-            get_readback_uvec4(&rb, 4 * i + 3, 0),
-        };
-
-        struct uvec4 expected[4] = {
-            { 5, 6, 7, 8 },
-            { 10, 11, 12, 13 },
-            { 25, 26, 27, 28 },
-            { 5 + 20 * i, 6 + 20 * i, 7 + 20 * i, 8 + 20 * i },
-        };
-
-        for (j = 0; j < 4; j++)
-        {
-            ok(compare_uvec4(v[j], &expected[j]), "v%u failed, expected (%u, %u, %u, %u), got (%u, %u, %u, %u)\n",
-                    j,
-                    expected[j].x, expected[j].y, expected[j].z, expected[j].w,
-                    v[j]->x, v[j]->y, v[j]->z, v[j]->w);
-        }
-    }
-
-    release_resource_readback(&rb);
-    ID3D12Resource_Release(output);
-    ID3D12Resource_Release(input);
-    ID3D12DescriptorHeap_Release(heap);
-    destroy_test_context(&context);
-}
-
-void test_conservative_ssbo_vectorization_dxbc_heap_desc(void)
-{
-    test_conservative_ssbo_vectorization_inner(false, false);
-}
-
-void test_conservative_ssbo_vectorization_dxbc_root_desc(void)
-{
-    test_conservative_ssbo_vectorization_inner(false, true);
-}
-
-void test_conservative_ssbo_vectorization_dxil_heap_desc(void)
-{
-    test_conservative_ssbo_vectorization_inner(true, false);
-}
-
-void test_conservative_ssbo_vectorization_dxil_root_desc(void)
-{
-    test_conservative_ssbo_vectorization_inner(true, true);
-}

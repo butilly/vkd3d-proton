@@ -77,6 +77,8 @@ static const char *vkd3d_breadcrumb_command_type_to_str(enum vkd3d_breadcrumb_co
             return "build_omm";
         case VKD3D_BREADCRUMB_COMMAND_COPY_RTAS:
             return "copy_rtas";
+        case VKD3D_BREADCRUMB_COMMAND_COPY_OMM:
+            return "copy_omm";
         case VKD3D_BREADCRUMB_COMMAND_EMIT_RTAS_POSTBUILD:
             return "emit_rtas_postbuild";
         case VKD3D_BREADCRUMB_COMMAND_TRACE_RAYS:
@@ -188,7 +190,7 @@ HRESULT vkd3d_breadcrumb_tracer_init(struct vkd3d_breadcrumb_tracer *tracer, str
         }
 
         if (FAILED(hr = vkd3d_allocate_internal_buffer_memory(device, tracer->host_buffer,
-                memory_props, 0, &tracer->host_buffer_memory)))
+                memory_props, &tracer->host_buffer_memory)))
         {
             goto err;
         }
@@ -767,7 +769,7 @@ void vkd3d_breadcrumb_tracer_signal(struct d3d12_command_list *list)
                 trace->counter));
     }
 
-    if (VKD3D_CONFIG_FLAG_IS_SET(BREADCRUMBS_SYNC))
+    if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_BREADCRUMBS_SYNC)
     {
         VkMemoryBarrier2 vk_barrier;
         VkDependencyInfo dep_info;
@@ -968,9 +970,9 @@ void vkd3d_breadcrumb_tracer_register_placed_resource(struct d3d12_heap *heap,
                     msg = "Attempting to place opaque resource on heap, placement aliases with other resources.";
 
                 d3d12_resource_report_parameters(report_buffer, sizeof(report_buffer), resource);
-                INFO("\n%s (heap %p)\n  New placement: resource cookie = %u, offset = %"PRIu64", size = %"PRIu64", VA = %"PRIx64"\n\t%s\n",
+                INFO("\n%s (heap %p)\n  New placement: resource cookie = %"PRIu64", offset = %"PRIu64", size = %"PRIu64", VA = %"PRIx64"\n\t%s\n",
                         msg, heap,
-                        resource->res.cookie.index,
+                        resource->res.cookie,
                         heap_offset, required_size, resource->res.va,
                         report_buffer);
 
@@ -978,8 +980,8 @@ void vkd3d_breadcrumb_tracer_register_placed_resource(struct d3d12_heap *heap,
             }
 
             d3d12_resource_report_parameters(report_buffer, sizeof(report_buffer), placement->resource);
-            INFO("\n   Existing aliasing resource : cookie = %u, offset = %"PRIu64", size = %"PRIu64".\n\t\t%s\n",
-                    placement->resource->res.cookie.index, placement->heap_offset, placement->size,
+            INFO("\n   Existing aliasing resource : cookie = %"PRIu64", offset = %"PRIu64", size = %"PRIu64".\n\t\t%s\n",
+                    placement->resource->res.cookie, placement->heap_offset, placement->size,
                     report_buffer);
         }
     }
@@ -987,9 +989,9 @@ void vkd3d_breadcrumb_tracer_register_placed_resource(struct d3d12_heap *heap,
     if (!has_alias)
     {
         d3d12_resource_report_parameters(report_buffer, sizeof(report_buffer), resource);
-        INFO("\nPlacing non-aliased resource (heap %p)\n New placement: resource cookie = %u, offset = %"PRIu64", size = %"PRIu64", VA = %"PRIx64"\n\t%s\n",
+        INFO("\nPlacing non-aliased resource (heap %p)\n New placement: resource cookie = %"PRIu64", offset = %"PRIu64", size = %"PRIu64", VA = %"PRIx64"\n\t%s\n",
                 heap,
-                resource->res.cookie.index,
+                resource->res.cookie,
                 heap_offset, required_size, resource->res.va,
                 report_buffer);
     }

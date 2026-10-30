@@ -230,30 +230,6 @@ VK_DEVICE_EXT_PFN(vkCmdSetFragmentShadingRateKHR)
 VK_DEVICE_EXT_PFN(vkGetCalibratedTimestampsKHR)
 VK_INSTANCE_EXT_PFN(vkGetPhysicalDeviceCalibrateableTimeDomainsKHR)
 
-/* VK_KHR_device_address_commands */
-VK_DEVICE_EXT_PFN(vkCmdBeginConditionalRendering2EXT)
-VK_DEVICE_EXT_PFN(vkCmdBeginTransformFeedback2EXT)
-VK_DEVICE_EXT_PFN(vkCmdBindIndexBuffer3KHR)
-VK_DEVICE_EXT_PFN(vkCmdBindTransformFeedbackBuffers2EXT)
-VK_DEVICE_EXT_PFN(vkCmdBindVertexBuffers3KHR)
-VK_DEVICE_EXT_PFN(vkCmdCopyImageToMemoryKHR)
-VK_DEVICE_EXT_PFN(vkCmdCopyMemoryKHR)
-VK_DEVICE_EXT_PFN(vkCmdCopyMemoryToImageKHR)
-VK_DEVICE_EXT_PFN(vkCmdCopyQueryPoolResultsToMemoryKHR)
-VK_DEVICE_EXT_PFN(vkCmdDispatchIndirect2KHR)
-VK_DEVICE_EXT_PFN(vkCmdDrawIndexedIndirect2KHR)
-VK_DEVICE_EXT_PFN(vkCmdDrawIndexedIndirectCount2KHR)
-VK_DEVICE_EXT_PFN(vkCmdDrawIndirect2KHR)
-VK_DEVICE_EXT_PFN(vkCmdDrawIndirectByteCount2EXT)
-VK_DEVICE_EXT_PFN(vkCmdDrawIndirectCount2KHR)
-VK_DEVICE_EXT_PFN(vkCmdDrawMeshTasksIndirect2EXT)
-VK_DEVICE_EXT_PFN(vkCmdDrawMeshTasksIndirectCount2EXT)
-VK_DEVICE_EXT_PFN(vkCmdEndTransformFeedback2EXT)
-VK_DEVICE_EXT_PFN(vkCmdFillMemoryKHR)
-VK_DEVICE_EXT_PFN(vkCmdUpdateMemoryKHR)
-VK_DEVICE_EXT_PFN(vkCmdWriteMarkerToMemoryAMD)
-VK_DEVICE_EXT_PFN(vkCreateAccelerationStructure2KHR)
-
 #ifdef VK_KHR_external_memory_win32
 /* VK_KHR_external_memory_win32 */
 VK_DEVICE_EXT_PFN(vkGetMemoryWin32HandleKHR)
@@ -355,7 +331,6 @@ VK_DEVICE_EXT_PFN(vkCmdCuLaunchKernelNVX)
 VK_DEVICE_EXT_PFN(vkGetImageViewHandle64NVX)
 VK_DEVICE_EXT_PFN(vkGetImageViewHandleNVX)
 VK_DEVICE_EXT_PFN(vkGetImageViewAddressNVX)
-VK_DEVICE_EXT_PFN(vkGetDeviceCombinedImageSamplerIndexNVX)
 
 /* VK_VALVE_descriptor_set_host_mapping */
 VK_DEVICE_EXT_PFN(vkGetDescriptorSetLayoutHostMappingInfoVALVE)
@@ -399,9 +374,8 @@ VK_DEVICE_EXT_PFN(vkSetDeviceMemoryPriorityEXT)
 VK_DEVICE_EXT_PFN(vkCmdDecompressMemoryNV)
 VK_DEVICE_EXT_PFN(vkCmdDecompressMemoryIndirectCountNV)
 
-/* VK_KHR_device_fault */
-VK_DEVICE_EXT_PFN(vkGetDeviceFaultReportsKHR)
-VK_DEVICE_EXT_PFN(vkGetDeviceFaultDebugInfoKHR)
+/* VK_EXT_device_fault */
+VK_DEVICE_EXT_PFN(vkGetDeviceFaultInfoEXT)
 
 /* VK_NV_low_latency2 */
 VK_DEVICE_EXT_PFN(vkSetLatencySleepModeNV)
@@ -411,7 +385,15 @@ VK_DEVICE_EXT_PFN(vkGetLatencyTimingsNV)
 VK_DEVICE_EXT_PFN(vkQueueNotifyOutOfBandNV)
 
 /* VK_KHR_cooperative_matrix */
-VK_INSTANCE_EXT_PFN(vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR)
+VK_INSTANCE_PFN(vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR)
+
+/* VK_EXT_opacity_micromap */
+VK_DEVICE_EXT_PFN(vkGetMicromapBuildSizesEXT)
+VK_DEVICE_EXT_PFN(vkCreateMicromapEXT)
+VK_DEVICE_EXT_PFN(vkDestroyMicromapEXT)
+VK_DEVICE_EXT_PFN(vkCmdBuildMicromapsEXT)
+VK_DEVICE_EXT_PFN(vkCmdWriteMicromapsPropertiesEXT)
+VK_DEVICE_EXT_PFN(vkCmdCopyMicromapEXT)
 
 /* VK_AMD_anti_lag */
 VK_DEVICE_EXT_PFN(vkAntiLagUpdateAMD)
@@ -421,17 +403,6 @@ VK_DEVICE_EXT_PFN(vkGetPastPresentationTimingEXT)
 VK_DEVICE_EXT_PFN(vkGetSwapchainTimeDomainPropertiesEXT)
 VK_DEVICE_EXT_PFN(vkGetSwapchainTimingPropertiesEXT)
 VK_DEVICE_EXT_PFN(vkSetSwapchainPresentTimingQueueSizeEXT)
-
-/* VK_EXT_descriptor_heap */
-VK_INSTANCE_EXT_PFN(vkGetPhysicalDeviceDescriptorSizeEXT)
-VK_DEVICE_EXT_PFN(vkWriteSamplerDescriptorsEXT)
-VK_DEVICE_EXT_PFN(vkWriteResourceDescriptorsEXT)
-VK_DEVICE_EXT_PFN(vkCmdBindSamplerHeapEXT)
-VK_DEVICE_EXT_PFN(vkCmdBindResourceHeapEXT)
-VK_DEVICE_EXT_PFN(vkCmdPushDataEXT)
-VK_DEVICE_EXT_PFN(vkGetImageOpaqueCaptureDataEXT)
-VK_DEVICE_EXT_PFN(vkRegisterCustomBorderColorEXT)
-VK_DEVICE_EXT_PFN(vkUnregisterCustomBorderColorEXT)
 
 #undef VK_INSTANCE_PFN
 #undef VK_INSTANCE_EXT_PFN

@@ -42,7 +42,7 @@ static HRESULT d3d12_fence_signal_cpu_timeline_semaphore(struct d3d12_fence *fen
 
 /* This must be at least twice the number of texture region batches, since we must be able to resolve
  * a source + destination memory barrier per copy without incurring a barrier flush.
- * A barrier flush breaks our ability to eliminate redundant transitions for e.g. source and dest copies. */
+ * A barrier flush breaks our ability to eliminate redundant transitions for e.g. source copies. */
 #define MAX_BATCHED_IMAGE_BARRIERS (VKD3D_COPY_TEXTURE_REGION_MAX_BATCH_SIZE * 2)
 struct d3d12_command_list_barrier_batch
 {
@@ -80,18 +80,15 @@ static VkImageLayout d3d12_command_list_get_depth_stencil_resource_layout(const 
 static void d3d12_command_list_decay_optimal_dsv_resource(struct d3d12_command_list *list,
         const struct d3d12_resource *resource, uint32_t plane_optimal_mask,
         struct d3d12_command_list_barrier_batch *batch);
-static void d3d12_command_list_end_transfer_batch(struct d3d12_command_list *list, bool resolve_shader_resource_barrier);
+static void d3d12_command_list_end_transfer_batch(struct d3d12_command_list *list);
 static void d3d12_command_list_end_transfer_batch_if_trivial(struct d3d12_command_list *list);
 static void d3d12_command_list_end_wbi_batch(struct d3d12_command_list *list);
 static inline void d3d12_command_list_ensure_transfer_batch(struct d3d12_command_list *list, enum vkd3d_batch_type type);
 static void d3d12_command_list_free_rtas_batch(struct d3d12_command_list *list);
 static void d3d12_command_list_flush_rtas_batch(struct d3d12_command_list *list);
-static void d3d12_command_list_flush_rtas_barrier(struct d3d12_command_list *list);
 static void d3d12_command_list_clear_rtas_batch(struct d3d12_command_list *list);
 
 static void d3d12_command_list_flush_query_resolves(struct d3d12_command_list *list);
-
-static void d3d12_command_allocator_ensure_compute_fallback(struct d3d12_command_allocator *allocator);
 
 static HRESULT vkd3d_create_binary_semaphore(struct d3d12_device *device, VkSemaphore *vk_semaphore)
 {
@@ -142,10 +139,19 @@ HRESULT vkd3d_queue_create(struct d3d12_device *device, uint32_t family_index, u
         return hresult_from_errno(rc);
     }
 
-    if ((rc = pthread_mutex_init(&object->command_queue_mutex, NULL)))
+    if ((rc = pthread_mutex_init(&object->fence_mutex, NULL)))
     {
         ERR("Failed to initialize mutex, error %d.\n", rc);
         pthread_mutex_destroy(&object->mutex);
+        vkd3d_free(object);
+        return hresult_from_errno(rc);
+    }
+
+    if ((rc = pthread_cond_init(&object->fence_cond, NULL)))
+    {
+        ERR("Failed to initialize cond, error %d.\n", rc);
+        pthread_mutex_destroy(&object->mutex);
+        pthread_mutex_destroy(&object->fence_mutex);
         vkd3d_free(object);
         return hresult_from_errno(rc);
     }
@@ -220,7 +226,8 @@ fail_free_command_pool:
     VK_CALL(vkDestroyCommandPool(device->vk_device, object->barrier_pool, NULL));
 fail_destroy_mutex:
     pthread_mutex_destroy(&object->mutex);
-    pthread_mutex_destroy(&object->command_queue_mutex);
+    pthread_mutex_destroy(&object->fence_mutex);
+    pthread_cond_destroy(&object->fence_cond);
     return hr;
 }
 
@@ -269,7 +276,8 @@ void vkd3d_queue_drain(struct vkd3d_queue *queue, struct d3d12_device *device)
         submit_desc.signalSemaphoreInfoCount = 1;
         submit_desc.pSignalSemaphoreInfos = &signal_semaphore;
 
-        if ((vr = VK_CALL(vkQueueSubmit2(vk_queue, 1, &submit_desc, VK_NULL_HANDLE))) < 0)
+        if ((vr = VK_CALL(vkQueueSubmit2(vk_queue, 1, &submit_desc,
+            vkd3d_queue_get_signal_fence_proxy_locked(queue)))) < 0)
             ERR("Failed to submit queue(s), vr %d.\n", vr);
     }
 
@@ -286,14 +294,26 @@ void vkd3d_queue_drain(struct vkd3d_queue *queue, struct d3d12_device *device)
 void vkd3d_queue_destroy(struct vkd3d_queue *queue, struct d3d12_device *device)
 {
     const struct vkd3d_vk_device_procs *vk_procs = &device->vk_procs;
+    size_t i;
 
     VK_CALL(vkDestroyCommandPool(device->vk_device, queue->barrier_pool, NULL));
     VK_CALL(vkDestroySemaphore(device->vk_device, queue->submission_timeline, NULL));
 
     pthread_mutex_destroy(&queue->mutex);
-    pthread_mutex_destroy(&queue->command_queue_mutex);
     vkd3d_free(queue->command_queues);
     vkd3d_free(queue->wait_semaphores);
+
+    pthread_mutex_destroy(&queue->fence_mutex);
+    pthread_cond_destroy(&queue->fence_cond);
+
+    for (i = 0; i < queue->submissions_count; i++)
+        VK_CALL(vkDestroyFence(device->vk_device, queue->submissions[i].vk_fence, NULL));
+    vkd3d_free(queue->submissions);
+
+    for (i = 0; i < queue->fences_count; i++)
+        VK_CALL(vkDestroyFence(device->vk_device, queue->vk_fences[i], NULL));
+    vkd3d_free(queue->vk_fences);
+
     vkd3d_free(queue);
 }
 
@@ -359,21 +379,191 @@ void vkd3d_queue_add_wait(struct vkd3d_queue *queue, VkSemaphore semaphore, uint
     pthread_mutex_unlock(&queue->mutex);
 }
 
-static void vkd3d_queue_update_observed_cpu_timeline(struct vkd3d_queue *queue, uint64_t timeline)
+static VkFence vkd3d_queue_get_or_create_fence_locked(struct vkd3d_queue *queue)
 {
-    uint64_t curr_value = vkd3d_atomic_uint64_load_explicit(&queue->cpu_observed_timeline_value, vkd3d_memory_order_relaxed);
-    uint64_t read_value;
+    const struct vkd3d_vk_device_procs *vk_procs = &queue->device->vk_procs;
+    VkFenceCreateInfo fence_info;
+    VkFence vk_fence;
 
-    while (timeline > curr_value)
+    if (queue->fences_count)
+        return queue->vk_fences[--queue->fences_count];
+
+    memset(&fence_info, 0, sizeof(fence_info));
+    fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    if (VK_CALL(vkCreateFence(queue->device->vk_device, &fence_info, NULL, &vk_fence)) != VK_SUCCESS)
     {
-        read_value = vkd3d_atomic_uint64_compare_exchange(&queue->cpu_observed_timeline_value,
-                curr_value, timeline, vkd3d_memory_order_release, vkd3d_memory_order_relaxed);
-
-        if (read_value == curr_value)
-            break;
-
-        curr_value = read_value;
+        ERR("Failed to create VkFence.\n");
+        return VK_NULL_HANDLE;
     }
+
+    return vk_fence;
+}
+
+static bool d3d12_device_has_slow_cpu_timeline_semaphores(struct d3d12_device *device)
+{
+    return device->device_info.vulkan_1_2_properties.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY &&
+        !(vkd3d_config_flags & VKD3D_CONFIG_FLAG_SKIP_DRIVER_WORKAROUNDS);
+}
+
+VkFence vkd3d_queue_get_signal_fence_proxy_locked(struct vkd3d_queue *queue)
+{
+    struct vkd3d_queue_pending_fence_submission *submission;
+    VkFence vk_fence = VK_NULL_HANDLE;
+    size_t i;
+
+    /* Just use normal path. */
+    if (!d3d12_device_has_slow_cpu_timeline_semaphores(queue->device))
+        return VK_NULL_HANDLE;
+
+    pthread_mutex_lock(&queue->fence_mutex);
+
+    if (queue->submission_timeline_count <= queue->cpu_observed_timeline_value)
+    {
+        FIXME("Submission is already observed to be complete.\n");
+        goto unlock;
+    }
+
+    for (i = 0; i < queue->submissions_count; i++)
+    {
+        /* We already have a pending submission. Should not happen. */
+        if (queue->submissions[i].timeline == queue->submission_timeline_count)
+        {
+            FIXME("There is already a pending submit for this submission timeline.\n");
+            goto unlock;
+        }
+    }
+
+    vkd3d_array_reserve((void **)&queue->submissions, &queue->submissions_size,
+            queue->submissions_count + 1, sizeof(*queue->submissions));
+    submission = &queue->submissions[queue->submissions_count++];
+    vk_fence = vkd3d_queue_get_or_create_fence_locked(queue);
+    submission->vk_fence = vk_fence;
+    submission->timeline = queue->submission_timeline_count;
+    submission->existing_waiter = false;
+
+unlock:
+    pthread_mutex_unlock(&queue->fence_mutex);
+    return vk_fence;
+}
+
+static struct vkd3d_queue_pending_fence_submission *
+vkd3d_queue_wait_find_pending_submission_locked(struct vkd3d_queue *queue, uint64_t timeline)
+{
+    size_t i;
+    for (i = 0; i < queue->submissions_count; i++)
+        if (queue->submissions[i].timeline == timeline)
+            return &queue->submissions[i];
+
+    /* This should not happen unless someone else waited and bumped cpu_observed_timeline_value. */
+    return NULL;
+}
+
+static void vkd3d_queue_recycle_completed_fence_locked(struct vkd3d_queue *queue, VkFence vk_fence)
+{
+    const struct vkd3d_vk_device_procs *vk_procs = &queue->device->vk_procs;
+
+    if (VK_CALL(vkResetFences(queue->device->vk_device, 1, &vk_fence)) != VK_SUCCESS)
+    {
+        ERR("Failed to reset fence.\n");
+    }
+    else
+    {
+        vkd3d_array_reserve((void **)&queue->vk_fences, &queue->fences_size,
+                queue->fences_count + 1, sizeof(*queue->vk_fences));
+        queue->vk_fences[queue->fences_count++] = vk_fence;
+    }
+}
+
+static void vkd3d_queue_complete_pending_submission_locked(struct vkd3d_queue *queue, uint64_t timeline)
+{
+    size_t i;
+
+    for (i = 0; i < queue->submissions_count; i++)
+    {
+        if (queue->submissions[i].timeline == timeline)
+        {
+            queue->cpu_observed_timeline_value = max(queue->cpu_observed_timeline_value, timeline);
+            vkd3d_queue_recycle_completed_fence_locked(queue, queue->submissions[i].vk_fence);
+            queue->submissions[i] = queue->submissions[--queue->submissions_count];
+            break;
+        }
+    }
+}
+
+static void vkd3d_queue_garbage_collect_obsolete_waits_locked(struct vkd3d_queue *queue)
+{
+    /* In case we dropped waiting for some timelines for whatever reason, remove any obsolete entries now. */
+    size_t i;
+
+    for (i = 0; i < queue->submissions_count; )
+    {
+        if (!queue->submissions[i].existing_waiter && queue->submissions[i].timeline <= queue->cpu_observed_timeline_value)
+        {
+            /* No need to wait, we already know that the fence must have completed its signal
+             * due to signal ordering rules. */
+            vkd3d_queue_recycle_completed_fence_locked(queue, queue->submissions[i].vk_fence);
+            queue->submissions[i] = queue->submissions[--queue->submissions_count];
+        }
+        else
+        {
+            i++;
+        }
+    }
+}
+
+static VkResult vkd3d_queue_wait_submission_timeline_iterate_locked(struct vkd3d_queue *queue,
+        uint64_t value, uint64_t timeout)
+{
+    struct vkd3d_queue_pending_fence_submission *submission;
+    VkFence vk_fence;
+    VkResult vr;
+
+    submission = vkd3d_queue_wait_find_pending_submission_locked(queue, value);
+    /* This should not happen unless someone else waited and bumped cpu_observed_timeline_value. */
+    assert(submission);
+
+    if (submission->existing_waiter)
+    {
+        /* Another fence worker is waiting for this too for some reason wait until it's done. */
+        pthread_cond_wait(&queue->fence_cond, &queue->fence_mutex);
+        return VK_SUCCESS;
+    }
+    else
+    {
+        const struct vkd3d_vk_device_procs *vk_procs = &queue->device->vk_procs;
+
+        submission->existing_waiter = true;
+        vk_fence = submission->vk_fence;
+
+        pthread_mutex_unlock(&queue->fence_mutex);
+        vr = VK_CALL(vkWaitForFences(queue->device->vk_device, 1, &vk_fence, VK_TRUE, timeout));
+        pthread_mutex_lock(&queue->fence_mutex);
+
+        /* submission pointer may be stale */
+        submission = vkd3d_queue_wait_find_pending_submission_locked(queue, value);
+        assert(submission);
+
+        if (vr == VK_SUCCESS)
+            vkd3d_queue_complete_pending_submission_locked(queue, value);
+        else
+            submission->existing_waiter = false;
+
+        pthread_cond_broadcast(&queue->fence_cond);
+        return vr;
+    }
+}
+
+VkResult vkd3d_queue_wait_submission_timeline(struct vkd3d_queue *queue, uint64_t timeline, uint64_t timeout)
+{
+    VkResult vr = VK_SUCCESS;
+    pthread_mutex_lock(&queue->fence_mutex);
+
+    while (timeline > queue->cpu_observed_timeline_value && vr == VK_SUCCESS)
+        vr = vkd3d_queue_wait_submission_timeline_iterate_locked(queue, timeline, timeout);
+
+    vkd3d_queue_garbage_collect_obsolete_waits_locked(queue);
+    pthread_mutex_unlock(&queue->fence_mutex);
+    return vr;
 }
 
 void vkd3d_add_wait_to_all_queues(struct d3d12_device *device, VkSemaphore vk_semaphore, uint64_t value)
@@ -466,6 +656,8 @@ struct vkd3d_waiting_fence_submission_info
 {
     struct d3d12_command_allocator **command_allocators;
     size_t num_command_allocators;
+    struct d3d12_resource **retained_resources;
+    size_t num_retained_resources;
 };
 
 static void vkd3d_waiting_fence_release_submission(struct vkd3d_fence_worker *worker,
@@ -478,6 +670,11 @@ static void vkd3d_waiting_fence_release_submission(struct vkd3d_fence_worker *wo
         d3d12_command_allocator_dec_ref(info->command_allocators[i]);
 
     vkd3d_free(info->command_allocators);
+
+    for (i = 0; i < info->num_retained_resources; i++)
+        d3d12_resource_decref_retained(info->retained_resources[i]);
+
+    vkd3d_free(info->retained_resources);
 }
 
 struct vkd3d_waiting_fence_sparse_bind_info
@@ -505,16 +702,6 @@ struct vkd3d_waiting_fence_signal_info
     uint64_t update_count;
 };
 
-static bool d3d12_device_removed_unblocks_fences(struct d3d12_device *device)
-{
-    /* With breadcrumbs or fault reporting enabled, deliberately keep the application
-     * blocked on its fences so it cannot tear down or exit while debug dumping is in progress. */
-    if (VKD3D_CONFIG_FLAG_IS_SET(BREADCRUMBS) || VKD3D_CONFIG_FLAG_IS_SET(FAULT))
-        return false;
-
-    return FAILED(d3d12_device_removed_reason(device));
-}
-
 static void vkd3d_waiting_fence_signal_fence(struct vkd3d_fence_worker *worker,
         void *userdata, bool complete)
 {
@@ -526,19 +713,7 @@ static void vkd3d_waiting_fence_signal_fence(struct vkd3d_fence_worker *worker,
         TRACE("Signaling fence %p to virtual value %"PRIu64".\n", info->fence, info->virtual_value);
 
         if (FAILED(hr = d3d12_fence_signal(info->fence, worker, info->update_count)))
-            ERR("Failed to signal D3D12 fence, hr %#x.\n", (int)hr);
-    }
-    else if (d3d12_device_removed_unblocks_fences(info->fence->device))
-    {
-        /* A removed device completes every fence to UINT64_MAX, which also releases
-         * any CPU waiters, events and queued GPU waits that would otherwise never wake up.
-         * Retire the pending update first so that ordered signals do not wait on it forever. */
-        WARN("Device is removed, signaling fence %p to UINT64_MAX.\n", info->fence);
-
-        if (FAILED(hr = d3d12_fence_signal(info->fence, worker, info->update_count)))
-            ERR("Failed to signal D3D12 fence, hr %#x.\n", (int)hr);
-        if (FAILED(hr = d3d12_fence_signal_cpu_timeline_semaphore(info->fence, UINT64_MAX)))
-            ERR("Failed to signal D3D12 fence, hr %#x.\n", (int)hr);
+            ERR("Failed to signal D3D12 fence, hr %#x.\n", hr);
     }
 
     d3d12_fence_dec_ref(info->fence);
@@ -646,18 +821,23 @@ static void vkd3d_wait_for_gpu_timeline_semaphore(struct vkd3d_fence_worker *wor
          * Usually, we'd observe DEVICE_LOST in subsequent submissions,
          * but if application submits something and expects to wait on that submission
          * immediately, this can happen. */
-        if (VKD3D_CONFIG_FLAG_IS_SET(BREADCRUMBS) || VKD3D_CONFIG_FLAG_IS_SET(FAULT))
+        if (vkd3d_config_flags & (VKD3D_CONFIG_FLAG_BREADCRUMBS | VKD3D_CONFIG_FLAG_FAULT))
             timeout = 5000000000ull;
 
-        vr = VK_CALL(vkWaitSemaphores(device->vk_device, &wait_info, timeout));
-
-        if (vr == VK_SUCCESS && fence->fence_info.vk_semaphore == queue->vkd3d_queue->submission_timeline)
-            vkd3d_queue_update_observed_cpu_timeline(queue->vkd3d_queue, fence->fence_info.vk_semaphore_value);
+        if (d3d12_device_has_slow_cpu_timeline_semaphores(device) &&
+            fence->fence_info.vk_semaphore == queue->vkd3d_queue->submission_timeline)
+        {
+            vr = vkd3d_queue_wait_submission_timeline(queue->vkd3d_queue, fence->fence_info.vk_semaphore_value, timeout);
+        }
+        else
+        {
+            vr = VK_CALL(vkWaitSemaphores(device->vk_device, &wait_info, timeout));
+        }
 
         if (vr != VK_SUCCESS)
         {
             ERR("Failed to wait for Vulkan timeline semaphore, vr %d.\n", vr);
-            VKD3D_DEVICE_REPORT_FAULT_AND_BREADCRUMB_IF(device, vr == VK_ERROR_DEVICE_LOST || vr == VK_TIMEOUT, vr);
+            VKD3D_DEVICE_REPORT_FAULT_AND_BREADCRUMB_IF(device, vr == VK_ERROR_DEVICE_LOST || vr == VK_TIMEOUT);
             vkd3d_waiting_fence_complete_submissions(device, worker, fence, false);
             return;
         }
@@ -665,10 +845,6 @@ static void vkd3d_wait_for_gpu_timeline_semaphore(struct vkd3d_fence_worker *wor
         /* This is a good time to kick the debug threads into action. */
         vkd3d_shader_debug_ring_kick(&device->debug_ring, device, false);
         vkd3d_descriptor_debug_kick_qa_check(device->descriptor_qa_global_info);
-
-        /* Some page faults may not trigger a real fault. Just poll. */
-        if (device->device_info.fault_features.deviceFaultReportMasked)
-            d3d12_device_poll_device_faults(device, 0);
     }
 
     vkd3d_waiting_fence_complete_submissions(device, worker, fence, true);
@@ -959,7 +1135,7 @@ static HRESULT vkd3d_waiting_event_signal(struct d3d12_device *device, struct vk
     hr = vkd3d_native_sync_handle_signal(event->handle);
 
     if (FAILED(hr))
-        ERR("Failed to signal event, hr #%x.\n", (int)hr);
+        ERR("Failed to signal event, hr #%x.\n", hr);
 
     return hr;
 }
@@ -1126,22 +1302,10 @@ static void d3d12_fence_unlock(struct d3d12_fence *fence)
     pthread_mutex_unlock(&fence->mutex);
 }
 
-static bool d3d12_fence_update_count_is_complete_locked(struct d3d12_fence *fence, uint64_t update_count)
-{
-    size_t i;
-
-    for (i = 0; i < fence->pending_updates_count; i++)
-        if (fence->pending_updates[i].update_count == update_count)
-            return false;
-
-    /* It's not in the pending list, so it must be complete. */
-    return true;
-}
-
-static void d3d12_fence_wait_until_signal_is_complete_locked(struct d3d12_fence *fence, uint64_t update_count)
+static void d3d12_fence_wait_until_signal_count_reaches_locked(struct d3d12_fence *fence, uint64_t update_count)
 {
     assert(update_count != 0);
-    while (!d3d12_fence_update_count_is_complete_locked(fence, update_count))
+    while (fence->signal_count < update_count)
         pthread_cond_wait(&fence->cond, &fence->mutex);
 }
 
@@ -1240,29 +1404,32 @@ static HRESULT d3d12_fence_signal(struct d3d12_fence *fence, struct vkd3d_fence_
         return hresult_from_errno(rc);
     }
 
-    /* It's possible that we "jump" the signal update.
-     * For well-ordered signals between queues, we queue up a signal ordering wait
-     * to guarantee that update_count retires in expected order.
-     * For a racy GPU signal, where two queues concurrently signal fence
-     * one of them will randomly win.
-     */
-    did_signal = false;
-
-    for (i = 0; i < fence->pending_updates_count; i++)
+    /* With multiple fence workers, it is possible that signal calls are
+     * out of order. The physical value itself is monotonic, but we need to
+     * make sure that all signals happen in correct order if there are fence rewinds.
+     * We don't expect the loop to run more than once,
+     * but there might be extreme edge cases where we signal 2 or more. */
+    while (fence->signal_count < update_count)
     {
-        if (update_count == fence->pending_updates[i].update_count)
-        {
-            fence->virtual_value = fence->pending_updates[i].virtual_value;
-            d3d12_fence_signal_external_events_locked(fence, worker);
-            d3d12_fence_update_wait_tickets_locked(fence);
-            fence->pending_updates[i] = fence->pending_updates[--fence->pending_updates_count];
-            did_signal = true;
-            break;
-        }
-    }
+        fence->signal_count++;
+        did_signal = false;
 
-    if (!did_signal)
-        FIXME("Did not signal a virtual value?\n");
+        for (i = 0; i < fence->pending_updates_count; i++)
+        {
+            if (fence->signal_count == fence->pending_updates[i].update_count)
+            {
+                fence->virtual_value = fence->pending_updates[i].virtual_value;
+                d3d12_fence_signal_external_events_locked(fence, worker);
+                d3d12_fence_update_wait_tickets_locked(fence);
+                fence->pending_updates[i] = fence->pending_updates[--fence->pending_updates_count];
+                did_signal = true;
+                break;
+            }
+        }
+
+        if (!did_signal)
+            FIXME("Did not signal a virtual value?\n");
+    }
 
     /* In case we have a rewind signalled from GPU, we need to recompute the max pending timeline value. */
     d3d12_fence_update_pending_value_locked_and_broadcast(fence);
@@ -1309,7 +1476,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_fence_QueryInterface(d3d12_fence_iface *i
 static ULONG STDMETHODCALLTYPE d3d12_fence_AddRef(d3d12_fence_iface *iface)
 {
     struct d3d12_fence *fence = impl_from_ID3D12Fence1(iface);
-    unsigned int refcount = InterlockedIncrement(&fence->refcount);
+    ULONG refcount = InterlockedIncrement(&fence->refcount);
 
     TRACE("%p increasing refcount to %u.\n", fence, refcount);
 
@@ -1319,7 +1486,7 @@ static ULONG STDMETHODCALLTYPE d3d12_fence_AddRef(d3d12_fence_iface *iface)
 static ULONG STDMETHODCALLTYPE d3d12_fence_Release(d3d12_fence_iface *iface)
 {
     struct d3d12_fence *fence = impl_from_ID3D12Fence1(iface);
-    unsigned int refcount = InterlockedDecrement(&fence->refcount);
+    ULONG refcount = InterlockedDecrement(&fence->refcount);
 
     TRACE("%p decreasing refcount to %u.\n", fence, refcount);
 
@@ -1404,11 +1571,6 @@ static UINT64 STDMETHODCALLTYPE d3d12_fence_GetCompletedValue(d3d12_fence_iface 
     }
     completed_value = fence->virtual_value;
     pthread_mutex_unlock(&fence->mutex);
-
-    /* A removed device reports UINT64_MAX, even for fences without a signal in flight. */
-    if (d3d12_device_removed_unblocks_fences(fence->device))
-        return UINT64_MAX;
-
     return completed_value;
 }
 
@@ -1434,8 +1596,7 @@ static HRESULT d3d12_fence_set_native_sync_handle_on_completion_explicit(struct 
     event.latch = &latch;
     event.payload = payload;
 
-    /* A removed device completes every fence to UINT64_MAX, so any value is reached. */
-    if (value <= fence->virtual_value || d3d12_device_removed_unblocks_fences(fence->device))
+    if (value <= fence->virtual_value)
     {
         hr = vkd3d_waiting_event_signal(fence->device, NULL, &event);
         pthread_mutex_unlock(&fence->mutex);
@@ -1665,7 +1826,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_shared_fence_QueryInterface(d3d12_fence_i
 static ULONG STDMETHODCALLTYPE d3d12_shared_fence_AddRef(d3d12_fence_iface *iface)
 {
     struct d3d12_shared_fence *fence = shared_impl_from_ID3D12Fence1(iface);
-    unsigned int refcount = InterlockedIncrement(&fence->refcount);
+    ULONG refcount = InterlockedIncrement(&fence->refcount);
 
     TRACE("%p increasing refcount to %u.\n", fence, refcount);
 
@@ -1722,7 +1883,7 @@ static void d3d12_shared_fence_dec_ref(struct d3d12_shared_fence *fence)
 static ULONG STDMETHODCALLTYPE d3d12_shared_fence_Release(d3d12_fence_iface *iface)
 {
     struct d3d12_shared_fence *fence = shared_impl_from_ID3D12Fence1(iface);
-    unsigned int refcount = InterlockedDecrement(&fence->refcount);
+    ULONG refcount = InterlockedDecrement(&fence->refcount);
 
     TRACE("%p decreasing refcount to %u.\n", fence, refcount);
 
@@ -2187,7 +2348,7 @@ static HRESULT d3d12_command_list_begin_command_buffer(struct d3d12_command_list
 
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin_info.pNext = NULL;
-    begin_info.flags = VKD3D_CONFIG_FLAG_IS_SET(ONE_TIME_SUBMIT) ?
+    begin_info.flags = (vkd3d_config_flags & VKD3D_CONFIG_FLAG_ONE_TIME_SUBMIT) ?
             VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT : 0;
     begin_info.pInheritanceInfo = NULL;
 
@@ -2270,7 +2431,7 @@ static HRESULT d3d12_command_allocator_allocate_command_buffer(struct d3d12_comm
     list->cmd.estimated_cost = 0;
 
 #ifdef VKD3D_ENABLE_BREADCRUMBS
-    if (VKD3D_CONFIG_FLAG_IS_SET(BREADCRUMBS))
+    if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_BREADCRUMBS)
     {
         vkd3d_breadcrumb_tracer_allocate_command_list(&allocator->device->breadcrumb_tracer,
                 list, allocator);
@@ -2292,13 +2453,7 @@ static void d3d12_command_list_begin_new_sequence(struct d3d12_command_list *lis
     VkResult vr;
 
     if (list->cmd.iteration_count >= VKD3D_MAX_COMMAND_LIST_SEQUENCES)
-    {
-        assert(!fallback);
         return;
-    }
-
-    if (fallback)
-        d3d12_command_allocator_ensure_compute_fallback(list->allocator);
 
     /* Any renderpass we start will be in second command buffer. */
     list->cmd.suspend_resume.block_resume = true;
@@ -2322,7 +2477,7 @@ static void d3d12_command_list_begin_new_sequence(struct d3d12_command_list *lis
 
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin_info.pNext = NULL;
-    begin_info.flags = VKD3D_CONFIG_FLAG_IS_SET(ONE_TIME_SUBMIT) ?
+    begin_info.flags = (vkd3d_config_flags & VKD3D_CONFIG_FLAG_ONE_TIME_SUBMIT) ?
             VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT : 0;
     begin_info.pInheritanceInfo = NULL;
     if ((vr = VK_CALL(vkBeginCommandBuffer(iteration->vk_command_buffer, &begin_info))) < 0)
@@ -2358,7 +2513,7 @@ static void d3d12_command_list_begin_new_sequence(struct d3d12_command_list *lis
 
     d3d12_command_list_invalidate_all_state(list);
     /* Extra special consideration since we're starting a fresh command buffer. */
-    list->descriptor_heap.buffers.global_heap_dirty = true;
+    list->descriptor_heap.buffers.heap_dirty = true;
     d3d12_command_list_debug_mark_label(list, "Split", 0.0f, 0.0f, 0.0f, 1.0f);
 }
 
@@ -2389,12 +2544,9 @@ static void d3d12_command_list_consider_new_sequence(struct d3d12_command_list *
 
 static void d3d12_command_list_copy_queue_fallback(struct d3d12_command_list *list)
 {
-    if (list->vk_queue_flags & VK_QUEUE_COMPUTE_BIT)
-        return;
-
     if (!list->cmd.iterations[list->cmd.iteration_count - 1].fallback)
     {
-        d3d12_command_list_end_transfer_batch(list, false);
+        d3d12_command_list_end_transfer_batch(list);
         d3d12_command_list_begin_new_sequence(list, true);
     }
 }
@@ -2428,7 +2580,7 @@ static HRESULT d3d12_command_allocator_allocate_fixup_command_buffer(struct d3d1
 
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin_info.pNext = NULL;
-    begin_info.flags = VKD3D_CONFIG_FLAG_IS_SET(ONE_TIME_SUBMIT) ?
+    begin_info.flags = (vkd3d_config_flags & VKD3D_CONFIG_FLAG_ONE_TIME_SUBMIT) ?
             VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT : 0;
     begin_info.pInheritanceInfo = NULL;
 
@@ -2476,7 +2628,7 @@ static HRESULT d3d12_command_allocator_allocate_init_post_indirect_command_buffe
 
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin_info.pNext = NULL;
-    begin_info.flags = VKD3D_CONFIG_FLAG_IS_SET(ONE_TIME_SUBMIT) ?
+    begin_info.flags = (vkd3d_config_flags & VKD3D_CONFIG_FLAG_ONE_TIME_SUBMIT) ?
             VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT : 0;
     begin_info.pInheritanceInfo = NULL;
 
@@ -2628,21 +2780,28 @@ static void d3d12_command_allocator_retain_pipeline_state(struct d3d12_command_a
     allocator->pipelines[allocator->pipelines_count++] = state;
 }
 
-static void d3d12_command_allocator_retain_descriptor_heap(struct d3d12_command_allocator *allocator,
-        struct d3d12_descriptor_heap *heap)
+static void d3d12_command_list_register_used_resource(struct d3d12_command_list *list,
+        struct d3d12_resource *resource)
 {
     size_t i;
-
-    for (i = 0; i < allocator->descriptor_heaps_count; i++)
-        if (heap == allocator->descriptor_heaps[i])
-            return;
-
-    if (!vkd3d_array_reserve((void **)&allocator->descriptor_heaps, &allocator->descriptor_heaps_size,
-            allocator->descriptor_heaps_count + 1, sizeof(*allocator->descriptor_heaps)))
+    if (!resource)
         return;
 
-    d3d12_descriptor_heap_inc_ref(heap);
-    allocator->descriptor_heaps[allocator->descriptor_heaps_count++] = heap;
+#ifndef VKD3D_ENABLE_BREADCRUMBS
+    if (!(resource->flags & VKD3D_RESOURCE_RETAINED_GPU_REFERENCE))
+        return;
+#endif
+
+    for (i = 0; i < list->retained_resources_count; i++)
+        if (list->retained_resources[i] == resource)
+            return;
+
+    if (!vkd3d_array_reserve((void **)&list->retained_resources, &list->retained_resources_size,
+            list->retained_resources_count + 1, sizeof(*list->retained_resources)))
+        return;
+
+    d3d12_resource_incref_weak(resource);
+    list->retained_resources[list->retained_resources_count++] = resource;
 }
 
 static void d3d12_command_list_allocator_destroyed(struct d3d12_command_list *list)
@@ -2677,18 +2836,6 @@ static void d3d12_command_allocator_free_resources(struct d3d12_command_allocato
         d3d12_pipeline_state_dec_ref(allocator->pipelines[i]);
     }
     allocator->pipelines_count = 0;
-
-    for (i = 0; i < allocator->descriptor_heaps_count; i++)
-    {
-        d3d12_descriptor_heap_dec_ref(allocator->descriptor_heaps[i]);
-    }
-    allocator->descriptor_heaps_count = 0;
-
-    for (i = 0; i < allocator->meta_allocs_count; i++)
-    {
-        d3d12_descriptor_heap_free_meta_index(allocator->meta_allocs[i].heap, allocator->meta_allocs[i].index);
-    }
-    allocator->meta_allocs_count = 0;
 }
 
 static void d3d12_command_allocator_set_name(struct d3d12_command_allocator *allocator, const char *name)
@@ -2751,7 +2898,7 @@ static ULONG d3d12_command_allocator_inc_ref(struct d3d12_command_allocator *all
 static ULONG STDMETHODCALLTYPE d3d12_command_allocator_AddRef(ID3D12CommandAllocator *iface)
 {
     struct d3d12_command_allocator *allocator = impl_from_ID3D12CommandAllocator(iface);
-    unsigned int refcount = InterlockedIncrement(&allocator->refcount);
+    ULONG refcount = InterlockedIncrement(&allocator->refcount);
 
     TRACE("%p increasing refcount to %u.\n", allocator, refcount);
 
@@ -2797,10 +2944,8 @@ static ULONG d3d12_command_allocator_dec_ref(struct d3d12_command_allocator *all
         vkd3d_free(allocator->buffer_views);
         vkd3d_free(allocator->views);
         vkd3d_free(allocator->pipelines);
-        vkd3d_free(allocator->descriptor_heaps);
-        vkd3d_free(allocator->meta_allocs);
 
-        if (VKD3D_CONFIG_FLAG_IS_SET(RECYCLE_COMMAND_POOLS))
+        if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_RECYCLE_COMMAND_POOLS)
         {
             /* Don't want to do this unless we have to, so hide it behind a config.
              * For well-behaving apps, we'll just bloat memory. */
@@ -2853,7 +2998,7 @@ static ULONG d3d12_command_allocator_dec_ref(struct d3d12_command_allocator *all
         vkd3d_free(allocator->query_pools);
 
 #ifdef VKD3D_ENABLE_BREADCRUMBS
-        if (VKD3D_CONFIG_FLAG_IS_SET(BREADCRUMBS))
+        if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_BREADCRUMBS)
         {
             vkd3d_breadcrumb_tracer_release_command_lists(&device->breadcrumb_tracer,
                     allocator->breadcrumb_context_indices, allocator->breadcrumb_context_index_count);
@@ -2870,7 +3015,7 @@ static ULONG d3d12_command_allocator_dec_ref(struct d3d12_command_allocator *all
 static ULONG STDMETHODCALLTYPE d3d12_command_allocator_Release(ID3D12CommandAllocator *iface)
 {
     struct d3d12_command_allocator *allocator = impl_from_ID3D12CommandAllocator(iface);
-    unsigned int refcount = InterlockedDecrement(&allocator->refcount);
+    ULONG refcount = InterlockedDecrement(&allocator->refcount);
     unsigned int pending;
 
     TRACE("%p decreasing refcount to %u.\n", allocator, refcount);
@@ -2997,7 +3142,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_command_allocator_Reset(ID3D12CommandAllo
     }
 
 #ifdef VKD3D_ENABLE_BREADCRUMBS
-    if (VKD3D_CONFIG_FLAG_IS_SET(BREADCRUMBS))
+    if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_BREADCRUMBS)
     {
         /* Release breadcrumb references. */
         vkd3d_breadcrumb_tracer_release_command_lists(&device->breadcrumb_tracer,
@@ -3063,6 +3208,56 @@ struct vkd3d_queue_family_info *d3d12_device_get_vkd3d_queue_family(struct d3d12
     }
 }
 
+/* This is used for workaround purposes for when some games screw up use-after-free of in-flight resources.
+ * If resources are destroyed in-flight that's usually fine since GPU page tables are not updated
+ * while a submission is in flight, but since we thread the actual submissions, we might observe behavior
+ * that might not happen on Windows.
+ * For workaround purposes, it's enough that we just defer the actual final decref until all dependent
+ * vkQueueSubmit calls have gone through on CPU timeline.
+ * This can be extended as needed to deal with GPU timeline too, but that's only relevant if truly needed,
+ * since it will dramatically increase complexity and CPU overhead. */
+void d3d12_device_add_queue_timeline_deferred_decref(struct d3d12_device *device,
+        void (*inc_call)(void *), void (*dec_call)(void *), void *userdata, bool postpone_decref)
+{
+    struct vkd3d_queue_family_info *queue_family;
+    struct d3d12_command_queue_submission sub;
+    unsigned int i, j, family_index;
+    struct vkd3d_queue *vk_queue;
+
+    for (family_index = 0; family_index < ARRAY_SIZE(device->queue_families); family_index++)
+    {
+        queue_family = device->queue_families[family_index];
+        if (!queue_family)
+            continue;
+
+        /* Only use unique queue families. */
+        for (i = 0; i < family_index; i++)
+            if (device->queue_families[i] == queue_family)
+                break;
+
+        if (i < family_index)
+            continue;
+
+        for (i = 0; i < queue_family->queue_count; i++)
+        {
+            vk_queue = queue_family->queues[i];
+            pthread_mutex_lock(&vk_queue->mutex);
+            for (j = 0; j < vk_queue->command_queue_count; j++)
+            {
+                sub.type = VKD3D_SUBMISSION_CPU_TIMELINE_CALLBACK;
+                sub.callback.callback = dec_call;
+                sub.callback.userdata = userdata;
+                inc_call(userdata);
+                d3d12_command_queue_add_submission(vk_queue->command_queues[j], &sub);
+            }
+            pthread_mutex_unlock(&vk_queue->mutex);
+        }
+    }
+
+    if (!postpone_decref)
+        dec_call(userdata);
+}
+
 struct vkd3d_queue *d3d12_device_allocate_vkd3d_queue(struct vkd3d_queue_family_info *queue_family,
         struct d3d12_command_queue *command_queue)
 {
@@ -3070,7 +3265,7 @@ struct vkd3d_queue *d3d12_device_allocate_vkd3d_queue(struct vkd3d_queue_family_
     unsigned int i;
 
     for (i = 0; i < queue_family->queue_count; i++)
-        pthread_mutex_lock(&queue_family->queues[i]->command_queue_mutex);
+        pthread_mutex_lock(&queue_family->queues[i]->mutex);
 
     /* Select the queue that has the lowest number of virtual queues mapped
      * to it, in order to avoid situations where we map multiple queues to
@@ -3094,7 +3289,7 @@ struct vkd3d_queue *d3d12_device_allocate_vkd3d_queue(struct vkd3d_queue_family_
     }
 
     for (i = 0; i < queue_family->queue_count; i++)
-        pthread_mutex_unlock(&queue_family->queues[i]->command_queue_mutex);
+        pthread_mutex_unlock(&queue_family->queues[i]->mutex);
 
     return queue;
 }
@@ -3103,7 +3298,7 @@ void d3d12_device_unmap_vkd3d_queue(struct vkd3d_queue *queue, struct d3d12_comm
 {
     size_t i;
 
-    pthread_mutex_lock(&queue->command_queue_mutex);
+    pthread_mutex_lock(&queue->mutex);
     queue->virtual_queue_count--;
 
     if (command_queue)
@@ -3119,34 +3314,7 @@ void d3d12_device_unmap_vkd3d_queue(struct vkd3d_queue *queue, struct d3d12_comm
         }
     }
 
-    pthread_mutex_unlock(&queue->command_queue_mutex);
-}
-
-static void d3d12_command_allocator_ensure_compute_fallback(struct d3d12_command_allocator *allocator)
-{
-    const struct vkd3d_vk_device_procs *vk_procs = &allocator->device->vk_procs;
-    VkCommandPoolCreateInfo command_pool_info;
-    VkResult vr;
-
-    if (allocator->fallback_pool.vk_command_pool)
-        return;
-
-    assert(!(allocator->primary_pool.vk_queue_flags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)));
-
-    /* We may need to fallback to compute copies. Just reuse the internal magic queue. */
-    memset(&command_pool_info, 0, sizeof(command_pool_info));
-    command_pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-    command_pool_info.queueFamilyIndex = allocator->device->queue_families[VKD3D_QUEUE_FAMILY_INTERNAL_COMPUTE]->vk_family_index;
-
-    ERR("Fallback queue: %u, %#x.\n", command_pool_info.queueFamilyIndex,
-        allocator->device->queue_families[VKD3D_QUEUE_FAMILY_INTERNAL_COMPUTE]->vk_queue_flags);
-
-    allocator->fallback_pool.vk_queue_flags = allocator->device->queue_families[VKD3D_QUEUE_FAMILY_INTERNAL_COMPUTE]->vk_queue_flags;
-    allocator->fallback_pool.vk_family_index = command_pool_info.queueFamilyIndex;
-
-    if ((vr = VK_CALL(vkCreateCommandPool(allocator->device->vk_device, &command_pool_info, NULL,
-            &allocator->fallback_pool.vk_command_pool))) < 0)
-        ERR("Failed to create fallback command pool, vr %d.\n", vr);
+    pthread_mutex_unlock(&queue->mutex);
 }
 
 static HRESULT d3d12_command_allocator_init(struct d3d12_command_allocator *allocator,
@@ -3180,7 +3348,7 @@ static HRESULT d3d12_command_allocator_init(struct d3d12_command_allocator *allo
     allocator->primary_pool.vk_queue_flags = queue_family->vk_queue_flags;
     allocator->transfer_granularity = queue_family->transfer_granularity;
 
-    if (VKD3D_CONFIG_FLAG_IS_SET(RECYCLE_COMMAND_POOLS))
+    if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_RECYCLE_COMMAND_POOLS)
     {
         /* Try to recycle command allocators. Some games spam free/allocate pools. */
         if (pthread_mutex_lock(&device->mutex) == 0)
@@ -3209,6 +3377,32 @@ static HRESULT d3d12_command_allocator_init(struct d3d12_command_allocator *allo
             return hresult_from_vk_result(vr);
         }
     }
+
+    if (type == D3D12_COMMAND_LIST_TYPE_COPY &&
+        (!device->concurrent_transfer_queue ||
+         !device->device_info.depth_aspect_copy_on_transfer ||
+         !device->device_info.stencil_aspect_copy_on_transfer ||
+         allocator->transfer_granularity.width != 1 || /* transfer granularity can be (0, 0, 0) which means full mip only. */
+         allocator->transfer_granularity.height != 1 ||
+         allocator->transfer_granularity.depth != 1) &&
+        (allocator->primary_pool.vk_queue_flags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT)) ==
+        VK_QUEUE_TRANSFER_BIT)
+    {
+        /* We may need to fallback to compute copies. Just reuse the internal magic queue. */
+        command_pool_info.queueFamilyIndex = device->queue_families[VKD3D_QUEUE_FAMILY_INTERNAL_COMPUTE]->vk_family_index;
+        allocator->fallback_pool.vk_queue_flags = device->queue_families[VKD3D_QUEUE_FAMILY_INTERNAL_COMPUTE]->vk_queue_flags;
+        allocator->fallback_pool.vk_family_index = command_pool_info.queueFamilyIndex;
+
+        if ((vr = VK_CALL(vkCreateCommandPool(device->vk_device, &command_pool_info, NULL,
+                &allocator->fallback_pool.vk_command_pool))) < 0)
+        {
+            WARN("Failed to create Vulkan command pool, vr %d.\n", vr);
+            vkd3d_private_store_destroy(&allocator->private_store);
+            return hresult_from_vk_result(vr);
+        }
+    }
+
+    /* GRAPHICS/COMPUTE queue must support (1, 1, 1) granularity. */
 
     d3d_destruction_notifier_init(&allocator->destruction_notifier,
             (IUnknown*)&allocator->ID3D12CommandAllocator_iface);
@@ -3369,116 +3563,6 @@ static struct d3d12_command_allocator *d3d12_command_allocator_from_iface(ID3D12
         return NULL;
 
     return impl_from_ID3D12CommandAllocator(iface);
-}
-
-uint32_t d3d12_command_allocator_allocate_meta_index(
-        struct d3d12_command_allocator *allocator, struct d3d12_descriptor_heap *heap)
-{
-    uint32_t index = d3d12_descriptor_heap_allocate_meta_index(heap);
-    if (index == UINT32_MAX)
-    {
-        if (d3d12_device_use_descriptor_heap(heap->device))
-            WARN("Meta descriptor pressure! Falling back to global heap (potentially slow) ...\n");
-        return index;
-    }
-
-    vkd3d_array_reserve((void**)&allocator->meta_allocs, &allocator->meta_allocs_size,
-            allocator->meta_allocs_count + 1, sizeof(*allocator->meta_allocs));
-    allocator->meta_allocs[allocator->meta_allocs_count].heap = heap;
-    allocator->meta_allocs[allocator->meta_allocs_count].index = index;
-    allocator->meta_allocs_count++;
-    return index;
-}
-
-static uint32_t d3d12_command_list_allocate_meta_buffer_view(
-        struct d3d12_command_list *list,
-        VkDeviceAddress va, VkDeviceSize range, VkFormat vk_format,
-        VkDescriptorType vk_descriptor_type)
-{
-    const struct vkd3d_vk_device_procs *vk_procs = &list->device->vk_procs;
-    VkTexelBufferDescriptorInfoEXT texel_buffer_info;
-    VkResourceDescriptorInfoEXT desc_info;
-    struct d3d12_descriptor_heap *heap;
-    VkHostAddressRangeEXT desc_range;
-    uint32_t heap_index;
-
-    heap = list->descriptor_heap.buffers.resource.heap;
-
-    /* If heap is dirty, we've moved back to global heap, and it's meaningless to attempt to rebind the heap.
-    * Just fallback to legacy descriptor model to avoid further disruptions. */
-    if (!heap || list->descriptor_heap.buffers.global_heap_dirty)
-        return UINT32_MAX;
-
-    heap_index = d3d12_command_allocator_allocate_meta_index(list->allocator, heap);
-    if (heap_index == UINT32_MAX)
-        return heap_index;
-
-    memset(&texel_buffer_info, 0, sizeof(texel_buffer_info));
-    texel_buffer_info.sType = VK_STRUCTURE_TYPE_TEXEL_BUFFER_DESCRIPTOR_INFO_EXT;
-    texel_buffer_info.addressRange.address = va;
-    texel_buffer_info.addressRange.size = range;
-    texel_buffer_info.format = vk_format;
-
-    memset(&desc_info, 0, sizeof(desc_info));
-    desc_info.sType = VK_STRUCTURE_TYPE_RESOURCE_DESCRIPTOR_INFO_EXT;
-    desc_info.type = vk_descriptor_type;
-    desc_info.data.pTexelBuffer = &texel_buffer_info;
-
-    desc_range.address = heap->descriptor_buffer.host_allocation +
-                         heap_index * list->device->bindless_state.cbv_srv_uav_size;
-    desc_range.size = list->device->bindless_state.cbv_srv_uav_size;
-    VK_CALL(vkWriteResourceDescriptorsEXT(list->device->vk_device, 1, &desc_info, &desc_range));
-    return heap_index;
-}
-
-static uint32_t d3d12_command_list_allocate_meta_image_view(
-        struct d3d12_command_list *list,
-        const struct vkd3d_texture_view_desc *view_desc, VkImageLayout vk_image_layout)
-{
-    const struct vkd3d_vk_device_procs *vk_procs = &list->device->vk_procs;
-    struct vkd3d_texture_view_create_info vk_view_info;
-    VkResourceDescriptorInfoEXT desc_info;
-    VkImageDescriptorInfoEXT image_info;
-    struct d3d12_descriptor_heap *heap;
-    VkHostAddressRangeEXT desc_range;
-    uint32_t heap_index;
-
-    heap = list->descriptor_heap.buffers.resource.heap;
-
-    /* If heap is dirty, we've moved back to global heap, and it's meaningless to attempt to rebind the heap.
-    * Just fallback to legacy descriptor model to avoid further disruptions. */
-    if (!heap || list->descriptor_heap.buffers.global_heap_dirty)
-        return UINT32_MAX;
-
-    assert(view_desc->image_usage == VK_IMAGE_USAGE_SAMPLED_BIT ||
-           view_desc->image_usage == VK_IMAGE_USAGE_STORAGE_BIT);
-
-    heap_index = d3d12_command_allocator_allocate_meta_index(list->allocator, heap);
-    if (heap_index == UINT32_MAX)
-        return heap_index;
-
-    vkd3d_setup_texture_view(list->device, view_desc, &vk_view_info);
-
-    memset(&image_info, 0, sizeof(image_info));
-    image_info.sType = VK_STRUCTURE_TYPE_IMAGE_DESCRIPTOR_INFO_EXT;
-    image_info.layout = vk_image_layout;
-    image_info.pView = &vk_view_info.view_desc;
-
-    memset(&desc_info, 0, sizeof(desc_info));
-    desc_info.sType = VK_STRUCTURE_TYPE_RESOURCE_DESCRIPTOR_INFO_EXT;
-    desc_info.data.pImage = &image_info;
-
-    desc_range.address = heap->descriptor_buffer.host_allocation +
-                         heap_index * list->device->bindless_state.cbv_srv_uav_size;
-
-    if (view_desc->image_usage == VK_IMAGE_USAGE_SAMPLED_BIT)
-        desc_info.type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    else
-        desc_info.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-
-    desc_range.size = list->device->bindless_state.cbv_srv_uav_size;
-    VK_CALL(vkWriteResourceDescriptorsEXT(list->device->vk_device, 1, &desc_info, &desc_range));
-    return heap_index;
 }
 
 /* ID3D12CommandList */
@@ -4182,7 +4266,7 @@ static void d3d12_command_list_debug_mark_label_cmd(struct d3d12_command_list *l
     const struct vkd3d_vk_device_procs *vk_procs = &list->device->vk_procs;
     VkDebugUtilsLabelEXT label;
 
-    if (VKD3D_CONFIG_FLAG_IS_SET(DEBUG_UTILS) && list->device->vk_info.EXT_debug_utils)
+    if ((vkd3d_config_flags & VKD3D_CONFIG_FLAG_DEBUG_UTILS) && list->device->vk_info.EXT_debug_utils)
     {
         label.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT;
         label.pNext = NULL;
@@ -4219,8 +4303,8 @@ static void d3d12_command_list_debug_mark_begin_region_cmd(
     const struct vkd3d_vk_device_procs *vk_procs = &list->device->vk_procs;
     VkDebugUtilsLabelEXT label;
 
-    if (VKD3D_CONFIG_FLAG_IS_SET(DEBUG_UTILS) &&
-            !VKD3D_CONFIG_FLAG_IS_SET(APP_DEBUG_MARKER_ONLY) &&
+    if ((vkd3d_config_flags & VKD3D_CONFIG_FLAG_DEBUG_UTILS) &&
+            !(vkd3d_config_flags & VKD3D_CONFIG_FLAG_APP_DEBUG_MARKER_ONLY) &&
             list->device->vk_info.EXT_debug_utils)
     {
         label.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT;
@@ -4238,8 +4322,8 @@ static void d3d12_command_list_debug_mark_end_region_cmd(
         struct d3d12_command_list *list, VkCommandBuffer vk_cmd)
 {
     const struct vkd3d_vk_device_procs *vk_procs = &list->device->vk_procs;
-    if (VKD3D_CONFIG_FLAG_IS_SET(DEBUG_UTILS) &&
-            !VKD3D_CONFIG_FLAG_IS_SET(APP_DEBUG_MARKER_ONLY) &&
+    if ((vkd3d_config_flags & VKD3D_CONFIG_FLAG_DEBUG_UTILS) &&
+            !(vkd3d_config_flags & VKD3D_CONFIG_FLAG_APP_DEBUG_MARKER_ONLY) &&
             list->device->vk_info.EXT_debug_utils)
     {
         VK_CALL(vkCmdEndDebugUtilsLabelEXT(vk_cmd));
@@ -4295,7 +4379,6 @@ static void d3d12_command_list_load_attachment(struct d3d12_command_list *list, 
 
     memset(&rendering_info, 0, sizeof(rendering_info));
     rendering_info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-    rendering_info.flags = d3d12_device_get_rendering_flags(list->device);
     rendering_info.renderArea.offset.x = 0;
     rendering_info.renderArea.offset.y = 0;
     rendering_info.renderArea.extent.width = view_extent.width;
@@ -4561,7 +4644,7 @@ static void d3d12_command_list_load_attachment(struct d3d12_command_list *list, 
     d3d12_command_list_debug_mark_end_region(list);
 }
 
-VkPipelineStageFlags2 vk_queue_shader_stages(struct d3d12_device *device, VkQueueFlags vk_queue_flags)
+static VkPipelineStageFlags2 vk_queue_shader_stages(struct d3d12_device *device, VkQueueFlags vk_queue_flags)
 {
     VkPipelineStageFlags2 queue_shader_stages = 0;
 
@@ -4764,7 +4847,6 @@ static void d3d12_command_list_update_subresource_data(struct d3d12_command_list
 {
     struct vkd3d_subresource_tracking *entry;
     VkImageAspectFlags aspect, aspect_mask;
-    uint32_t merged_end;
     uint32_t i;
     bool skip;
 
@@ -4793,10 +4875,9 @@ static void d3d12_command_list_update_subresource_data(struct d3d12_command_list
                 else if (entry->subresource.baseArrayLayer <= subresource.baseArrayLayer + subresource.layerCount &&
                             entry->subresource.baseArrayLayer + entry->subresource.layerCount >= subresource.baseArrayLayer)
                 {
-					merged_end = max(entry->subresource.baseArrayLayer + entry->subresource.layerCount,
-                            subresource.baseArrayLayer + subresource.layerCount);
                     subresource.baseArrayLayer = min(entry->subresource.baseArrayLayer, subresource.baseArrayLayer);
-                    subresource.layerCount = merged_end - subresource.baseArrayLayer;
+                    subresource.layerCount = max(entry->subresource.baseArrayLayer + entry->subresource.layerCount,
+                            subresource.baseArrayLayer - subresource.layerCount) - entry->subresource.baseArrayLayer;
                     *entry = list->subresource_tracking[--list->subresource_tracking_count];
                     continue;
                 }
@@ -5130,66 +5211,6 @@ static size_t get_query_heap_stride(D3D12_QUERY_HEAP_TYPE heap_type)
     return sizeof(uint64_t);
 }
 
-void d3d12_command_list_meta_push_data(struct d3d12_command_list *list,
-        VkCommandBuffer vk_command_buffer,
-        VkPipelineLayout vk_pipeline_layout, VkShaderStageFlags stages,
-        uint32_t size, const void *data)
-{
-    const struct vkd3d_vk_device_procs *vk_procs = &list->device->vk_procs;
-
-    if (vk_pipeline_layout != VK_NULL_HANDLE)
-    {
-        VK_CALL(vkCmdPushConstants(vk_command_buffer,
-                vk_pipeline_layout,
-                stages, 0, size, data));
-
-        if (d3d12_device_use_descriptor_heap(list->device) && list->cmd.vk_command_buffer == vk_command_buffer)
-            d3d12_command_list_invalidate_descriptor_heap(list);
-    }
-    else
-    {
-        VkPushDataInfoEXT push;
-        memset(&push, 0, sizeof(push));
-        push.sType = VK_STRUCTURE_TYPE_PUSH_DATA_INFO_EXT;
-        push.data.address = data;
-        push.data.size = size;
-        VK_CALL(vkCmdPushDataEXT(vk_command_buffer, &push));
-    }
-
-    if (list->cmd.vk_command_buffer == vk_command_buffer)
-    {
-        if (stages & VK_SHADER_STAGE_COMPUTE_BIT)
-        {
-            d3d12_command_list_invalidate_root_parameters(list,
-                &list->compute_bindings, true, &list->graphics_bindings);
-        }
-        else
-        {
-            d3d12_command_list_invalidate_root_parameters(list,
-                &list->graphics_bindings, true, &list->compute_bindings);
-        }
-    }
-}
-
-void d3d12_command_list_meta_push_descriptor_index(struct d3d12_command_list *list,
-        VkCommandBuffer vk_command_buffer, uint32_t binding, uint32_t heap_index)
-{
-    const struct vkd3d_vk_device_procs *vk_procs = &list->device->vk_procs;
-    VkPushDataInfoEXT push;
-    memset(&push, 0, sizeof(push));
-    push.sType = VK_STRUCTURE_TYPE_PUSH_DATA_INFO_EXT;
-    push.data.address = &heap_index;
-    push.data.size = sizeof(heap_index);
-    push.offset = VKD3D_DESCRIPTOR_HEAP_META_PUSH_DATA_OFFSET + binding * sizeof(uint32_t);
-
-    /* We don't go through meta heap path if the currently bound heap is invalid. */
-    assert(!list->descriptor_heap.buffers.global_heap_dirty);
-
-    /* Don't bother invalidating root parameters, that's done in push_data
-     * and we never do push_descriptor_index in complete isolation. */
-    VK_CALL(vkCmdPushDataEXT(vk_command_buffer, &push));
-}
-
 static bool d3d12_command_list_gather_pending_queries(struct d3d12_command_list *list)
 {
     /* TODO allocate arrays from command allocator in case
@@ -5461,9 +5482,9 @@ static bool d3d12_command_list_gather_pending_queries(struct d3d12_command_list 
 
         entry_offset += d->virtual_query_count;
 
-        d3d12_command_list_meta_push_data(list, list->cmd.vk_command_buffer,
+        VK_CALL(vkCmdPushConstants(list->cmd.vk_command_buffer,
                 gather_pipeline.vk_pipeline_layout,
-                VK_SHADER_STAGE_COMPUTE_BIT, sizeof(args), &args);
+                VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(args), &args));
 
         workgroup_count = vkd3d_compute_workgroup_count(d->unique_query_count, VKD3D_QUERY_OP_WORKGROUP_SIZE);
         VK_CALL(vkCmdDispatch(list->cmd.vk_command_buffer, workgroup_count, 1, 1));
@@ -5480,6 +5501,7 @@ static bool d3d12_command_list_gather_pending_queries(struct d3d12_command_list 
     result = true;
 
     d3d12_command_list_invalidate_current_pipeline(list, true);
+    d3d12_command_list_invalidate_root_parameters(list, &list->compute_bindings, true, &list->graphics_bindings);
 
     VKD3D_BREADCRUMB_COMMAND(GATHER_VIRTUAL_QUERY);
 
@@ -6025,7 +6047,7 @@ static void d3d12_command_list_end_rendering(struct d3d12_command_list *list)
 
         begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         begin_info.pNext = NULL;
-        begin_info.flags = VKD3D_CONFIG_FLAG_IS_SET(ONE_TIME_SUBMIT) ?
+        begin_info.flags = (vkd3d_config_flags & VKD3D_CONFIG_FLAG_ONE_TIME_SUBMIT) ?
                 VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT : 0;
         begin_info.pInheritanceInfo = NULL;
         if ((vr = VK_CALL(vkBeginCommandBuffer(suspend->vk_fixup_cmd_buffer, &begin_info))) < 0)
@@ -6058,8 +6080,7 @@ static void d3d12_command_list_end_rendering(struct d3d12_command_list *list)
     else if (suspend_resume)
     {
         VkResolveModeFlagBits rt_resolves[D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT];
-        VkResolveModeFlagBits stencil_resolve = VK_RESOLVE_MODE_NONE;
-        VkResolveModeFlagBits depth_resolve = VK_RESOLVE_MODE_NONE;
+        VkResolveModeFlagBits depth_resolve, stencil_resolve;
         uint32_t i;
 
         /* We attempted to suspend, but we need to emit some other code, so that's not going to work.
@@ -6192,7 +6213,7 @@ static void d3d12_command_list_invalidate_push_constants(struct vkd3d_pipeline_b
 }
 
 void d3d12_command_list_invalidate_root_parameters(struct d3d12_command_list *list,
-        struct vkd3d_pipeline_bindings *bindings, bool invalidate_legacy_descriptor_sets,
+        struct vkd3d_pipeline_bindings *bindings, bool invalidate_descriptor_heaps,
         struct vkd3d_pipeline_bindings *sibling_push_domain)
 {
     /* For scenarios where we're emitting push constants to one bind point in meta shaders,
@@ -6212,28 +6233,13 @@ void d3d12_command_list_invalidate_root_parameters(struct d3d12_command_list *li
     if (bindings->root_signature->hoist_info.num_desc)
         bindings->dirty_flags |= VKD3D_PIPELINE_DIRTY_HOISTED_DESCRIPTORS;
 
-    if (list->descriptor_heap.buffers.resource.heap &&
-        bindings->root_signature->heap.redzone_style == VKD3D_ROOT_SIGNATURE_HEAP_REDZONE_STYLE_INLINE)
-    {
-        /* This is called on SetDescriptorHeap, so it won't matter if we call SetDescriptorHeaps or SetRootSignature
-         * first. */
-        bindings->dirty_flags |= VKD3D_PIPELINE_DIRTY_INLINE_REDZONE;
-    }
-
     d3d12_command_list_invalidate_push_constants(bindings);
 
-    /* This is relevant if the pipeline layout changes, but it's irrelevant for EXT_descriptor_heap. */
-    if (invalidate_legacy_descriptor_sets)
+    if (invalidate_descriptor_heaps)
     {
         struct d3d12_device *device = bindings->root_signature->device;
-        bindings->legacy_descriptor_set_dirty_mask = (1ull << device->bindless_state.legacy.set_count) - 1;
+        bindings->descriptor_heap_dirty_mask = (1ull << device->bindless_state.set_count) - 1;
     }
-}
-
-void d3d12_command_list_invalidate_descriptor_heap(struct d3d12_command_list *list)
-{
-    list->descriptor_heap.buffers.global_heap_dirty = true;
-    WARN("Invalidating descriptor heap due to meta command which is incompatible with heaps.\n");
 }
 
 static void vk_access_and_stage_flags_from_d3d12_resource_state(const struct d3d12_command_list *list,
@@ -6283,9 +6289,8 @@ static void vk_access_and_stage_flags_from_d3d12_resource_state(const struct d3d
                 break;
 
             case D3D12_RESOURCE_STATE_UNORDERED_ACCESS:
-                /* We sometimes make use of native clear command when it works in our favour. */
-                *stages |= queue_shader_stages | VK_PIPELINE_STAGE_2_CLEAR_BIT;
-                *access |= VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
+                *stages |= queue_shader_stages;
+                *access |= VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
                 if ((vk_queue_flags & VK_QUEUE_COMPUTE_BIT) &&
                         d3d12_device_supports_ray_tracing_tier_1_0(device))
                 {
@@ -6295,6 +6300,13 @@ static void vk_access_and_stage_flags_from_d3d12_resource_state(const struct d3d
                     *stages |= VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
                     *access |= VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
                             VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+
+                    if (d3d12_device_supports_ray_tracing_tier_1_2(device))
+                    {
+                        *stages |= VK_PIPELINE_STAGE_2_MICROMAP_BUILD_BIT_EXT;
+                        *access |= VK_ACCESS_2_MICROMAP_READ_BIT_EXT |
+                                VK_ACCESS_2_MICROMAP_WRITE_BIT_EXT;
+                    }
                 }
                 break;
 
@@ -6306,6 +6318,13 @@ static void vk_access_and_stage_flags_from_d3d12_resource_state(const struct d3d
                             VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
                     *access |= VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR |
                             VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+
+                    if (d3d12_device_supports_ray_tracing_tier_1_2(device))
+                    {
+                        *stages |= VK_PIPELINE_STAGE_2_MICROMAP_BUILD_BIT_EXT;
+                        *access |= VK_ACCESS_2_MICROMAP_WRITE_BIT_EXT |
+                                VK_ACCESS_2_MICROMAP_READ_BIT_EXT;
+                    }
                 }
                 break;
 
@@ -6332,6 +6351,9 @@ static void vk_access_and_stage_flags_from_d3d12_resource_state(const struct d3d
                     /* Vertex / index / transform buffer inputs are NON_PIXEL_SHADER_RESOURCES in DXR.
                      * They access SHADER_READ_BIT in Vulkan, so just need to add the stage. */
                     *stages |= VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+
+                    if (d3d12_device_supports_ray_tracing_tier_1_2(device))
+                        *stages |= VK_PIPELINE_STAGE_2_MICROMAP_BUILD_BIT_EXT;
                 }
                 break;
 
@@ -6485,6 +6507,8 @@ static void d3d12_command_list_track_resource_usage(struct d3d12_command_list *l
         transition.resource.perform_initial_transition = perform_initial_transition;
         d3d12_command_list_add_transition(list, &transition);
     }
+
+    d3d12_command_list_register_used_resource(list, resource);
 }
 
 static void d3d12_command_list_track_query_heap(struct d3d12_command_list *list,
@@ -6534,8 +6558,7 @@ HRESULT STDMETHODCALLTYPE d3d12_command_list_QueryInterface(d3d12_command_list_i
     }
 
     if (IsEqualGUID(iid, &IID_ID3D12GraphicsCommandListExt)
-            || IsEqualGUID(iid, &IID_ID3D12GraphicsCommandListExt1)
-            || IsEqualGUID(iid, &IID_ID3D12GraphicsCommandListExt2))
+            || IsEqualGUID(iid, &IID_ID3D12GraphicsCommandListExt1))
     {
         d3d12_command_list_vkd3d_ext_AddRef(&command_list->ID3D12GraphicsCommandListExt_iface);
         *object = &command_list->ID3D12GraphicsCommandListExt_iface;
@@ -6558,7 +6581,7 @@ HRESULT STDMETHODCALLTYPE d3d12_command_list_QueryInterface(d3d12_command_list_i
 ULONG STDMETHODCALLTYPE d3d12_command_list_AddRef(d3d12_command_list_iface *iface)
 {
     struct d3d12_command_list *list = impl_from_ID3D12GraphicsCommandList(iface);
-    unsigned int refcount = InterlockedIncrement(&list->refcount);
+    ULONG refcount = InterlockedIncrement(&list->refcount);
 
     TRACE("%p increasing refcount to %u.\n", list, refcount);
 
@@ -6568,13 +6591,14 @@ ULONG STDMETHODCALLTYPE d3d12_command_list_AddRef(d3d12_command_list_iface *ifac
 ULONG STDMETHODCALLTYPE d3d12_command_list_Release(d3d12_command_list_iface *iface)
 {
     struct d3d12_command_list *list = impl_from_ID3D12GraphicsCommandList(iface);
-    unsigned int refcount = InterlockedDecrement(&list->refcount);
+    ULONG refcount = InterlockedDecrement(&list->refcount);
 
     TRACE("%p decreasing refcount to %u.\n", list, refcount);
 
     if (!refcount)
     {
         struct d3d12_device *device = list->device;
+        size_t i;
 
         d3d_destruction_notifier_free(&list->destruction_notifier);
         vkd3d_private_store_destroy(&list->private_store);
@@ -6597,6 +6621,9 @@ ULONG STDMETHODCALLTYPE d3d12_command_list_Release(d3d12_command_list_iface *ifa
         vkd3d_free(list->dsv_resource_tracking);
         vkd3d_free(list->subresource_tracking);
         vkd3d_free(list->query_resolves);
+        for (i = 0; i < list->retained_resources_count; i++)
+            d3d12_resource_decref_weak(list->retained_resources[i]);
+        vkd3d_free(list->retained_resources);
         vkd3d_free(list->dgc_batch.draws);
         hash_map_free(&list->query_resolve_lut);
         d3d12_command_list_free_rtas_batch(list);
@@ -6681,7 +6708,7 @@ static HRESULT d3d12_command_list_batch_reset_query_pools(struct d3d12_command_l
                 list->allocator, list, &list->cmd.vk_query_reset_commands, "Query Resets")))
             return hr;
 
-        if (VKD3D_CONFIG_FLAG_IS_SET(DEBUG_UTILS))
+        if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_DEBUG_UTILS)
         {
             d3d12_command_list_debug_mark_label_printf(list, list->cmd.vk_query_reset_commands,
                     1.0f, 1.0f, 0.8f, 1.0f, "Resetting query range, index %u, count %u",
@@ -6780,17 +6807,13 @@ static HRESULT d3d12_command_list_build_init_commands(struct d3d12_command_list 
     return S_OK;
 }
 
-static void d3d12_command_list_begin_transfer(struct d3d12_command_list *list);
-
 void d3d12_command_list_decay_tracked_state(struct d3d12_command_list *list)
 {
     /* TODO: Revisit this w.r.t. splitting VkCommandBuffer */
     d3d12_command_list_flush_dgc_batch(list);
     d3d12_command_list_end_current_render_pass(list, false);
 
-    d3d12_command_list_end_transfer_batch(list, true);
-    /* Deal with any lingering WAR hazard. */
-    d3d12_command_list_begin_transfer(list);
+    d3d12_command_list_end_transfer_batch(list);
     d3d12_command_list_flush_rtas_batch(list);
     d3d12_command_list_flush_clears(list, NULL, NULL);
 
@@ -6844,7 +6867,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_command_list_Close(d3d12_command_list_ifa
         d3d12_command_list_check_render_pass_validation(list, "Close called with an active render pass.\n", false);
 
 #ifdef VKD3D_ENABLE_BREADCRUMBS
-    if (VKD3D_CONFIG_FLAG_IS_SET(BREADCRUMBS))
+    if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_BREADCRUMBS)
         vkd3d_breadcrumb_tracer_end_command_list(list);
 #endif
 
@@ -7056,19 +7079,12 @@ bool d3d12_command_list_reset_query(struct d3d12_command_list *list,
 
 static void d3d12_command_list_init_default_descriptor_buffers(struct d3d12_command_list *list)
 {
-    if (d3d12_device_use_descriptor_heap(list->device))
+    if (d3d12_device_uses_descriptor_buffers(list->device))
     {
-        /* By default, don't bind descriptor heap unless it's actually needed.
-         * Drivers are able to inherit across command buffer boundary if they have a design
-         * that cares about it. */
-        list->descriptor_heap.buffers.global_heap_dirty = false;
-    }
-    else if (d3d12_device_uses_descriptor_buffers(list->device))
-    {
-        list->descriptor_heap.buffers.db.heap_va_resource = list->device->global_descriptor_buffer.resource.va;
-        list->descriptor_heap.buffers.db.heap_va_sampler = list->device->global_descriptor_buffer.sampler.va;
-        list->descriptor_heap.buffers.db.vk_buffer_resource = list->device->global_descriptor_buffer.resource.vk_buffer;
-        list->descriptor_heap.buffers.global_heap_dirty = true;
+        list->descriptor_heap.buffers.heap_va_resource = list->device->global_descriptor_buffer.resource.va;
+        list->descriptor_heap.buffers.heap_va_sampler = list->device->global_descriptor_buffer.sampler.va;
+        list->descriptor_heap.buffers.vk_buffer_resource = list->device->global_descriptor_buffer.resource.vk_buffer;
+        list->descriptor_heap.buffers.heap_dirty = true;
     }
 }
 
@@ -7159,6 +7175,8 @@ static void d3d12_command_list_reset_api_state(struct d3d12_command_list *list,
 
 static void d3d12_command_list_reset_internal_state(struct d3d12_command_list *list)
 {
+    size_t i;
+
 #ifdef VKD3D_ENABLE_RENDERDOC
     list->debug_capture = vkd3d_renderdoc_active() && vkd3d_renderdoc_should_capture_shader_hash(0);
 #else
@@ -7176,24 +7194,20 @@ static void d3d12_command_list_reset_internal_state(struct d3d12_command_list *l
     list->deferred_discard_count = 0;
     list->subresource_tracking_count = 0;
     list->transfer_batch.tracked_copy_buffer_count = 0;
-    list->transfer_batch.tracked_copy_texture_count = 0;
-    list->transfer_batch.vk_stages = 0;
-    list->transfer_batch.batch_len = 0;
-    list->transfer_batch.batch_type = VKD3D_BATCH_TYPE_NONE;
-    list->transfer_batch.write_after_read_hazard_stages = VK_PIPELINE_STAGE_NONE;
-    list->transfer_batch.read_after_write_hazard_stages = VK_PIPELINE_STAGE_NONE;
-    list->transfer_batch.shader_resource_execution_stages_are_idle = VK_PIPELINE_STAGE_NONE;
     list->wbi_batch.batch_len = 0;
     list->query_resolve_count = 0;
     list->submit_allocator = NULL;
     list->dgc_batch.draws_count = 0;
+
+    for (i = 0; i < list->retained_resources_count; i++)
+        d3d12_resource_decref_weak(list->retained_resources[i]);
+    list->retained_resources_count = 0;
 
 #ifdef VKD3D_ENABLE_PROFILING
     vkd3d_timestamp_profiler_reset_command_list(list->device->timestamp_profiler, list);
 #endif
 
     d3d12_command_list_clear_rtas_batch(list);
-    list->rtas_batch.pending_rtas_work = false;
 }
 
 static void d3d12_command_list_reset_state(struct d3d12_command_list *list,
@@ -7299,33 +7313,6 @@ static bool d3d12_command_list_update_rendering_info(struct d3d12_command_list *
 
     rendering_info->rtv_mask = 0;
     d3d12_command_list_barrier_batch_init(&barrier);
-
-    if (rendering_info->info.flags & VK_RENDERING_LOCAL_READ_CONCURRENT_ACCESS_CONTROL_BIT_KHR)
-    {
-        if (list->current_meta_flags & VKD3D_SHADER_META_FLAG_FEEDBACK_LOOP)
-        {
-            /* Forces implementation to assume there are intra-shader feedback loops
-             * which could mean disabling compression specifically for this render pass. */
-            for (i = 0; i < rendering_info->info.colorAttachmentCount; i++)
-            {
-                rendering_info->rtv_flags[i].flags =
-                    (list->rtvs[i].resource && list->rtvs[i].resource->flags & VKD3D_RESOURCE_INPUT_ATTACHMENT) ?
-                    VK_RENDERING_ATTACHMENT_INPUT_ATTACHMENT_FEEDBACK_BIT_KHR : 0;
-            }
-
-            d3d12_command_list_barrier_batch_add_global_transition(
-                    list, &barrier,
-                    VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                    VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                    VK_ACCESS_INPUT_ATTACHMENT_READ_BIT);
-        }
-        else
-        {
-            for (i = 0; i < rendering_info->info.colorAttachmentCount; i++)
-                rendering_info->rtv_flags[i].flags = 0;
-        }
-    }
 
     /* The pipeline has fallback PSO in case we're attempting to render to unbound RTV. */
     for (i = 0; i < rendering_info->info.colorAttachmentCount; i++)
@@ -7671,32 +7658,6 @@ static bool d3d12_command_list_update_graphics_pipeline(struct d3d12_command_lis
     return true;
 }
 
-static void d3d12_command_list_update_inline_redzone(struct d3d12_command_list *list,
-        struct vkd3d_pipeline_bindings *bindings)
-{
-    const struct vkd3d_vk_device_procs *vk_procs = &list->device->vk_procs;
-    VkPushDataInfoEXT info;
-
-    struct Push
-    {
-        VkDeviceAddress va;
-        uint32_t count;
-    } push;
-
-    assert(list->descriptor_heap.buffers.resource.heap);
-    push.va = list->descriptor_heap.buffers.resource.va + list->device->bindless_state.heap.redzone_size;
-    push.count = list->descriptor_heap.buffers.resource.heap->desc.NumDescriptors;
-
-    memset(&info, 0, sizeof(info));
-    info.sType = VK_STRUCTURE_TYPE_PUSH_DATA_INFO_EXT;
-    info.offset = bindings->root_signature->heap.redzone_inline_heap_offset;
-    info.data.address = &push;
-    info.data.size = offsetof(struct Push, count) + sizeof(uint32_t); /* Don't include padding. */
-    VK_CALL(vkCmdPushDataEXT(list->cmd.vk_command_buffer, &info));
-
-    bindings->dirty_flags &= ~VKD3D_PIPELINE_DIRTY_INLINE_REDZONE;
-}
-
 static void d3d12_command_list_update_descriptor_table_offsets(struct d3d12_command_list *list,
         struct vkd3d_pipeline_bindings *bindings, VkPipelineLayout layout, VkShaderStageFlags push_stages)
 {
@@ -7715,49 +7676,10 @@ static void d3d12_command_list_update_descriptor_table_offsets(struct d3d12_comm
         root_parameter_index = vkd3d_bitmask_iter64(&descriptor_table_mask);
         table = root_signature_get_descriptor_table(root_signature, root_parameter_index);
         table_offsets[table->table_index] = bindings->descriptor_tables[root_parameter_index];
-
-#ifdef VKD3D_ENABLE_BREADCRUMBS
-        if (root_signature->descriptor_table_mask_sampler & (1ull << root_parameter_index))
-        {
-            if (!list->descriptor_heap.buffers.sampler.heap)
-            {
-                WARN("Using sampler tables in root signature, but no heap is bound?\n");
-            }
-            else if (table_offsets[table->table_index] >= list->descriptor_heap.buffers.sampler.heap->desc.NumDescriptors)
-            {
-                WARN("Sampler table offset %u is out of bounds %u >= %u\n", root_parameter_index,
-                    table_offsets[table->table_index],
-                    list->descriptor_heap.buffers.sampler.heap->desc.NumDescriptors);
-            }
-        }
-        else
-        {
-            if (!list->descriptor_heap.buffers.resource.heap)
-            {
-                WARN("Using resource tables in root signature, but no heap is bound?\n");
-            }
-            else if (table_offsets[table->table_index] >= list->descriptor_heap.buffers.resource.heap->desc.NumDescriptors)
-            {
-                WARN("Resource table offset %u is out of bounds %u >= %u\n", root_parameter_index,
-                    table_offsets[table->table_index],
-                    list->descriptor_heap.buffers.resource.heap->desc.NumDescriptors);
-            }
-        }
-#endif
     }
 
     /* Set descriptor offsets */
-    if (d3d12_device_use_descriptor_heap(list->device))
-    {
-        VkPushDataInfoEXT info;
-        memset(&info, 0, sizeof(info));
-        info.sType = VK_STRUCTURE_TYPE_PUSH_DATA_INFO_EXT;
-        info.offset = root_signature->descriptor_table_offset;
-        info.data.address = table_offsets;
-        info.data.size = root_signature->descriptor_table_count * sizeof(uint32_t);
-        VK_CALL(vkCmdPushDataEXT(list->cmd.vk_command_buffer, &info));
-    }
-    else if (push_stages)
+    if (push_stages)
     {
         VK_CALL(vkCmdPushConstants(list->cmd.vk_command_buffer,
                 layout, push_stages,
@@ -7807,77 +7729,38 @@ static void vk_write_descriptor_set_from_scratch_push_ubo(VkWriteDescriptorSet *
 }
 
 /* This is a big stall on some GPUs so need to track this separately. */
-void d3d12_command_list_update_global_descriptor_heap(struct d3d12_command_list *list)
+void d3d12_command_list_update_descriptor_buffers(struct d3d12_command_list *list)
 {
     const struct vkd3d_vk_device_procs *vk_procs = &list->device->vk_procs;
     VkDescriptorBufferBindingPushDescriptorBufferHandleEXT buffer_handle;
     VkDescriptorBufferBindingInfoEXT global_buffers[2];
-    VkBindHeapInfoEXT resource_heap_info;
 
-    /* global_heap_dirty is part of a union and only okay to touch if we use DB or heaps. */
-
-    if (d3d12_device_use_descriptor_heap(list->device) &&
-            list->descriptor_heap.buffers.global_heap_dirty)
-    {
-        memset(&resource_heap_info, 0, sizeof(resource_heap_info));
-        resource_heap_info.sType = VK_STRUCTURE_TYPE_BIND_HEAP_INFO_EXT;
-
-        /* Do not bind dummy heap. */
-        if (list->descriptor_heap.buffers.resource.va)
-        {
-            resource_heap_info.heapRange.address = list->descriptor_heap.buffers.resource.va;
-            resource_heap_info.heapRange.size = list->descriptor_heap.buffers.resource.size;
-            resource_heap_info.reservedRangeOffset = list->descriptor_heap.buffers.resource.reserved_offset;
-            resource_heap_info.reservedRangeSize =
-                    list->device->device_info.descriptor_heap_properties.minResourceHeapReservedRange;
-            VK_CALL(vkCmdBindResourceHeapEXT(list->cmd.vk_command_buffer, &resource_heap_info));
-        }
-
-        if (list->descriptor_heap.buffers.sampler.va)
-        {
-            resource_heap_info.heapRange.address = list->descriptor_heap.buffers.sampler.va;
-            resource_heap_info.heapRange.size = list->descriptor_heap.buffers.sampler.size;
-            resource_heap_info.reservedRangeOffset = list->descriptor_heap.buffers.sampler.reserved_offset;
-            resource_heap_info.reservedRangeSize =
-                    list->device->device_info.descriptor_heap_properties.minSamplerHeapReservedRangeWithEmbedded;
-            VK_CALL(vkCmdBindSamplerHeapEXT(list->cmd.vk_command_buffer, &resource_heap_info));
-        }
-
-        list->descriptor_heap.buffers.global_heap_dirty = false;
-    }
-    else if (d3d12_device_uses_descriptor_buffers(list->device) &&
-            list->descriptor_heap.buffers.global_heap_dirty)
+    if (d3d12_device_uses_descriptor_buffers(list->device) &&
+            list->descriptor_heap.buffers.heap_dirty)
     {
         global_buffers[0].sType = VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT;
         global_buffers[0].pNext = NULL;
         global_buffers[0].usage = list->device->global_descriptor_buffer.resource.usage;
-        global_buffers[0].address = list->descriptor_heap.buffers.db.heap_va_resource;
+        global_buffers[0].address = list->descriptor_heap.buffers.heap_va_resource;
 
         if (global_buffers[0].usage & VK_BUFFER_USAGE_PUSH_DESCRIPTORS_DESCRIPTOR_BUFFER_BIT_EXT)
         {
             global_buffers[0].pNext = &buffer_handle;
             buffer_handle.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_PUSH_DESCRIPTOR_BUFFER_HANDLE_EXT;
             buffer_handle.pNext = NULL;
-            buffer_handle.buffer = list->descriptor_heap.buffers.db.vk_buffer_resource;
+            buffer_handle.buffer = list->descriptor_heap.buffers.vk_buffer_resource;
         }
 
         global_buffers[1].sType = VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT;
         global_buffers[1].pNext = NULL;
         global_buffers[1].usage = list->device->global_descriptor_buffer.sampler.usage;
-        global_buffers[1].address = list->descriptor_heap.buffers.db.heap_va_sampler;
+        global_buffers[1].address = list->descriptor_heap.buffers.heap_va_sampler;
 
         VK_CALL(vkCmdBindDescriptorBuffersEXT(list->cmd.vk_command_buffer,
                 ARRAY_SIZE(global_buffers), global_buffers));
 
-        list->descriptor_heap.buffers.global_heap_dirty = false;
+        list->descriptor_heap.buffers.heap_dirty = false;
     }
-}
-
-/* Only updates for legacy paths. Heap path will gracefully pick whichever model is active. */
-static void d3d12_command_list_update_global_descriptor_buffer_meta(struct d3d12_command_list *list)
-{
-    if (!d3d12_device_use_descriptor_heap(list->device))
-        d3d12_command_list_update_global_descriptor_heap(list);
 }
 
 static void d3d12_command_list_update_descriptor_heaps(struct d3d12_command_list *list,
@@ -7887,35 +7770,28 @@ static void d3d12_command_list_update_descriptor_heaps(struct d3d12_command_list
     const struct vkd3d_bindless_state *bindless_state = &list->device->bindless_state;
     const struct vkd3d_vk_device_procs *vk_procs = &list->device->vk_procs;
 
-    if (d3d12_device_use_descriptor_heap(list->device))
-    {
-        /* We don't bind legacy sets. */
-        d3d12_command_list_update_global_descriptor_heap(list);
-        return;
-    }
-
-    if (!bindings->legacy_descriptor_set_dirty_mask)
+    if (!bindings->descriptor_heap_dirty_mask)
         return;
 
     if (d3d12_device_uses_descriptor_buffers(list->device))
     {
-        d3d12_command_list_update_global_descriptor_heap(list);
+        d3d12_command_list_update_descriptor_buffers(list);
 
         /* Prefer binding everything in one go. There is no risk of null descriptor sets here. */
-        if (bindings->legacy_descriptor_set_dirty_mask)
+        if (bindings->descriptor_heap_dirty_mask)
         {
             VK_CALL(vkCmdSetDescriptorBufferOffsetsEXT(list->cmd.vk_command_buffer, vk_bind_point,
-                    layout, 0, bindless_state->legacy.set_count,
-                    bindless_state->legacy.vk_descriptor_buffer_indices,
-                    list->descriptor_heap.buffers.db.vk_offsets));
-            bindings->legacy_descriptor_set_dirty_mask = 0;
+                    layout, 0, bindless_state->set_count,
+                    bindless_state->vk_descriptor_buffer_indices,
+                    list->descriptor_heap.buffers.vk_offsets));
+            bindings->descriptor_heap_dirty_mask = 0;
         }
     }
     else
     {
-        while (bindings->legacy_descriptor_set_dirty_mask)
+        while (bindings->descriptor_heap_dirty_mask)
         {
-            unsigned int heap_index = vkd3d_bitmask_iter64(&bindings->legacy_descriptor_set_dirty_mask);
+            unsigned int heap_index = vkd3d_bitmask_iter64(&bindings->descriptor_heap_dirty_mask);
 
             if (list->descriptor_heap.sets.vk_sets[heap_index])
             {
@@ -7965,34 +7841,16 @@ static void d3d12_command_list_update_root_constants(struct d3d12_command_list *
         return;
     }
 
-    if (d3d12_device_use_descriptor_heap(list->device))
+    while (bindings->root_constant_dirty_mask)
     {
-        VkPushDataInfoEXT info;
-        memset(&info, 0, sizeof(info));
-        info.sType = VK_STRUCTURE_TYPE_PUSH_DATA_INFO_EXT;
+        root_parameter_index = vkd3d_bitmask_iter64(&bindings->root_constant_dirty_mask);
+        root_constant = root_signature_get_32bit_constants(root_signature, root_parameter_index);
 
-        while (bindings->root_constant_dirty_mask)
-        {
-            root_parameter_index = vkd3d_bitmask_iter64(&bindings->root_constant_dirty_mask);
-            root_constant = root_signature_get_32bit_constants(root_signature, root_parameter_index);
-            info.data.address = &bindings->root_constants[root_constant->constant_index];
-            info.offset = root_constant->constant_index * sizeof(uint32_t);
-            info.data.size = root_constant->constant_count * sizeof(uint32_t);
-            VK_CALL(vkCmdPushDataEXT(list->cmd.vk_command_buffer, &info));
-        }
-    }
-    else
-    {
-        while (bindings->root_constant_dirty_mask)
-        {
-            root_parameter_index = vkd3d_bitmask_iter64(&bindings->root_constant_dirty_mask);
-            root_constant = root_signature_get_32bit_constants(root_signature, root_parameter_index);
-            VK_CALL(vkCmdPushConstants(list->cmd.vk_command_buffer,
-                    layout, push_stages,
-                    root_constant->constant_index * sizeof(uint32_t),
-                    root_constant->constant_count * sizeof(uint32_t),
-                    &bindings->root_constants[root_constant->constant_index]));
-        }
+        VK_CALL(vkCmdPushConstants(list->cmd.vk_command_buffer,
+                layout, push_stages,
+                root_constant->constant_index * sizeof(uint32_t),
+                root_constant->constant_count * sizeof(uint32_t),
+                &bindings->root_constants[root_constant->constant_index]));
     }
 }
 
@@ -8132,24 +7990,12 @@ static void d3d12_command_list_update_root_descriptors(struct d3d12_command_list
 
         descriptor_write_count += 1;
     }
-    else if (va_count)
+    else if (va_count && push_stages)
     {
-        if (d3d12_device_use_descriptor_heap(list->device))
-        {
-            VkPushDataInfoEXT info;
-            memset(&info, 0, sizeof(info));
-            info.sType = VK_STRUCTURE_TYPE_PUSH_DATA_INFO_EXT;
-            info.data.address = root_parameter_data.root_descriptor_vas;
-            info.data.size = va_count * sizeof(*root_parameter_data.root_descriptor_vas);
-            VK_CALL(vkCmdPushDataEXT(list->cmd.vk_command_buffer, &info));
-        }
-        else if (push_stages)
-        {
-            VK_CALL(vkCmdPushConstants(list->cmd.vk_command_buffer,
-                    layout, push_stages,
-                    0, va_count * sizeof(*root_parameter_data.root_descriptor_vas),
-                    root_parameter_data.root_descriptor_vas));
-        }
+        VK_CALL(vkCmdPushConstants(list->cmd.vk_command_buffer,
+                layout, push_stages,
+                0, va_count * sizeof(*root_parameter_data.root_descriptor_vas),
+                root_parameter_data.root_descriptor_vas));
     }
 
 #ifdef VKD3D_ENABLE_DESCRIPTOR_QA
@@ -8255,7 +8101,8 @@ static void d3d12_command_list_update_descriptors(struct d3d12_command_list *lis
 
     vk_bind_point = vk_bind_point_from_pipeline_type(list->active_pipeline_type);
 
-    d3d12_command_list_update_descriptor_heaps(list, bindings, vk_bind_point, layout);
+    if (bindings->descriptor_heap_dirty_mask)
+        d3d12_command_list_update_descriptor_heaps(list, bindings, vk_bind_point, layout);
 
     if (bindings->dirty_flags & VKD3D_PIPELINE_DIRTY_STATIC_SAMPLER_SET)
         d3d12_command_list_update_static_samplers(list, bindings, vk_bind_point, layout);
@@ -8287,9 +8134,6 @@ static void d3d12_command_list_update_descriptors(struct d3d12_command_list *lis
 
         if (bindings->dirty_flags & VKD3D_PIPELINE_DIRTY_DESCRIPTOR_TABLE_OFFSETS)
             d3d12_command_list_update_descriptor_table_offsets(list, bindings, layout, push_stages);
-
-        if (bindings->dirty_flags & VKD3D_PIPELINE_DIRTY_INLINE_REDZONE)
-            d3d12_command_list_update_inline_redzone(list, bindings);
     }
 }
 
@@ -8320,15 +8164,6 @@ static bool d3d12_command_list_update_raygen_state(struct d3d12_command_list *li
 
     if (!d3d12_command_list_update_raygen_pipeline(list))
         return false;
-
-    if (list->rtas_batch.pending_rtas_work)
-    {
-        /* Speculate that application forgot a barrier before calling trace.
-         * Fixes FH6 sync bugs in the wild and it's plausible that applications rely on some kind of implicit
-         * sync between BuildRTAS and TraceRays. */
-        d3d12_command_list_flush_rtas_batch(list);
-        d3d12_command_list_flush_rtas_barrier(list);
-    }
 
     /* DXR uses compute bind point for descriptors, we will redirect internally to
      * raygen bind point in Vulkan. */
@@ -8659,8 +8494,8 @@ static void d3d12_command_list_check_render_pass_barrier(struct d3d12_command_li
         {
             vk_barrier = &vk_barriers[dep_info.memoryBarrierCount++];
             vk_barrier->sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-            vk_barrier->srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_CLEAR_BIT;
-            vk_barrier->srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            vk_barrier->srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            vk_barrier->srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
             vk_barrier->dstStageMask = VK_PIPELINE_STAGE_2_PRE_RASTERIZATION_SHADERS_BIT |
                     VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
             vk_barrier->dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
@@ -8678,37 +8513,6 @@ static void d3d12_command_list_check_render_pass_barrier(struct d3d12_command_li
         list->current_meta_flags &= ~VKD3D_SHADER_META_FLAG_FORCE_GRAPHICS_BARRIER_BEFORE_RENDER_PASS;
         d3d12_command_list_check_render_pass_validation(list, NULL, true);
     }
-}
-
-static void d3d12_command_list_emit_workaround_graphics_barrier(struct d3d12_command_list *list)
-{
-    const struct vkd3d_vk_device_procs *vk_procs = &list->device->vk_procs;
-    VkMemoryBarrier2 vk_barrier;
-    VkDependencyInfo dep_info;
-
-    d3d12_command_list_end_current_render_pass(list, true);
-
-    memset(&vk_barrier, 0, sizeof(vk_barrier));
-    memset(&dep_info, 0, sizeof(dep_info));
-
-    vk_barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-    vk_barrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT |
-            VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-    vk_barrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
-            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    vk_barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    vk_barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
-
-    dep_info.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    dep_info.memoryBarrierCount = 1;
-    dep_info.pMemoryBarriers = &vk_barrier;
-
-    VK_CALL(vkCmdPipelineBarrier2(list->cmd.vk_command_buffer, &dep_info));
-    VKD3D_BREADCRUMB_TAG("ForceDrawBarrier");
-    VKD3D_BREADCRUMB_COMMAND(BARRIER);
-    d3d12_command_list_debug_mark_label(list, "ForceDrawBarrier", 1.0f, 1.0f, 0.0f, 1.0f);
-
-    d3d12_command_list_check_render_pass_validation(list, NULL, true);
 }
 
 static bool d3d12_command_list_render_pass_suspend_resume_avoids_fixup(
@@ -8768,8 +8572,7 @@ static void d3d12_command_list_begin_rendering(struct d3d12_command_list *list)
     {
         struct d3d12_command_list_render_pass_suspend_resume_compat *resume = &list->cmd.suspend_resume.resume;
         VkAttachmentLoadOp load_ops[D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT];
-        VkAttachmentLoadOp stencil_load_op = VK_ATTACHMENT_LOAD_OP_LOAD;
-        VkAttachmentLoadOp depth_load_op = VK_ATTACHMENT_LOAD_OP_LOAD;
+        VkAttachmentLoadOp depth_load_op, stencil_load_op;
 
         /* Speculate that we can link up with previous command list in submission order. */
         list->cmd.suspend_resume.block_resume = true;
@@ -8782,7 +8585,7 @@ static void d3d12_command_list_begin_rendering(struct d3d12_command_list *list)
 
         begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         begin_info.pNext = NULL;
-        begin_info.flags = VKD3D_CONFIG_FLAG_IS_SET(ONE_TIME_SUBMIT) ?
+        begin_info.flags = (vkd3d_config_flags & VKD3D_CONFIG_FLAG_ONE_TIME_SUBMIT) ?
                 VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT : 0;
         begin_info.pInheritanceInfo = NULL;
         if ((vr = VK_CALL(vkBeginCommandBuffer(resume->vk_fixup_cmd_buffer, &begin_info))) < 0)
@@ -8852,7 +8655,7 @@ static bool d3d12_command_list_begin_render_pass(struct d3d12_command_list *list
     const struct vkd3d_vk_device_procs *vk_procs = &list->device->vk_procs;
     struct d3d12_graphics_pipeline_state *graphics;
 
-    d3d12_command_list_end_transfer_batch(list, true);
+    d3d12_command_list_end_transfer_batch(list);
     d3d12_command_list_flush_rtas_batch(list);
 
     d3d12_command_list_promote_dsv_layout(list);
@@ -8977,7 +8780,7 @@ static bool d3d12_command_list_emit_multi_dispatch_indirect_count(struct d3d12_c
         return false;
 
     d3d12_command_list_end_current_render_pass(list, false);
-    d3d12_command_list_end_transfer_batch(list, true);
+    d3d12_command_list_end_transfer_batch(list);
 
     d3d12_command_allocator_allocate_init_post_indirect_command_buffer(list->allocator, list);
     vk_patch_cmd_buffer = list->cmd.vk_post_indirect_barrier_commands;
@@ -8985,6 +8788,7 @@ static bool d3d12_command_list_emit_multi_dispatch_indirect_count(struct d3d12_c
     if (vk_patch_cmd_buffer == list->cmd.vk_command_buffer)
     {
         d3d12_command_list_invalidate_current_pipeline(list, true);
+        d3d12_command_list_invalidate_root_parameters(list, &list->compute_bindings, true, &list->graphics_bindings);
     }
     else
     {
@@ -9000,9 +8804,9 @@ static bool d3d12_command_list_emit_multi_dispatch_indirect_count(struct d3d12_c
 
     VK_CALL(vkCmdBindPipeline(vk_patch_cmd_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
             pipeline_info.vk_pipeline));
-    d3d12_command_list_meta_push_data(list, vk_patch_cmd_buffer,
+    VK_CALL(vkCmdPushConstants(vk_patch_cmd_buffer,
             pipeline_info.vk_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT,
-            sizeof(args), &args);
+            0, sizeof(args), &args));
 
     VK_CALL(vkCmdDispatch(vk_patch_cmd_buffer,
             vkd3d_compute_workgroup_count(max_commands, vkd3d_meta_get_multi_dispatch_indirect_workgroup_size()),
@@ -9060,9 +8864,9 @@ static bool d3d12_command_list_emit_predicated_command(struct d3d12_command_list
 
     VK_CALL(vkCmdBindPipeline(vk_patch_cmd_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
             pipeline_info.vk_pipeline));
-    d3d12_command_list_meta_push_data(list, vk_patch_cmd_buffer,
+    VK_CALL(vkCmdPushConstants(vk_patch_cmd_buffer,
             pipeline_info.vk_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT,
-            sizeof(args), &args);
+            0, sizeof(args), &args));
     VK_CALL(vkCmdDispatch(vk_patch_cmd_buffer, 1, 1, 1));
 
     if (vk_patch_cmd_buffer == list->cmd.vk_command_buffer)
@@ -9082,6 +8886,7 @@ static bool d3d12_command_list_emit_predicated_command(struct d3d12_command_list
         VK_CALL(vkCmdPipelineBarrier2(list->cmd.vk_command_buffer, &dep_info));
 
         d3d12_command_list_invalidate_current_pipeline(list, true);
+        d3d12_command_list_invalidate_root_parameters(list, &list->compute_bindings, true, &list->graphics_bindings);
     }
     else
         list->cmd.indirect_meta->need_compute_to_indirect_barrier = true;
@@ -9143,14 +8948,30 @@ static bool d3d12_command_list_update_index_buffer(struct d3d12_command_list *li
 
     if (list->index_buffer.is_dirty)
     {
-        if (list->index_buffer.buffer)
+        if (!list->index_buffer.buffer)
+        {
+            if (list->device->device_info.maintenance_6_features.maintenance6)
+            {
+                VK_CALL(vkCmdBindIndexBuffer2KHR(list->cmd.vk_command_buffer, VK_NULL_HANDLE, 0, 0, VK_INDEX_TYPE_UINT16));
+            }
+            else
+            {
+                /* NULL index buffers are expected to behave as if all indices are 0. Since this is only
+                 * observable in edge cases involving streamout or geometry shaders, skip the draw call
+                 * for now if the Vulkan implementation does not support this. */
+                FIXME_ONCE("Application attempts to perform an indexed draw call without index buffer bound.\n");
+                return false;
+            }
+        }
+        else if (list->device->device_info.maintenance_5_features.maintenance5)
         {
             VK_CALL(vkCmdBindIndexBuffer2KHR(list->cmd.vk_command_buffer, list->index_buffer.buffer,
                     list->index_buffer.offset, list->index_buffer.size, list->index_buffer.vk_type));
         }
         else
         {
-            VK_CALL(vkCmdBindIndexBuffer2KHR(list->cmd.vk_command_buffer, VK_NULL_HANDLE, 0, 0, VK_INDEX_TYPE_UINT16));
+            VK_CALL(vkCmdBindIndexBuffer(list->cmd.vk_command_buffer, list->index_buffer.buffer,
+                    list->index_buffer.offset, list->index_buffer.vk_type));
         }
         list->index_buffer.is_dirty = false;
     }
@@ -9219,10 +9040,6 @@ static void d3d12_command_list_check_pre_compute_barrier(
     vkd3d_descriptor_debug_sync_validation_barrier(list->device->descriptor_qa_global_info,
             list->device, list->cmd.vk_command_buffer);
 
-    /* Flush RTAS but don't sync against it, since the chance of false positive is very high.
-     * Beginning render pass does the same thing. */
-    d3d12_command_list_flush_rtas_batch(list);
-
     if ((list->current_meta_flags & (VKD3D_SHADER_META_FLAG_FORCE_GRAPHICS_BEFORE_DISPATCH |
             VKD3D_SHADER_META_FLAG_FORCE_PRE_RASTERIZATION_BEFORE_DISPATCH |
             VKD3D_SHADER_META_FLAG_FORCE_COMPUTE_BARRIER_BEFORE_DISPATCH)) || list->cmd.clear_uav_pending)
@@ -9258,8 +9075,8 @@ static void d3d12_command_list_check_pre_compute_barrier(
         if ((list->current_meta_flags & VKD3D_SHADER_META_FLAG_FORCE_COMPUTE_BARRIER_BEFORE_DISPATCH) ||
                 list->cmd.clear_uav_pending)
         {
-            vk_barrier.srcStageMask |= VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_CLEAR_BIT;
-            vk_barrier.srcAccessMask |= VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            vk_barrier.srcStageMask |= VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            vk_barrier.srcAccessMask |= VK_ACCESS_2_SHADER_WRITE_BIT;
             vk_barrier.dstStageMask |= vk_dst_stage;
             vk_barrier.dstAccessMask |= VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
         }
@@ -9379,7 +9196,7 @@ static void STDMETHODCALLTYPE d3d12_command_list_Dispatch(d3d12_command_list_ifa
             return;
     }
 
-    d3d12_command_list_end_transfer_batch(list, true);
+    d3d12_command_list_end_transfer_batch(list);
 
     if (!d3d12_command_list_update_compute_state(list))
     {
@@ -9417,7 +9234,6 @@ static void STDMETHODCALLTYPE d3d12_command_list_CopyBufferRegion(d3d12_command_
 
     d3d12_command_list_check_render_pass_validation(list, "CopyBufferRegion called within a render pass.\n", true);
     d3d12_command_list_flush_dgc_batch(list);
-    d3d12_command_list_begin_transfer(list);
 
     list->cmd.estimated_cost += VKD3D_COMMAND_COST_LOW;
 
@@ -9432,7 +9248,7 @@ static void STDMETHODCALLTYPE d3d12_command_list_CopyBufferRegion(d3d12_command_
     d3d12_command_list_track_resource_usage(list, src_resource, true);
 
     d3d12_command_list_end_current_render_pass(list, true);
-    d3d12_command_list_end_transfer_batch(list, false);
+    d3d12_command_list_end_transfer_batch(list);
 
     buffer_copy.sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2;
     buffer_copy.pNext = NULL;
@@ -9481,18 +9297,6 @@ static void vk_buffer_image_copy_from_d3d12(VkBufferImageCopy2 *copy,
         const struct vkd3d_format *dst_format, const D3D12_BOX *src_box, unsigned int dst_x,
         unsigned int dst_y, unsigned int dst_z)
 {
-    bool convert_block_geometry;
-    VkExtent3D src_extent;
-
-    /* D3D12 describes the buffer layout in source-format texels, while Vulkan
-     * describes it in destination image texels. Convert through physical
-     * blocks when equal-sized elements use different block dimensions. */
-    convert_block_geometry =
-            (src_format->block_width != dst_format->block_width ||
-            src_format->block_height != dst_format->block_height) &&
-            src_format->byte_count * src_format->block_byte_count ==
-            dst_format->byte_count * dst_format->block_byte_count;
-
     copy->bufferOffset = footprint->Offset;
     if (src_box)
     {
@@ -9500,17 +9304,9 @@ static void vk_buffer_image_copy_from_d3d12(VkBufferImageCopy2 *copy,
         copy->bufferOffset += vkd3d_format_get_data_offset(src_format, footprint->Footprint.RowPitch,
                 row_count * footprint->Footprint.RowPitch, src_box->left, src_box->top, src_box->front);
     }
-
-    /* Compute number of blocks in a row. */
-    copy->bufferRowLength = footprint->Footprint.RowPitch / (src_format->byte_count * src_format->block_byte_count);
-    /* Always represent the row length in terms of destination format. */
-    copy->bufferRowLength *= dst_format->block_width;
-
-    /* Rescale block height as necessary. */
+    copy->bufferRowLength = footprint->Footprint.RowPitch /
+            (src_format->byte_count * src_format->block_byte_count) * src_format->block_width;
     copy->bufferImageHeight = align(footprint->Footprint.Height, src_format->block_height);
-    if (convert_block_geometry)
-        copy->bufferImageHeight = copy->bufferImageHeight / src_format->block_height * dst_format->block_height;
-
     copy->imageSubresource = vk_image_subresource_layers_from_d3d12(
             dst_format, sub_resource_idx, image_desc->MipLevels,
             d3d12_resource_desc_get_layer_count(image_desc));
@@ -9525,27 +9321,16 @@ static void vk_buffer_image_copy_from_d3d12(VkBufferImageCopy2 *copy,
 
     if (src_box)
     {
-        src_extent.width = src_box->right - src_box->left;
-        src_extent.height = src_box->bottom - src_box->top;
-        src_extent.depth = src_box->back - src_box->front;
+        copy->imageExtent.width = min(copy->imageExtent.width, src_box->right - src_box->left);
+        copy->imageExtent.height = min(copy->imageExtent.height, src_box->bottom - src_box->top);
+        copy->imageExtent.depth = min(copy->imageExtent.depth, src_box->back - src_box->front);
     }
     else
     {
-        src_extent.width = footprint->Footprint.Width;
-        src_extent.height = footprint->Footprint.Height;
-        src_extent.depth = footprint->Footprint.Depth;
+        copy->imageExtent.width = min(copy->imageExtent.width, footprint->Footprint.Width);
+        copy->imageExtent.height = min(copy->imageExtent.height, footprint->Footprint.Height);
+        copy->imageExtent.depth = min(copy->imageExtent.depth, footprint->Footprint.Depth);
     }
-
-    /* Rescale source extent into destination extent as needed. */
-    if (convert_block_geometry)
-    {
-        src_extent = vkd3d_compute_texel_count_from_blocks(
-                vkd3d_compute_block_count(src_extent, src_format), dst_format);
-    }
-
-    copy->imageExtent.width = min(copy->imageExtent.width, src_extent.width);
-    copy->imageExtent.height = min(copy->imageExtent.height, src_extent.height);
-    copy->imageExtent.depth = min(copy->imageExtent.depth, src_extent.depth);
 }
 
 static void vk_image_buffer_copy_from_d3d12(VkBufferImageCopy2 *copy, VkDeviceSize *footprint_size,
@@ -9684,7 +9469,7 @@ static bool vk_image_copy_from_d3d12(VkImageCopy2 *image_copy,
 
 static void d3d12_command_list_transition_image_layout_with_global_memory_barrier(struct d3d12_command_list *list,
         struct d3d12_command_list_barrier_batch *batch,
-        struct d3d12_resource *resource, const VkImageSubresourceLayers *vk_subresource,
+        VkImage vk_image, const VkImageSubresourceLayers *vk_subresource,
         VkPipelineStageFlags2 src_stages, VkAccessFlags2 src_access, VkImageLayout old_layout,
         VkPipelineStageFlags2 dst_stages, VkAccessFlags2 dst_access, VkImageLayout new_layout,
         VkAccessFlags2 global_src_access, VkAccessFlags2 global_dst_access)
@@ -9702,13 +9487,8 @@ static void d3d12_command_list_transition_image_layout_with_global_memory_barrie
     vk_barrier.newLayout = new_layout;
     vk_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     vk_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    vk_barrier.image = resource->res.vk_image;
+    vk_barrier.image = vk_image;
     vk_barrier.subresourceRange = vk_subresource_range_from_layers(vk_subresource);
-
-    /* maint9 quirk. If enabled, and the 3D image is 2D_ARRAY compatible,
-     * layerCount is in terms of slices, so the compatible thing to do is REMAINING_ARRAY_LAYERS. */
-    if (resource->desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D)
-        vk_barrier.subresourceRange.layerCount = VK_REMAINING_ARRAY_LAYERS;
 
     need_global_barrier = global_src_access || global_dst_access;
 
@@ -9723,12 +9503,12 @@ static void d3d12_command_list_transition_image_layout_with_global_memory_barrie
 
 static void d3d12_command_list_transition_image_layout(struct d3d12_command_list *list,
         struct d3d12_command_list_barrier_batch *batch,
-        struct d3d12_resource *resource, const VkImageSubresourceLayers *vk_subresource,
+        VkImage vk_image, const VkImageSubresourceLayers *vk_subresource,
         VkPipelineStageFlags2 src_stages, VkAccessFlags2 src_access, VkImageLayout old_layout,
         VkPipelineStageFlags2 dst_stages, VkAccessFlags2 dst_access, VkImageLayout new_layout)
 {
     d3d12_command_list_transition_image_layout_with_global_memory_barrier(list, batch,
-            resource, vk_subresource,
+            vk_image, vk_subresource,
             src_stages, src_access, old_layout,
             dst_stages, dst_access, new_layout,
             0, 0);
@@ -9903,7 +9683,7 @@ static void d3d12_command_list_copy_image_transition_images(struct d3d12_command
         else
             old_layout = dst_resource->common_layout;
 
-        d3d12_command_list_transition_image_layout(list, batch, dst_resource,
+        d3d12_command_list_transition_image_layout(list, batch, dst_resource->res.vk_image,
                 &region->dstSubresource,
                 vk_availability_stages, VK_ACCESS_2_NONE,
                 old_layout,
@@ -9923,7 +9703,7 @@ static void d3d12_command_list_copy_image_transition_images(struct d3d12_command
         else
             old_layout = src_resource->common_layout;
 
-        d3d12_command_list_transition_image_layout(list, batch, src_resource,
+        d3d12_command_list_transition_image_layout(list, batch, src_resource->res.vk_image,
             &region->srcSubresource, vk_availability_stages,
             VK_ACCESS_2_NONE, old_layout,
             barrier.src.stages, barrier.src.access, barrier.src.layout);
@@ -9950,7 +9730,6 @@ static void d3d12_command_list_copy_image(struct d3d12_command_list *list,
     VkRenderingInfo rendering_info;
     VkCopyImageInfo2 copy_info;
     VkViewport viewport;
-    uint32_t src_index;
     unsigned int i;
     bool unified;
     HRESULT hr;
@@ -9999,8 +9778,16 @@ static void d3d12_command_list_copy_image(struct d3d12_command_list *list,
         pipeline_key.sample_count = vk_samples_from_dxgi_sample_desc(&dst_resource->desc.SampleDesc);
         pipeline_key.dst_aspect_mask = region->dstSubresource.aspectMask;
 
+        if (FAILED(hr = vkd3d_meta_get_copy_image_pipeline(&list->device->meta_ops, &pipeline_key, &pipeline_info)))
+        {
+            ERR("Failed to obtain pipeline, format %u, view_type %u, sample_count %u.\n",
+                    pipeline_key.format->vk_format, pipeline_key.view_type, pipeline_key.sample_count);
+            goto cleanup;
+        }
+
         d3d12_command_list_invalidate_current_pipeline(list, true);
-        d3d12_command_list_update_global_descriptor_buffer_meta(list);
+        d3d12_command_list_invalidate_root_parameters(list, &list->graphics_bindings, true, &list->compute_bindings);
+        d3d12_command_list_update_descriptor_buffers(list);
 
         memset(&dst_view_desc, 0, sizeof(dst_view_desc));
         dst_view_desc.image = dst_resource->res.vk_image;
@@ -10029,28 +9816,16 @@ static void d3d12_command_list_copy_image(struct d3d12_command_list *list,
         src_view_desc.allowed_swizzle = false;
 
         if (!vkd3d_create_texture_view(list->device, &dst_view_desc, &dst_view) ||
-            !d3d12_command_allocator_add_view(list->allocator, dst_view))
+                !vkd3d_create_texture_view(list->device, &src_view_desc, &src_view))
         {
             ERR("Failed to create image views.\n");
             goto cleanup;
         }
 
-        src_index = d3d12_command_list_allocate_meta_image_view(list, &src_view_desc, barrier.src.layout);
-        if (src_index == UINT32_MAX)
-        {
-            if (!vkd3d_create_texture_view(list->device, &src_view_desc, &src_view) ||
+        if (!d3d12_command_allocator_add_view(list->allocator, dst_view) ||
                 !d3d12_command_allocator_add_view(list->allocator, src_view))
-            {
-                ERR("Failed to create image views.\n");
-                goto cleanup;
-            }
-        }
-
-        if (FAILED(hr = vkd3d_meta_get_copy_image_pipeline(
-            &list->device->meta_ops, &pipeline_key, &pipeline_info, src_index != UINT32_MAX)))
         {
-            ERR("Failed to obtain pipeline, format %u, view_type %u, sample_count %u.\n",
-                    pipeline_key.format->vk_format, pipeline_key.view_type, pipeline_key.sample_count);
+            ERR("Failed to add views.\n");
             goto cleanup;
         }
 
@@ -10066,7 +9841,6 @@ static void d3d12_command_list_copy_image(struct d3d12_command_list *list,
 
         memset(&rendering_info, 0, sizeof(rendering_info));
         rendering_info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-        rendering_info.flags = d3d12_device_get_rendering_flags(list->device);
         rendering_info.renderArea.offset.x = region->dstOffset.x;
         rendering_info.renderArea.offset.y = region->dstOffset.y;
         rendering_info.renderArea.extent.width = region->extent.width;
@@ -10099,36 +9873,28 @@ static void d3d12_command_list_copy_image(struct d3d12_command_list *list,
         push_args.offset.x = region->srcOffset.x - region->dstOffset.x;
         push_args.offset.y = region->srcOffset.y - region->dstOffset.y;
 
-        if (src_index == UINT32_MAX)
-        {
-            vk_image_info.sampler = VK_NULL_HANDLE;
-            vk_image_info.imageView = src_view->vk_image_view;
-            vk_image_info.imageLayout = barrier.src.layout;
+        vk_image_info.sampler = VK_NULL_HANDLE;
+        vk_image_info.imageView = src_view->vk_image_view;
+        vk_image_info.imageLayout = barrier.src.layout;
 
-            vk_descriptor_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            vk_descriptor_write.pNext = NULL;
-            vk_descriptor_write.dstSet = VK_NULL_HANDLE;
-            vk_descriptor_write.dstBinding = 0;
-            vk_descriptor_write.dstArrayElement = 0;
-            vk_descriptor_write.descriptorCount = 1;
-            vk_descriptor_write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-            vk_descriptor_write.pImageInfo = &vk_image_info;
-            vk_descriptor_write.pBufferInfo = NULL;
-            vk_descriptor_write.pTexelBufferView = NULL;
-
-            VK_CALL(vkCmdPushDescriptorSetKHR(list->cmd.vk_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    pipeline_info.vk_pipeline_layout, 0, 1, &vk_descriptor_write));
-        }
-        else
-        {
-            d3d12_command_list_meta_push_descriptor_index(list, list->cmd.vk_command_buffer, 0, src_index);
-        }
+        vk_descriptor_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        vk_descriptor_write.pNext = NULL;
+        vk_descriptor_write.dstSet = VK_NULL_HANDLE;
+        vk_descriptor_write.dstBinding = 0;
+        vk_descriptor_write.dstArrayElement = 0;
+        vk_descriptor_write.descriptorCount = 1;
+        vk_descriptor_write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        vk_descriptor_write.pImageInfo = &vk_image_info;
+        vk_descriptor_write.pBufferInfo = NULL;
+        vk_descriptor_write.pTexelBufferView = NULL;
 
         d3d12_command_list_debug_mark_begin_region(list, "CopyRenderPass");
         VK_CALL(vkCmdBeginRendering(list->cmd.vk_command_buffer, &rendering_info));
         VK_CALL(vkCmdBindPipeline(list->cmd.vk_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_info.vk_pipeline));
         VK_CALL(vkCmdSetViewport(list->cmd.vk_command_buffer, 0, 1, &viewport));
         VK_CALL(vkCmdSetScissor(list->cmd.vk_command_buffer, 0, 1, &rendering_info.renderArea));
+        VK_CALL(vkCmdPushDescriptorSetKHR(list->cmd.vk_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                pipeline_info.vk_pipeline_layout, 0, 1, &vk_descriptor_write));
 
         if (pipeline_info.needs_stencil_mask)
         {
@@ -10136,17 +9902,15 @@ static void d3d12_command_list_copy_image(struct d3d12_command_list *list,
             {
                 push_args.bit_mask = 1u << i;
                 VK_CALL(vkCmdSetStencilWriteMask(list->cmd.vk_command_buffer, VK_STENCIL_FACE_FRONT_AND_BACK, push_args.bit_mask));
-                d3d12_command_list_meta_push_data(list, list->cmd.vk_command_buffer,
-                        pipeline_info.vk_pipeline_layout,
-                        VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(push_args), &push_args);
+                VK_CALL(vkCmdPushConstants(list->cmd.vk_command_buffer, pipeline_info.vk_pipeline_layout,
+                        VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push_args), &push_args));
                 VK_CALL(vkCmdDraw(list->cmd.vk_command_buffer, 3, region->dstSubresource.layerCount, 0, 0));
             }
         }
         else
         {
-            d3d12_command_list_meta_push_data(list, list->cmd.vk_command_buffer,
-                    pipeline_info.vk_pipeline_layout,
-                    VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(push_args), &push_args);
+            VK_CALL(vkCmdPushConstants(list->cmd.vk_command_buffer, pipeline_info.vk_pipeline_layout,
+                    VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push_args), &push_args));
             VK_CALL(vkCmdDraw(list->cmd.vk_command_buffer, 3, region->dstSubresource.layerCount, 0, 0));
         }
 
@@ -10172,7 +9936,7 @@ cleanup:
         else
             new_layout = dst_resource->common_layout;
 
-        d3d12_command_list_transition_image_layout(list, batch, dst_resource,
+        d3d12_command_list_transition_image_layout(list, batch, dst_resource->res.vk_image,
                 &region->dstSubresource, barrier.dst.stages,
                 barrier.dst.access, barrier.dst.layout,
                 outside_vk_stages, outside_vk_access,
@@ -10188,7 +9952,7 @@ cleanup:
         else
             new_layout = src_resource->common_layout;
 
-        d3d12_command_list_transition_image_layout(list, batch, src_resource,
+        d3d12_command_list_transition_image_layout(list, batch, src_resource->res.vk_image,
             &region->srcSubresource, barrier.src.stages,
             VK_ACCESS_2_NONE, barrier.src.layout,
             outside_vk_stages, outside_vk_access,
@@ -10258,10 +10022,7 @@ static bool d3d12_command_list_init_copy_texture_region(struct d3d12_command_lis
                 &src_resource->desc, out->src_format, out->dst_format, src_box, dst_x, dst_y, dst_z);
         out->copy.buffer_image.bufferOffset += dst_resource->mem.offset;
 
-        out->needs_conversion = (out->copy.buffer_image.imageSubresource.aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) &&
-                out->src_format->is_emulated;
-        out->src_layout = d3d12_resource_pick_layout(src_resource, out->needs_conversion
-            ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        out->src_layout = d3d12_resource_pick_layout(src_resource, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
         out->batch_type = VKD3D_BATCH_TYPE_COPY_IMAGE_TO_BUFFER;
     }
     else if (src->Type == D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT && dst->Type == D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX)
@@ -10286,8 +10047,6 @@ static bool d3d12_command_list_init_copy_texture_region(struct d3d12_command_lis
                 &dst_resource->desc, out->src_format, out->dst_format, src_box, dst_x, dst_y, dst_z);
         out->copy.buffer_image.bufferOffset += src_resource->mem.offset;
 
-        out->needs_conversion = (out->copy.buffer_image.imageSubresource.aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) &&
-                out->dst_format->is_emulated;
         out->dst_layout = d3d12_resource_pick_layout(dst_resource, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
         out->writes_full_subresource = d3d12_image_copy_writes_full_subresource(dst_resource,
                 &out->copy.buffer_image.imageExtent, &out->copy.buffer_image.imageSubresource);
@@ -10475,93 +10234,20 @@ static bool d3d12_command_list_init_copy_texture_region(struct d3d12_command_lis
 static void d3d12_command_list_merge_copy_tracking(struct d3d12_command_list *list,
         struct d3d12_command_list_barrier_batch *batch);
 
-static inline VkOffset3D vk_offset3d_min(VkOffset3D a, VkOffset3D b)
-{
-    VkOffset3D ret = {
-        min(a.x, b.x),
-        min(a.y, b.y),
-        min(a.z, b.z),
-    };
-    return ret;
-}
-
-static inline VkOffset3D vk_offset3d_max(VkOffset3D a, VkOffset3D b)
-{
-    VkOffset3D ret = {
-        max(a.x, b.x),
-        max(a.y, b.y),
-        max(a.z, b.z),
-    };
-    return ret;
-}
-
-static inline VkOffset3D vk_offset_extent_to_bottom_right_offset(VkOffset3D offset, VkExtent3D extent)
-{
-    offset.x += (int32_t)extent.width - 1;
-    offset.y += (int32_t)extent.height - 1;
-    offset.z += (int32_t)extent.depth - 1;
-    return offset;
-}
-
-static inline bool vk_offset_region_overlaps(VkOffset3D a_top_left, VkOffset3D a_bottom_right,
-    VkOffset3D b_top_left, VkOffset3D b_bottom_right)
-{
-    VkOffset3D bottom_right_overlap = vk_offset3d_min(a_bottom_right, b_bottom_right);
-    VkOffset3D top_left_overlap = vk_offset3d_max(a_top_left, b_top_left);
-
-    return top_left_overlap.x <= bottom_right_overlap.x &&
-            top_left_overlap.y <= bottom_right_overlap.y &&
-            top_left_overlap.z <= bottom_right_overlap.z;
-}
-
-static inline bool vk_offset_extent_region_overlaps(VkOffset3D a_offset, VkExtent3D a_extent,
-    VkOffset3D b_offset, VkExtent3D b_extent)
-{
-    return vk_offset_region_overlaps(
-        a_offset, vk_offset_extent_to_bottom_right_offset(a_offset, a_extent),
-        b_offset, vk_offset_extent_to_bottom_right_offset(b_offset, b_extent));
-}
-
 static void d3d12_command_list_register_pending_transfer_image_write(struct d3d12_command_list *list,
-        VkImage vk_image, uint32_t subresource_index, VkOffset3D offset, VkExtent3D extent, VkPipelineStageFlags2 vk_stages)
+        VkImage vk_image, uint32_t subresource_index, VkPipelineStageFlags2 vk_stages)
 {
     struct d3d12_tracked_texture_copy *copy;
-    unsigned int i;
-
-    for (i = 0; i < list->transfer_batch.tracked_copy_texture_count; i++)
-    {
-        struct d3d12_tracked_texture_copy *tracked_copy = &list->transfer_batch.tracked_copy_textures[i];
-        bool found;
-
-        found = tracked_copy->vk_image == vk_image && tracked_copy->subresource_index == subresource_index;
-
-        if (found && subresource_index != UINT32_MAX)
-        {
-            /* Expand the damage rect. This will not work perfectly for block copies,
-             * but we will be able to entire an entire row of blocks before injecting a barrier at least,
-             * which should be enough. */
-            VkOffset3D bottom_right_pixel = vk_offset_extent_to_bottom_right_offset(offset, extent);
-            tracked_copy->top_left_pixel = vk_offset3d_min(offset, tracked_copy->top_left_pixel);
-            tracked_copy->bottom_right_pixel = vk_offset3d_max(bottom_right_pixel, tracked_copy->bottom_right_pixel);
-            break;
-        }
-    }
-
-    if (i == list->transfer_batch.tracked_copy_texture_count)
-    {
-        assert(list->transfer_batch.tracked_copy_texture_count < ARRAY_SIZE(list->transfer_batch.tracked_copy_textures));
-        copy = &list->transfer_batch.tracked_copy_textures[list->transfer_batch.tracked_copy_texture_count++];
-        copy->vk_image = vk_image;
-        copy->subresource_index = subresource_index;
-        copy->top_left_pixel = offset;
-        copy->bottom_right_pixel = vk_offset_extent_to_bottom_right_offset(offset, extent);
-    }
+    assert(list->transfer_batch.tracked_copy_texture_count < ARRAY_SIZE(list->transfer_batch.tracked_copy_textures));
+    copy = &list->transfer_batch.tracked_copy_textures[list->transfer_batch.tracked_copy_texture_count++];
+    copy->vk_image = vk_image;
+    copy->subresource_index = subresource_index;
 
     list->transfer_batch.vk_stages |= vk_stages;
 }
 
 static bool d3d12_command_list_check_pending_transfer_image_write(struct d3d12_command_list *list,
-        VkImage vk_image, uint32_t subresource_index, VkOffset3D offset, VkExtent3D extent)
+        VkImage vk_image, uint32_t subresource_index)
 {
     bool has_hazard;
     unsigned int i;
@@ -10573,17 +10259,10 @@ static bool d3d12_command_list_check_pending_transfer_image_write(struct d3d12_c
 
     for (i = 0; i < list->transfer_batch.tracked_copy_texture_count && !has_hazard; i++)
     {
-        const struct d3d12_tracked_texture_copy *tracked_copy = &list->transfer_batch.tracked_copy_textures[i];
-        has_hazard = tracked_copy->vk_image == vk_image &&
-                (tracked_copy->subresource_index == subresource_index ||
-                 tracked_copy->subresource_index == UINT32_MAX || subresource_index == UINT32_MAX);
-
-        if (has_hazard && tracked_copy->subresource_index == subresource_index && subresource_index != UINT32_MAX)
-        {
-            VkOffset3D bottom_right_pixel = vk_offset_extent_to_bottom_right_offset(offset, extent);
-            if (!vk_offset_region_overlaps(offset, bottom_right_pixel, tracked_copy->top_left_pixel, tracked_copy->bottom_right_pixel))
-                has_hazard = false;
-        }
+        has_hazard = list->transfer_batch.tracked_copy_textures[i].vk_image == vk_image &&
+                (list->transfer_batch.tracked_copy_textures[i].subresource_index == subresource_index ||
+                 list->transfer_batch.tracked_copy_textures[i].subresource_index == UINT32_MAX ||
+                 subresource_index == UINT32_MAX);
     }
 
     return has_hazard;
@@ -10591,9 +10270,9 @@ static bool d3d12_command_list_check_pending_transfer_image_write(struct d3d12_c
 
 static void d3d12_command_list_check_and_resolve_pending_transfer_image_write(struct d3d12_command_list *list,
         struct d3d12_command_list_barrier_batch *barriers,
-        VkImage vk_image, uint32_t subresource_index, VkOffset3D offset, VkExtent3D extent)
+        VkImage vk_image, uint32_t subresource_index)
 {
-    if (d3d12_command_list_check_pending_transfer_image_write(list, vk_image, subresource_index, offset, extent))
+    if (d3d12_command_list_check_pending_transfer_image_write(list, vk_image, subresource_index))
     {
         d3d12_command_list_debug_mark_label(list, "Transfer WAW (image)", 0.8f, 1.0f, 0.8f, 1.0f);
         d3d12_command_list_merge_copy_tracking(list, barriers);
@@ -10606,12 +10285,9 @@ static bool d3d12_command_list_copy_requires_complex_barrier(
     if (!d3d12_device_supports_unified_layouts(list->device))
         return true;
 
-    /* We always handle these inline, unless the format is emulated. */
+    /* We always handle these inline. */
     if (info->batch_type == VKD3D_BATCH_TYPE_COPY_IMAGE_TO_BUFFER)
-    {
-        return (info->copy.buffer_image.imageSubresource.aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) &&
-                info->src_format->is_emulated;
-    }
+        return false;
 
     /* Simple WAW hazards are OK, we can handle those inline. Mismatch in aspects might require fallback copies. */
     return info->writes_full_subresource ||
@@ -10639,51 +10315,31 @@ static void d3d12_command_list_before_copy_texture_region(struct d3d12_command_l
      * This should only apply to placed resources since a full subresource copy write can take aliasing ownership.
      * For committed we should never have to transition ever once we have left UNDEFINED. */
 
-    /* Check for WAW hazards that escape the batching logic. */
-    if (info->batch_type == VKD3D_BATCH_TYPE_COPY_BUFFER_TO_IMAGE)
+    if (info->batch_type == VKD3D_BATCH_TYPE_COPY_IMAGE ||
+            info->batch_type == VKD3D_BATCH_TYPE_COPY_BUFFER_TO_IMAGE)
     {
+        /* Check for WAW hazards that escape the batching logic. */
         d3d12_command_list_check_and_resolve_pending_transfer_image_write(list, batch,
-                dst_resource->res.vk_image, info->dst.SubresourceIndex,
-                info->copy.buffer_image.imageOffset, info->copy.buffer_image.imageExtent);
-    }
-    else if (info->batch_type == VKD3D_BATCH_TYPE_COPY_IMAGE)
-    {
-        /* FIXME: There is a theoretical weakness here when a UINT texture copies to a BC texture.
-         * The image extent is in terms of blocks, not texel in that case,
-         * however, a problem can only manifest if the texture is being spammed with a mix and match
-         * of non-block src and block compressed src with coordinates that happen to overlap
-         * in some unexpected way. */
-
-        d3d12_command_list_check_and_resolve_pending_transfer_image_write(list, batch,
-                dst_resource->res.vk_image, info->dst.SubresourceIndex,
-                info->copy.image.dstOffset, info->copy.image.extent);
+                dst_resource->res.vk_image, info->dst.SubresourceIndex);
     }
 
     if (info->batch_type == VKD3D_BATCH_TYPE_COPY_IMAGE_TO_BUFFER)
     {
         d3d12_command_list_track_resource_usage(list, dst_resource, true);
 
-        if (!unified || info->needs_conversion)
+        if (!unified)
         {
             /* We're going to do an image layout transition, so we can handle pending buffer barriers while we're at it.
              * After that barrier completes, we implicitly synchronize any outstanding copies, so we can drop the tracking.
              * This also avoids having to compute the destination damage region. */
-            VkPipelineStageFlags2 dst_stages = VK_PIPELINE_STAGE_2_COPY_BIT;
-            VkAccessFlags2 dst_access = VK_ACCESS_2_TRANSFER_READ_BIT;
-
             global_transfer_access = list->transfer_batch.tracked_copy_buffer_count ?
                     VK_ACCESS_2_TRANSFER_WRITE_BIT : VK_ACCESS_2_NONE;
             list->transfer_batch.tracked_copy_buffer_count = 0;
 
-            if (info->needs_conversion)
-            {
-                dst_stages = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-                dst_access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-            }
-
-            d3d12_command_list_transition_image_layout_with_global_memory_barrier(list, batch, src_resource,
+            d3d12_command_list_transition_image_layout_with_global_memory_barrier(list, batch,
+                    src_resource->res.vk_image,
                     &info->copy.buffer_image.imageSubresource, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_NONE,
-                    src_resource->common_layout, dst_stages, dst_access,
+                    src_resource->common_layout, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
                     info->src_layout, global_transfer_access, global_transfer_access);
         }
     }
@@ -10691,16 +10347,9 @@ static void d3d12_command_list_before_copy_texture_region(struct d3d12_command_l
     {
         d3d12_command_list_track_resource_usage(list, dst_resource, !info->writes_full_resource);
 
-        if (info->needs_conversion)
-        {
-            d3d12_command_list_barrier_batch_add_global_transition(list, batch,
-                    VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_NONE,
-                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
-        }
-
         if (!unified || info->writes_full_subresource)
         {
-            d3d12_command_list_transition_image_layout(list, batch, dst_resource,
+            d3d12_command_list_transition_image_layout(list, batch, dst_resource->res.vk_image,
                     &info->copy.buffer_image.imageSubresource, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_NONE,
                     info->writes_full_subresource ? VK_IMAGE_LAYOUT_UNDEFINED : dst_resource->common_layout,
                     VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, info->dst_layout);
@@ -10719,199 +10368,12 @@ static void d3d12_command_list_before_copy_texture_region(struct d3d12_command_l
     }
 }
 
-static void d3d12_command_list_copy_image_to_buffer_compute(struct d3d12_command_list *list,
-        struct vkd3d_image_copy_info *info, struct d3d12_resource *dst_resource, struct d3d12_resource *src_resource)
-{
-    const struct vkd3d_vk_device_procs *vk_procs = &list->device->vk_procs;
-    struct vkd3d_copy_image_to_buffer_args compute_args;
-    struct vkd3d_copy_image_info copy_pipeline_info;
-    struct vkd3d_texture_view_desc src_view_desc;
-    VkWriteDescriptorSet vk_descriptor_write;
-    VkDescriptorImageInfo vk_src_image_info;
-    struct vkd3d_view *src_view = NULL;
-    VkDependencyInfo dep_info;
-    VkMemoryBarrier2 barrier;
-    uint32_t view_index;
-    bool use_heap;
-
-    d3d12_command_list_invalidate_current_pipeline(list, true);
-    d3d12_command_list_update_global_descriptor_buffer_meta(list);
-
-    assert(info->copy.buffer_image.imageSubresource.layerCount == 1u);
-
-    memset(&barrier, 0, sizeof(barrier));
-    barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-    barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-    barrier.srcAccessMask = VK_ACCESS_2_NONE;
-    barrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    barrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-
-    memset(&dep_info, 0, sizeof(dep_info));
-    dep_info.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    dep_info.memoryBarrierCount = 1u;
-    dep_info.pMemoryBarriers = &barrier;
-
-    VK_CALL(vkCmdPipelineBarrier2(list->cmd.vk_command_buffer, &dep_info));
-
-    memset(&src_view_desc, 0, sizeof(src_view_desc));
-    src_view_desc.image = src_resource->res.vk_image;
-    src_view_desc.view_type = VK_IMAGE_VIEW_TYPE_2D;
-    src_view_desc.format = vkd3d_format_from_d3d12_resource_desc(list->device, &src_resource->desc, src_resource->desc.Format);
-    src_view_desc.image_usage = VK_IMAGE_USAGE_SAMPLED_BIT;
-    src_view_desc.allowed_swizzle = false;
-    src_view_desc.aspect_mask = info->copy.buffer_image.imageSubresource.aspectMask;
-    src_view_desc.layer_idx = info->copy.buffer_image.imageSubresource.baseArrayLayer;
-    src_view_desc.layer_count = 1;
-    src_view_desc.miplevel_idx = info->copy.buffer_image.imageSubresource.mipLevel;
-    src_view_desc.miplevel_count = 1;
-
-    view_index = d3d12_command_list_allocate_meta_image_view(list, &src_view_desc, info->src_layout);
-    use_heap = view_index != UINT32_MAX;
-
-    if (FAILED(vkd3d_meta_get_copy_image_to_buffer_pipeline(&list->device->meta_ops,
-        src_view_desc.format, &copy_pipeline_info, use_heap)))
-    {
-        ERR("Failed to get copy image to buffer pipeline.\n");
-        return;
-    }
-
-    VK_CALL(vkCmdBindPipeline(list->cmd.vk_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, copy_pipeline_info.vk_pipeline));
-
-    if (use_heap)
-    {
-        d3d12_command_list_meta_push_descriptor_index(list, list->cmd.vk_command_buffer, 0, view_index);
-    }
-    else
-    {
-        if (!vkd3d_create_texture_view(list->device, &src_view_desc, &src_view))
-        {
-            ERR("Failed to create image views.\n");
-            goto cleanup_compute;
-        }
-
-        if (!d3d12_command_allocator_add_view(list->allocator, src_view))
-        {
-            ERR("Failed to add views.\n");
-            goto cleanup_compute;
-        }
-
-        memset(&vk_src_image_info, 0, sizeof(vk_src_image_info));
-        vk_src_image_info.imageView = src_view->vk_image_view;
-        vk_src_image_info.imageLayout = info->src_layout;
-
-        memset(&vk_descriptor_write, 0, sizeof(vk_descriptor_write));
-        vk_descriptor_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        vk_descriptor_write.dstBinding = 0;
-        vk_descriptor_write.dstArrayElement = 0;
-        vk_descriptor_write.descriptorCount = 1;
-        vk_descriptor_write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-        vk_descriptor_write.pImageInfo = &vk_src_image_info;
-
-        VK_CALL(vkCmdPushDescriptorSetKHR(list->cmd.vk_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                copy_pipeline_info.vk_pipeline_layout, 0, 1, &vk_descriptor_write));
-    }
-
-    memset(&compute_args, 0, sizeof(compute_args));
-    compute_args.dst_va = dst_resource->res.va + info->dst.PlacedFootprint.Offset;
-    compute_args.offset.x = info->copy.buffer_image.imageOffset.x;
-    compute_args.offset.y = info->copy.buffer_image.imageOffset.y;
-    compute_args.extent.width = info->copy.buffer_image.imageExtent.width;
-    compute_args.extent.height = info->copy.buffer_image.imageExtent.height;
-    compute_args.row_pitch = info->dst.PlacedFootprint.Footprint.RowPitch;
-
-    d3d12_command_list_meta_push_data(list, list->cmd.vk_command_buffer,
-            copy_pipeline_info.vk_pipeline_layout,
-            VK_SHADER_STAGE_COMPUTE_BIT, sizeof(compute_args), &compute_args);
-
-    VK_CALL(vkCmdDispatch(list->cmd.vk_command_buffer,
-            vkd3d_compute_workgroup_count(info->copy.buffer_image.imageExtent.width, 8),
-            vkd3d_compute_workgroup_count(info->copy.buffer_image.imageExtent.height, 8), 1u));
-
-    memset(&barrier, 0, sizeof(barrier));
-    barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-    barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    barrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-    barrier.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-    barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-
-    memset(&dep_info, 0, sizeof(dep_info));
-    dep_info.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    dep_info.memoryBarrierCount = 1u;
-    dep_info.pMemoryBarriers = &barrier;
-
-    VK_CALL(vkCmdPipelineBarrier2(list->cmd.vk_command_buffer, &dep_info));
-
-cleanup_compute:
-    if (src_view)
-        vkd3d_view_decref(src_view, list->device);
-
-}
-
-static void d3d12_command_list_copy_buffer_to_scratch_compute(struct d3d12_command_list *list,
-        struct vkd3d_image_copy_info *info, const struct vkd3d_scratch_allocation *dst_scratch,
-        struct d3d12_resource *src_resource)
-{
-    const struct vkd3d_vk_device_procs *vk_procs = &list->device->vk_procs;
-    struct vkd3d_copy_buffer_to_image_args compute_args;
-    struct vkd3d_copy_image_info copy_pipeline_info;
-    VkDependencyInfo dep_info;
-    VkMemoryBarrier2 barrier;
-
-    d3d12_command_list_invalidate_current_pipeline(list, true);
-    d3d12_command_list_update_global_descriptor_buffer_meta(list);
-
-    /* Two possible ways to implement this:
-     * a) Render to depth image directly
-     * b) Allocate scratch, convert into that, then dispatch copy
-     *
-     * Go for option b here. This is less efficient, but works on compute queues
-     * and is simpler. Revisit if this ever ends up being a perf issue in the wild. */
-    if (FAILED(vkd3d_meta_get_copy_buffer_to_scratch_pipeline(&list->device->meta_ops,
-        info->dst_format, &copy_pipeline_info, false)))
-    {
-        ERR("Failed to get copy image to buffer pipeline.\n");
-        return;
-    }
-
-    VK_CALL(vkCmdBindPipeline(list->cmd.vk_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, copy_pipeline_info.vk_pipeline));
-
-    memset(&compute_args, 0, sizeof(compute_args));
-    compute_args.dst_va = dst_scratch->va;
-    compute_args.src_va = src_resource->res.va + info->src.PlacedFootprint.Offset;
-    compute_args.extent.width = info->copy.buffer_image.imageExtent.width;
-    compute_args.extent.height = info->copy.buffer_image.imageExtent.height;
-    compute_args.row_pitch = info->src.PlacedFootprint.Footprint.RowPitch;
-
-    d3d12_command_list_meta_push_data(list, list->cmd.vk_command_buffer,
-            copy_pipeline_info.vk_pipeline_layout,
-            VK_SHADER_STAGE_COMPUTE_BIT, sizeof(compute_args), &compute_args);
-
-    VK_CALL(vkCmdDispatch(list->cmd.vk_command_buffer,
-            vkd3d_compute_workgroup_count(info->copy.buffer_image.imageExtent.width, 8),
-            vkd3d_compute_workgroup_count(info->copy.buffer_image.imageExtent.height, 8), 1u));
-
-    memset(&barrier, 0, sizeof(barrier));
-    barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-    barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    barrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
-    barrier.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-    barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
-
-    memset(&dep_info, 0, sizeof(dep_info));
-    dep_info.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    dep_info.memoryBarrierCount = 1u;
-    dep_info.pMemoryBarriers = &barrier;
-
-    VK_CALL(vkCmdPipelineBarrier2(list->cmd.vk_command_buffer, &dep_info));
-}
-
 static void d3d12_command_list_copy_texture_region(struct d3d12_command_list *list,
         struct d3d12_command_list_barrier_batch *batch,
         struct vkd3d_image_copy_info *info)
 {
     struct d3d12_resource *dst_resource, *src_resource;
     const struct vkd3d_vk_device_procs *vk_procs;
-    struct vkd3d_scratch_allocation scratch;
     bool unified;
 
     vk_procs = &list->device->vk_procs;
@@ -10922,56 +10384,36 @@ static void d3d12_command_list_copy_texture_region(struct d3d12_command_list *li
 
     if (info->batch_type == VKD3D_BATCH_TYPE_COPY_IMAGE_TO_BUFFER)
     {
-        VKD3D_BREADCRUMB_TAG(info->needs_conversion ? "Image -> Buffer (compute)" : "Image -> Buffer");
+        VkCopyImageToBufferInfo2 copy_info;
+
+        copy_info.sType = VK_STRUCTURE_TYPE_COPY_IMAGE_TO_BUFFER_INFO_2;
+        copy_info.pNext = NULL;
+        copy_info.srcImage = src_resource->res.vk_image;
+        copy_info.srcImageLayout = info->src_layout;
+        copy_info.dstBuffer = dst_resource->res.vk_buffer;
+        copy_info.regionCount = 1;
+        copy_info.pRegions = &info->copy.buffer_image;
+
+        VKD3D_BREADCRUMB_TAG("Image -> Buffer");
         VKD3D_BREADCRUMB_RESOURCE(src_resource);
         VKD3D_BREADCRUMB_RESOURCE(dst_resource);
         VKD3D_BREADCRUMB_BUFFER_IMAGE_COPY(&info->copy.buffer_image);
 
-        if (info->needs_conversion)
+        d3d12_command_list_mark_copy_buffer_write(list, copy_info.dstBuffer, info->copy.buffer_image.bufferOffset,
+                info->buffer_footprint_size, !!(dst_resource->flags & VKD3D_RESOURCE_RESERVED));
+        VK_CALL(vkCmdCopyImageToBuffer2(list->cmd.vk_command_buffer, &copy_info));
+
+        if (!unified)
         {
-            /* Buffer WAW tracking doesn't know about compute, so flush that here */
-            d3d12_command_list_resolve_transfer_waw(list);
-
-            d3d12_command_list_copy_image_to_buffer_compute(list, info,
-                    dst_resource, src_resource);
-        }
-        else
-        {
-            VkCopyImageToBufferInfo2 copy_info;
-            copy_info.sType = VK_STRUCTURE_TYPE_COPY_IMAGE_TO_BUFFER_INFO_2;
-            copy_info.pNext = NULL;
-            copy_info.srcImage = src_resource->res.vk_image;
-            copy_info.srcImageLayout = info->src_layout;
-            copy_info.dstBuffer = dst_resource->res.vk_buffer;
-            copy_info.regionCount = 1;
-            copy_info.pRegions = &info->copy.buffer_image;
-
-            d3d12_command_list_mark_copy_buffer_write(list, copy_info.dstBuffer,
-                    info->copy.buffer_image.bufferOffset, info->buffer_footprint_size,
-                    !!(dst_resource->flags & VKD3D_RESOURCE_RESERVED));
-
-            VK_CALL(vkCmdCopyImageToBuffer2(list->cmd.vk_command_buffer, &copy_info));
-        }
-
-        if (!unified || info->needs_conversion)
-        {
-            VkPipelineStageFlags2 src_stage = info->needs_conversion
-                ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : VK_PIPELINE_STAGE_2_COPY_BIT;
-
-            d3d12_command_list_transition_image_layout(list, batch, src_resource,
-                    &info->copy.buffer_image.imageSubresource, src_stage, VK_ACCESS_2_NONE,
+            d3d12_command_list_transition_image_layout(list, batch,
+                    src_resource->res.vk_image,
+                    &info->copy.buffer_image.imageSubresource, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_NONE,
                     info->src_layout, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_NONE, src_resource->common_layout);
         }
     }
     else if (info->batch_type == VKD3D_BATCH_TYPE_COPY_BUFFER_TO_IMAGE)
     {
         VkCopyBufferToImageInfo2 copy_info;
-        VkBufferImageCopy2 region;
-
-        VKD3D_BREADCRUMB_TAG("Buffer -> Image");
-        VKD3D_BREADCRUMB_RESOURCE(src_resource);
-        VKD3D_BREADCRUMB_RESOURCE(dst_resource);
-        VKD3D_BREADCRUMB_BUFFER_IMAGE_COPY(&info->copy.buffer_image);
 
         copy_info.sType = VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2;
         copy_info.pNext = NULL;
@@ -10979,45 +10421,18 @@ static void d3d12_command_list_copy_texture_region(struct d3d12_command_list *li
         copy_info.dstImage = dst_resource->res.vk_image;
         copy_info.dstImageLayout = info->dst_layout;
         copy_info.regionCount = 1;
-        copy_info.pRegions = &region;
+        copy_info.pRegions = &info->copy.buffer_image;
 
-        region = info->copy.buffer_image;
-
-        if (info->needs_conversion)
-        {
-            struct vkd3d_format_footprint footprint;
-            VkDeviceSize scratch_buffer_size;
-            VkExtent3D extent;
-
-            /* Assumes that the D3D format has the same block size as the Vulkan format */
-            footprint = vkd3d_format_footprint_for_plane(dst_resource->format,
-                    d3d12_plane_index_from_vk_aspect(region.imageSubresource.aspectMask));
-
-            extent = info->copy.buffer_image.imageExtent;
-            scratch_buffer_size = footprint.block_byte_count * extent.width * extent.height * extent.depth;
-
-            if (!d3d12_command_allocator_allocate_scratch_memory(list->allocator,
-                    VKD3D_SCRATCH_POOL_KIND_DEVICE_STORAGE, scratch_buffer_size, 16, ~0u, &scratch))
-            {
-                ERR("Failed to allocate scratch memory.\n");
-                return;
-            }
-
-            d3d12_command_list_copy_buffer_to_scratch_compute(list, info, &scratch, src_resource);
-
-            /* Scratch memory will be tightly packed */
-            copy_info.srcBuffer = scratch.buffer;
-
-            region.bufferOffset = scratch.offset;
-            region.bufferRowLength = 0u;
-            region.bufferImageHeight = 0u;
-        }
+        VKD3D_BREADCRUMB_TAG("Buffer -> Image");
+        VKD3D_BREADCRUMB_RESOURCE(src_resource);
+        VKD3D_BREADCRUMB_RESOURCE(dst_resource);
+        VKD3D_BREADCRUMB_BUFFER_IMAGE_COPY(&info->copy.buffer_image);
 
         VK_CALL(vkCmdCopyBufferToImage2(list->cmd.vk_command_buffer, &copy_info));
 
         if (!unified)
         {
-            d3d12_command_list_transition_image_layout(list, batch, dst_resource,
+            d3d12_command_list_transition_image_layout(list, batch, dst_resource->res.vk_image,
                     &info->copy.buffer_image.imageSubresource, VK_PIPELINE_STAGE_2_COPY_BIT,
                     VK_ACCESS_2_TRANSFER_WRITE_BIT, info->dst_layout, VK_PIPELINE_STAGE_2_COPY_BIT,
                     VK_ACCESS_2_NONE, dst_resource->common_layout);
@@ -11079,7 +10494,6 @@ static void STDMETHODCALLTYPE d3d12_command_list_CopyTextureRegion(d3d12_command
 
     d3d12_command_list_check_render_pass_validation(list, "CopyTextureRegion called within a render pass.\n", true);
     d3d12_command_list_flush_dgc_batch(list);
-    d3d12_command_list_begin_transfer(list);
 
     if (src_box && !validate_d3d12_box(src_box))
     {
@@ -11114,12 +10528,7 @@ static void STDMETHODCALLTYPE d3d12_command_list_CopyTextureRegion(d3d12_command
                     other_subres = &other_info->copy.buffer_image.imageSubresource;
                     assert(subres->layerCount == 1 && other_subres->layerCount == 1);
                     alias = vk_image_copy_subresource_overlaps(copy_info.dst.pResource, subres,
-                            other_info->dst.pResource, other_subres) &&
-                            vk_offset_extent_region_overlaps(
-                                copy_info.copy.buffer_image.imageOffset,
-                                copy_info.copy.buffer_image.imageExtent,
-                                other_info->copy.buffer_image.imageOffset,
-                                other_info->copy.buffer_image.imageExtent);
+                            other_info->dst.pResource, other_subres);
                     break;
                 case VKD3D_BATCH_TYPE_COPY_IMAGE:
                     if (!fused_aspect_info && vk_image_copy_subresource_can_fuse_aspects(
@@ -11132,13 +10541,8 @@ static void STDMETHODCALLTYPE d3d12_command_list_CopyTextureRegion(d3d12_command
 
                     /* Test for destination aliasing as D3D12 requires serialization on overlapping copies (WAW hazards). */
                     alias = vk_image_copy_subresource_overlaps(
-                                copy_info.dst.pResource, &copy_info.copy.image.dstSubresource,
-                                other_info->dst.pResource, &other_info->copy.image.dstSubresource) &&
-                            vk_offset_extent_region_overlaps(
-                                copy_info.copy.image.dstOffset,
-                                copy_info.copy.image.extent,
-                                other_info->copy.image.dstOffset,
-                                other_info->copy.image.extent);
+                            copy_info.dst.pResource, &copy_info.copy.image.dstSubresource,
+                            other_info->dst.pResource, &other_info->copy.image.dstSubresource);
                     break;
                 default:
                     assert(false);
@@ -11149,7 +10553,7 @@ static void STDMETHODCALLTYPE d3d12_command_list_CopyTextureRegion(d3d12_command
 
     if (alias)
     {
-        d3d12_command_list_end_transfer_batch(list, false);
+        d3d12_command_list_end_transfer_batch(list);
         /* end_transfer_batch resets the batch_type to NONE, so we need to restore it here. */
         list->transfer_batch.batch_type = copy_info.batch_type;
         fused_aspect_info = NULL;
@@ -11216,8 +10620,7 @@ static void STDMETHODCALLTYPE d3d12_command_list_CopyResource(d3d12_command_list
     d3d12_command_list_track_resource_usage(list, src_resource, true);
 
     d3d12_command_list_end_current_render_pass(list, false);
-    d3d12_command_list_end_transfer_batch(list, false);
-    d3d12_command_list_begin_transfer(list);
+    d3d12_command_list_end_transfer_batch(list);
 
     list->cmd.estimated_cost += VKD3D_COMMAND_COST_LOW;
 
@@ -11307,10 +10710,8 @@ static void STDMETHODCALLTYPE d3d12_command_list_CopyResource(d3d12_command_list
 
                 if (i == 0 && j == 0)
                 {
-                    VkExtent3D extent = { INT32_MAX, INT32_MAX, INT32_MAX };
-                    VkOffset3D offset = { 0 };
                     d3d12_command_list_check_and_resolve_pending_transfer_image_write(list, &barriers,
-                            dst_resource->res.vk_image, UINT32_MAX, offset, extent);
+                            dst_resource->res.vk_image, UINT32_MAX);
                 }
 
                 d3d12_command_list_copy_image_transition_images(list, &barriers, dst_resource, dst_resource->format,
@@ -11335,10 +10736,8 @@ static void STDMETHODCALLTYPE d3d12_command_list_CopyResource(d3d12_command_list
         if (!has_barriers)
         {
             /* Remember that there is a potential WAW hazard. */
-            VkOffset3D offset = { 0 };
-            VkExtent3D extent = { INT32_MAX, INT32_MAX, INT32_MAX };
             d3d12_command_list_register_pending_transfer_image_write(
-                    list, dst_resource->res.vk_image, UINT32_MAX, offset, extent, VK_PIPELINE_STAGE_2_COPY_BIT);
+                    list, dst_resource->res.vk_image, UINT32_MAX, VK_PIPELINE_STAGE_2_COPY_BIT);
         }
     }
 
@@ -11394,24 +10793,9 @@ static void d3d12_command_list_end_transfer_batch_if_trivial(struct d3d12_comman
         /* Remember that there is a potential WAW hazard. Buffer writes are tracked in the copy. */
         if (d3d12_resource_is_texture(dst_resource))
         {
-            VkOffset3D offset;
-            VkExtent3D extent;
-
-            if (list->transfer_batch.batch_type == VKD3D_BATCH_TYPE_COPY_IMAGE)
-            {
-                offset = list->transfer_batch.batch[0].copy.image.dstOffset;
-                extent = list->transfer_batch.batch[0].copy.image.extent;
-            }
-            else
-            {
-                offset = list->transfer_batch.batch[0].copy.buffer_image.imageOffset;
-                extent = list->transfer_batch.batch[0].copy.buffer_image.imageExtent;
-            }
-
             d3d12_command_list_register_pending_transfer_image_write(list,
                     dst_resource->res.vk_image,
                     list->transfer_batch.batch[0].dst.SubresourceIndex,
-                    offset, extent,
                     VK_PIPELINE_STAGE_2_COPY_BIT);
         }
 
@@ -11420,59 +10804,20 @@ static void d3d12_command_list_end_transfer_batch_if_trivial(struct d3d12_comman
     }
 }
 
-static void d3d12_command_list_begin_transfer(struct d3d12_command_list *list)
-{
-    if (list->transfer_batch.write_after_read_hazard_stages & ~list->transfer_batch.shader_resource_execution_stages_are_idle)
-    {
-        const struct vkd3d_vk_device_procs *vk_procs = &list->device->vk_procs;
-        VkMemoryBarrier2 vk_memory_barrier;
-        VkDependencyInfo dep_info;
-
-        d3d12_command_list_check_end_of_command_list_cleanup(list);
-        d3d12_command_list_end_current_render_pass(list, true);
-
-        memset(&vk_memory_barrier, 0, sizeof(vk_memory_barrier));
-        memset(&dep_info, 0, sizeof(dep_info));
-        dep_info.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        dep_info.memoryBarrierCount = 1;
-        dep_info.pMemoryBarriers = &vk_memory_barrier;
-
-        vk_memory_barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-        vk_memory_barrier.srcStageMask =
-                list->transfer_batch.write_after_read_hazard_stages &
-                ~list->transfer_batch.shader_resource_execution_stages_are_idle;
-        vk_memory_barrier.srcAccessMask = 0;
-        vk_memory_barrier.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-        vk_memory_barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
-
-        list->transfer_batch.write_after_read_hazard_stages = 0;
-
-        /* Any possible RESOURCE -> COPY_DEST barrier has been resolved now.
-         * Until we observe actual resource work, we can ignore any further RESOURCE -> COPY_DEST barrier. */
-        list->transfer_batch.shader_resource_execution_stages_are_idle |= vk_memory_barrier.srcStageMask;
-
-        VK_CALL(vkCmdPipelineBarrier2(list->cmd.vk_command_buffer, &dep_info));
-        d3d12_command_list_debug_mark_label(list, "RESOURCE -> COPY_DEST", 1.0f, 1.0f, 0.0f, 1.0f);
-        VKD3D_BREADCRUMB_TAG("RESOURCE -> COPY_DEST late barrier");
-        VKD3D_BREADCRUMB_COMMAND(BARRIER);
-    }
-}
-
-static void d3d12_command_list_end_transfer_batch(struct d3d12_command_list *list, bool resolve_shader_resource_barrier)
+static void d3d12_command_list_end_transfer_batch(struct d3d12_command_list *list)
 {
     struct d3d12_command_list_barrier_batch barriers;
     bool has_waw_skip = false;
     uint32_t old_count = 0;
     size_t i;
 
-    if (list->transfer_batch.batch_type != VKD3D_BATCH_TYPE_NONE ||
-        (resolve_shader_resource_barrier && list->transfer_batch.read_after_write_hazard_stages))
+    if (list->transfer_batch.batch_type != VKD3D_BATCH_TYPE_NONE)
         d3d12_command_list_check_end_of_command_list_cleanup(list);
 
     switch (list->transfer_batch.batch_type)
     {
         case VKD3D_BATCH_TYPE_NONE:
-            break;
+            return;
         case VKD3D_BATCH_TYPE_COPY_BUFFER_TO_IMAGE:
         case VKD3D_BATCH_TYPE_COPY_IMAGE_TO_BUFFER:
         case VKD3D_BATCH_TYPE_COPY_IMAGE:
@@ -11494,24 +10839,9 @@ static void d3d12_command_list_end_transfer_batch(struct d3d12_command_list *lis
                     /* No outgoing barriers were required. */
                     if (list->transfer_batch.tracked_copy_texture_count < ARRAY_SIZE(list->transfer_batch.tracked_copy_textures))
                     {
-                        VkOffset3D offset;
-                        VkExtent3D extent;
-
-                        if (list->transfer_batch.batch_type == VKD3D_BATCH_TYPE_COPY_IMAGE)
-                        {
-                            offset = list->transfer_batch.batch[i].copy.image.dstOffset;
-                            extent = list->transfer_batch.batch[i].copy.image.extent;
-                        }
-                        else
-                        {
-                            offset = list->transfer_batch.batch[i].copy.buffer_image.imageOffset;
-                            extent = list->transfer_batch.batch[i].copy.buffer_image.imageExtent;
-                        }
-
                         d3d12_command_list_register_pending_transfer_image_write(list,
                                 impl_from_ID3D12Resource(list->transfer_batch.batch[i].dst.pResource)->res.vk_image,
-                                list->transfer_batch.batch[i].dst.SubresourceIndex,
-                                offset, extent, VK_PIPELINE_STAGE_2_COPY_BIT);
+                                list->transfer_batch.batch[i].dst.SubresourceIndex, VK_PIPELINE_STAGE_2_COPY_BIT);
                     }
                     else
                     {
@@ -11544,44 +10874,6 @@ static void d3d12_command_list_end_transfer_batch(struct d3d12_command_list *lis
     }
 
     list->transfer_batch.batch_type = VKD3D_BATCH_TYPE_NONE;
-
-    if (resolve_shader_resource_barrier && list->transfer_batch.read_after_write_hazard_stages)
-    {
-        const struct vkd3d_vk_device_procs *vk_procs = &list->device->vk_procs;
-        VkMemoryBarrier2 vk_memory_barrier;
-        VkDependencyInfo dep_info;
-
-        d3d12_command_list_end_current_render_pass(list, true);
-
-        memset(&vk_memory_barrier, 0, sizeof(vk_memory_barrier));
-        memset(&dep_info, 0, sizeof(dep_info));
-        dep_info.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-        dep_info.memoryBarrierCount = 1;
-        dep_info.pMemoryBarriers = &vk_memory_barrier;
-
-        vk_memory_barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-        /* We only do magic inside COPY_BIT stage. RESOLVES are different beasts. */
-        vk_memory_barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-        vk_memory_barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-        vk_memory_barrier.dstStageMask = list->transfer_batch.read_after_write_hazard_stages;
-        vk_memory_barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
-
-        list->transfer_batch.read_after_write_hazard_stages = 0;
-
-        VK_CALL(vkCmdPipelineBarrier2(list->cmd.vk_command_buffer, &dep_info));
-        d3d12_command_list_debug_mark_label(list, "COPY_DEST -> RESOURCE", 1.0f, 1.0f, 0.0f, 1.0f);
-        VKD3D_BREADCRUMB_TAG("COPY_DEST -> RESOURCE late barrier");
-        VKD3D_BREADCRUMB_COMMAND(BARRIER);
-    }
-
-    if (resolve_shader_resource_barrier)
-    {
-        /* When this is true, there is upcoming execution which might access shader resources.
-         * Flag that this needs to be synchronized.
-         * TODO: We could be a little smarter here and only "unidle" the exact stages used,
-         * but that gets rather annoying to juggle. */
-        list->transfer_batch.shader_resource_execution_stages_are_idle = VK_PIPELINE_STAGE_NONE;
-    }
 }
 
 static void d3d12_command_list_end_wbi_batch(struct d3d12_command_list *list)
@@ -11612,12 +10904,6 @@ static void d3d12_command_list_end_wbi_batch(struct d3d12_command_list *list)
 
             if (flush)
             {
-                /* Need to explicitly block resume here since WriteBufferImmediate() can
-                 * normally be called inside a render pass and doesn't get the automatic
-                 * validation that would flag this. AMD_buffer_marker should bypass
-                 * the normal renderpass rules. */
-                list->cmd.suspend_resume.block_resume = true;
-
                 VK_CALL(vkCmdUpdateBuffer(list->cmd.vk_command_buffer,
                         list->wbi_batch.buffers[first], list->wbi_batch.offsets[first],
                         (next - first) * sizeof(uint32_t), &list->wbi_batch.values[first]));
@@ -11640,7 +10926,7 @@ static void d3d12_command_list_ensure_transfer_batch(struct d3d12_command_list *
 {
     if (list->transfer_batch.batch_type != type || list->transfer_batch.batch_len == ARRAY_SIZE(list->transfer_batch.batch))
     {
-        d3d12_command_list_end_transfer_batch(list, false);
+        d3d12_command_list_end_transfer_batch(list);
         list->transfer_batch.batch_type = type;
     }
 }
@@ -11676,8 +10962,7 @@ static void STDMETHODCALLTYPE d3d12_command_list_CopyTiles(d3d12_command_list_if
     d3d12_command_list_flush_dgc_batch(list);
 
     d3d12_command_list_end_current_render_pass(list, true);
-    d3d12_command_list_end_transfer_batch(list, false);
-    d3d12_command_list_begin_transfer(list);
+    d3d12_command_list_end_transfer_batch(list);
 
     list->cmd.estimated_cost += VKD3D_COMMAND_COST_LOW;
 
@@ -11986,7 +11271,7 @@ enum vkd3d_resolve_image_path d3d12_command_list_select_resolve_path(struct d3d1
     {
         path = VKD3D_RESOLVE_IMAGE_PATH_RENDER_PASS_ATTACHMENT;
 
-        if (!VKD3D_CONFIG_FLAG_IS_SET(SKIP_DRIVER_WORKAROUNDS))
+        if (!(vkd3d_config_flags & VKD3D_CONFIG_FLAG_SKIP_DRIVER_WORKAROUNDS))
         {
             /* Some drivers ignore the view format for resolve attachments */
             if (list->device->device_info.vulkan_1_2_properties.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY ||
@@ -12258,10 +11543,10 @@ static void d3d12_command_list_execute_resolve(struct d3d12_command_list *list,
     VkDescriptorImageInfo vk_src_image_info, vk_dst_image_info;
     struct vkd3d_resolve_image_info resolve_pipeline_info;
     struct vkd3d_resolve_image_compute_args compute_args;
-    struct vkd3d_view *dst_view = NULL, *src_view = NULL;
     struct vkd3d_resolve_image_args resolve_args;
     VkWriteDescriptorSet vk_descriptor_writes[2];
     VkRenderingAttachmentInfo attachment_info;
+    struct vkd3d_view *dst_view, *src_view;
     const struct vkd3d_format *vk_format;
     VkResolveImageInfo2 resolve_info;
     VkRenderingInfo rendering_info;
@@ -12284,7 +11569,8 @@ static void d3d12_command_list_execute_resolve(struct d3d12_command_list *list,
     else if (path == VKD3D_RESOLVE_IMAGE_PATH_COMPUTE_PIPELINE)
     {
         d3d12_command_list_invalidate_current_pipeline(list, true);
-        d3d12_command_list_update_global_descriptor_buffer_meta(list);
+        d3d12_command_list_invalidate_root_parameters(list, &list->compute_bindings, true, &list->graphics_bindings);
+        d3d12_command_list_update_descriptor_buffers(list);
 
         vk_format = d3d12_command_list_get_resolve_format(list, dst_resource, src_resource, format);
 
@@ -12307,11 +11593,17 @@ static void d3d12_command_list_execute_resolve(struct d3d12_command_list *list,
         resolve_pipeline_key.compute.mode = mode;
         resolve_pipeline_key.compute.srgb = dst_view_desc.format != vk_format;
 
+        if (FAILED(vkd3d_meta_get_resolve_image_pipeline(&list->device->meta_ops, &resolve_pipeline_key, &resolve_pipeline_info)))
+        {
+            ERR("Failed to get resolve pipeline.\n");
+            return;
+        }
+
+        VK_CALL(vkCmdBindPipeline(list->cmd.vk_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, resolve_pipeline_info.vk_pipeline));
+
         for (i = 0; i < region_count; i++)
         {
             const VkImageResolve2 *region = &regions[i];
-            uint32_t src_index, dst_index;
-            bool use_heap;
 
             dst_view_desc.miplevel_idx = region->dstSubresource.mipLevel;
             dst_view_desc.miplevel_count = 1;
@@ -12325,68 +11617,45 @@ static void d3d12_command_list_execute_resolve(struct d3d12_command_list *list,
             src_view_desc.layer_count = region->srcSubresource.layerCount;
             src_view_desc.aspect_mask = region->srcSubresource.aspectMask;
 
-            src_index = d3d12_command_list_allocate_meta_image_view(list, &src_view_desc,
-                d3d12_resource_pick_layout(src_resource, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
-            dst_index = d3d12_command_list_allocate_meta_image_view(list, &dst_view_desc, VK_IMAGE_LAYOUT_GENERAL);
-            use_heap = src_index != UINT32_MAX && dst_index != UINT32_MAX;
-
-            if (FAILED(vkd3d_meta_get_resolve_image_pipeline(
-                &list->device->meta_ops, &resolve_pipeline_key, &resolve_pipeline_info, use_heap)))
+            if (!vkd3d_create_texture_view(list->device, &dst_view_desc, &dst_view) ||
+                    !vkd3d_create_texture_view(list->device, &src_view_desc, &src_view))
             {
-                ERR("Failed to get resolve pipeline.\n");
-                return;
+                ERR("Failed to create image views.\n");
+                goto cleanup_compute;
             }
 
-            VK_CALL(vkCmdBindPipeline(list->cmd.vk_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, resolve_pipeline_info.vk_pipeline));
-
-            if (use_heap)
+            if (!d3d12_command_allocator_add_view(list->allocator, dst_view) ||
+                    !d3d12_command_allocator_add_view(list->allocator, src_view))
             {
-                d3d12_command_list_meta_push_descriptor_index(list, list->cmd.vk_command_buffer, 0, src_index);
-                d3d12_command_list_meta_push_descriptor_index(list, list->cmd.vk_command_buffer, 1, dst_index);
+                ERR("Failed to add views.\n");
+                goto cleanup_compute;
             }
-            else
-            {
-                if (!vkd3d_create_texture_view(list->device, &dst_view_desc, &dst_view) ||
-                        !vkd3d_create_texture_view(list->device, &src_view_desc, &src_view))
-                {
-                    ERR("Failed to create image views.\n");
-                    goto cleanup_compute;
-                }
 
-                if (!d3d12_command_allocator_add_view(list->allocator, dst_view) ||
-                        !d3d12_command_allocator_add_view(list->allocator, src_view))
-                {
-                    ERR("Failed to add views.\n");
-                    goto cleanup_compute;
-                }
+            memset(&vk_src_image_info, 0, sizeof(vk_src_image_info));
+            vk_src_image_info.imageView = src_view->vk_image_view;
+            vk_src_image_info.imageLayout = d3d12_resource_pick_layout(src_resource, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-                memset(&vk_src_image_info, 0, sizeof(vk_src_image_info));
-                vk_src_image_info.imageView = src_view->vk_image_view;
-                vk_src_image_info.imageLayout = d3d12_resource_pick_layout(src_resource, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            memset(&vk_dst_image_info, 0, sizeof(vk_dst_image_info));
+            vk_dst_image_info.imageView = dst_view->vk_image_view;
+            vk_dst_image_info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
-                memset(&vk_dst_image_info, 0, sizeof(vk_dst_image_info));
-                vk_dst_image_info.imageView = dst_view->vk_image_view;
-                vk_dst_image_info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            memset(&vk_descriptor_writes, 0, sizeof(vk_descriptor_writes));
+            vk_descriptor_writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            vk_descriptor_writes[0].dstBinding = 0;
+            vk_descriptor_writes[0].dstArrayElement = 0;
+            vk_descriptor_writes[0].descriptorCount = 1;
+            vk_descriptor_writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+            vk_descriptor_writes[0].pImageInfo = &vk_src_image_info;
 
-                memset(&vk_descriptor_writes, 0, sizeof(vk_descriptor_writes));
-                vk_descriptor_writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                vk_descriptor_writes[0].dstBinding = 0;
-                vk_descriptor_writes[0].dstArrayElement = 0;
-                vk_descriptor_writes[0].descriptorCount = 1;
-                vk_descriptor_writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-                vk_descriptor_writes[0].pImageInfo = &vk_src_image_info;
+            vk_descriptor_writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            vk_descriptor_writes[1].dstBinding = 1;
+            vk_descriptor_writes[1].dstArrayElement = 0;
+            vk_descriptor_writes[1].descriptorCount = 1;
+            vk_descriptor_writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            vk_descriptor_writes[1].pImageInfo = &vk_dst_image_info;
 
-                vk_descriptor_writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                vk_descriptor_writes[1].dstBinding = 1;
-                vk_descriptor_writes[1].dstArrayElement = 0;
-                vk_descriptor_writes[1].descriptorCount = 1;
-                vk_descriptor_writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-                vk_descriptor_writes[1].pImageInfo = &vk_dst_image_info;
-
-                VK_CALL(vkCmdPushDescriptorSetKHR(list->cmd.vk_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                        resolve_pipeline_info.vk_pipeline_layout, 0,
-                        ARRAY_SIZE(vk_descriptor_writes), vk_descriptor_writes));
-            }
+            VK_CALL(vkCmdPushDescriptorSetKHR(list->cmd.vk_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                            resolve_pipeline_info.vk_pipeline_layout, 0, ARRAY_SIZE(vk_descriptor_writes), vk_descriptor_writes));
 
             compute_args.src_offset.x = region->srcOffset.x;
             compute_args.src_offset.y = region->srcOffset.y;
@@ -12395,9 +11664,8 @@ static void d3d12_command_list_execute_resolve(struct d3d12_command_list *list,
             compute_args.extent.width = region->extent.width;
             compute_args.extent.height = region->extent.height;
 
-            d3d12_command_list_meta_push_data(list, list->cmd.vk_command_buffer,
-                    resolve_pipeline_info.vk_pipeline_layout,
-                    VK_SHADER_STAGE_COMPUTE_BIT, sizeof(compute_args), &compute_args);
+            VK_CALL(vkCmdPushConstants(list->cmd.vk_command_buffer, resolve_pipeline_info.vk_pipeline_layout,
+                    VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(compute_args), &compute_args));
 
             VK_CALL(vkCmdDispatch(list->cmd.vk_command_buffer,
                     vkd3d_compute_workgroup_count(region->extent.width, 8),
@@ -12414,7 +11682,8 @@ cleanup_compute:
     else
     {
         d3d12_command_list_invalidate_current_pipeline(list, true);
-        d3d12_command_list_update_global_descriptor_buffer_meta(list);
+        d3d12_command_list_invalidate_root_parameters(list, &list->graphics_bindings, true, &list->compute_bindings);
+        d3d12_command_list_update_descriptor_buffers(list);
 
         vk_format = d3d12_command_list_get_resolve_format(list, dst_resource, src_resource, format);
 
@@ -12423,7 +11692,6 @@ cleanup_compute:
 
         memset(&rendering_info, 0, sizeof(rendering_info));
         rendering_info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-        rendering_info.flags = d3d12_device_get_rendering_flags(list->device);
 
         if (vk_format->vk_aspect_mask & VK_IMAGE_ASPECT_COLOR_BIT)
         {
@@ -12452,8 +11720,6 @@ cleanup_compute:
         for (i = 0; i < region_count; i++)
         {
             const VkImageResolve2 *region = &regions[i];
-            uint32_t src_index;
-            bool use_heap;
 
             rendering_info.renderArea.offset.x = region->dstOffset.x;
             rendering_info.renderArea.offset.y = region->dstOffset.y;
@@ -12491,34 +11757,26 @@ cleanup_compute:
             {
                 src_view_desc.aspect_mask = vk_format->vk_aspect_mask;
                 src_view_desc.image_usage = dst_view_desc.image_usage;
-                src_index = UINT32_MAX;
             }
             else
             {
                 src_view_desc.aspect_mask = region->srcSubresource.aspectMask;
                 src_view_desc.image_usage = VK_IMAGE_USAGE_SAMPLED_BIT;
                 src_view_desc.allowed_swizzle = true;
-                src_index = d3d12_command_list_allocate_meta_image_view(list, &src_view_desc,
-                        d3d12_resource_pick_layout(src_resource, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
             }
 
             if (!vkd3d_create_texture_view(list->device, &dst_view_desc, &dst_view) ||
-                !d3d12_command_allocator_add_view(list->allocator, dst_view))
+                    !vkd3d_create_texture_view(list->device, &src_view_desc, &src_view))
             {
                 ERR("Failed to create image views.\n");
                 goto cleanup_graphics;
             }
 
-            use_heap = src_index != UINT32_MAX;
-
-            if (!use_heap)
-            {
-                if (!vkd3d_create_texture_view(list->device, &src_view_desc, &src_view) ||
+            if (!d3d12_command_allocator_add_view(list->allocator, dst_view) ||
                     !d3d12_command_allocator_add_view(list->allocator, src_view))
-                {
-                    ERR("Failed to create image views.\n");
-                    goto cleanup_graphics;
-                }
+            {
+                ERR("Failed to add views.\n");
+                goto cleanup_graphics;
             }
 
             if (path == VKD3D_RESOLVE_IMAGE_PATH_RENDER_PASS_ATTACHMENT)
@@ -12536,8 +11794,7 @@ cleanup_compute:
                 resolve_pipeline_key.graphics.dst_aspect = (VkImageAspectFlagBits)region->dstSubresource.aspectMask;
                 resolve_pipeline_key.graphics.mode = mode;
 
-                if (FAILED(vkd3d_meta_get_resolve_image_pipeline(
-                    &list->device->meta_ops, &resolve_pipeline_key, &resolve_pipeline_info, use_heap)))
+                if (FAILED(vkd3d_meta_get_resolve_image_pipeline(&list->device->meta_ops, &resolve_pipeline_key, &resolve_pipeline_info)))
                 {
                     ERR("Failed to get resolve pipeline.\n");
                     return;
@@ -12564,31 +11821,23 @@ cleanup_compute:
                 resolve_args.offset.x = region->srcOffset.x - region->dstOffset.x;
                 resolve_args.offset.y = region->srcOffset.y - region->dstOffset.y;
 
-                if (use_heap)
-                {
-                    d3d12_command_list_meta_push_descriptor_index(list, list->cmd.vk_command_buffer, 0, src_index);
-                }
-                else
-                {
-                    memset(&vk_src_image_info, 0, sizeof(vk_src_image_info));
-                    vk_src_image_info.imageView = src_view->vk_image_view;
-                    vk_src_image_info.imageLayout = d3d12_resource_pick_layout(src_resource, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                memset(&vk_src_image_info, 0, sizeof(vk_src_image_info));
+                vk_src_image_info.imageView = src_view->vk_image_view;
+                vk_src_image_info.imageLayout = d3d12_resource_pick_layout(src_resource, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-                    memset(&vk_descriptor_writes, 0, sizeof(vk_descriptor_writes));
-                    vk_descriptor_writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                    vk_descriptor_writes[0].dstBinding = 0;
-                    vk_descriptor_writes[0].dstArrayElement = 0;
-                    vk_descriptor_writes[0].descriptorCount = 1;
-                    vk_descriptor_writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-                    vk_descriptor_writes[0].pImageInfo = &vk_src_image_info;
-
-                    VK_CALL(vkCmdPushDescriptorSetKHR(list->cmd.vk_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            resolve_pipeline_info.vk_pipeline_layout, 0, 1, &vk_descriptor_writes[0]));
-                }
+                memset(&vk_descriptor_writes, 0, sizeof(vk_descriptor_writes));
+                vk_descriptor_writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                vk_descriptor_writes[0].dstBinding = 0;
+                vk_descriptor_writes[0].dstArrayElement = 0;
+                vk_descriptor_writes[0].descriptorCount = 1;
+                vk_descriptor_writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+                vk_descriptor_writes[0].pImageInfo = &vk_src_image_info;
 
                 VK_CALL(vkCmdBindPipeline(list->cmd.vk_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, resolve_pipeline_info.vk_pipeline));
                 VK_CALL(vkCmdSetViewport(list->cmd.vk_command_buffer, 0, 1, &viewport));
                 VK_CALL(vkCmdSetScissor(list->cmd.vk_command_buffer, 0, 1, &rendering_info.renderArea));
+                VK_CALL(vkCmdPushDescriptorSetKHR(list->cmd.vk_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        resolve_pipeline_info.vk_pipeline_layout, 0, 1, &vk_descriptor_writes[0]));
 
                 if (resolve_pipeline_info.needs_stencil_mask)
                 {
@@ -12596,17 +11845,15 @@ cleanup_compute:
                     {
                         resolve_args.bit_mask = 1u << j;
                         VK_CALL(vkCmdSetStencilWriteMask(list->cmd.vk_command_buffer, VK_STENCIL_FACE_FRONT_AND_BACK, resolve_args.bit_mask));
-                        d3d12_command_list_meta_push_data(list, list->cmd.vk_command_buffer,
-                                resolve_pipeline_info.vk_pipeline_layout,
-                                VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(resolve_args), &resolve_args);
+                        VK_CALL(vkCmdPushConstants(list->cmd.vk_command_buffer, resolve_pipeline_info.vk_pipeline_layout,
+                                VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(resolve_args), &resolve_args));
                         VK_CALL(vkCmdDraw(list->cmd.vk_command_buffer, 3, region->dstSubresource.layerCount, 0, 0));
                     }
                 }
                 else
                 {
-                    d3d12_command_list_meta_push_data(list, list->cmd.vk_command_buffer,
-                            resolve_pipeline_info.vk_pipeline_layout,
-                            VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(resolve_args), &resolve_args);
+                    VK_CALL(vkCmdPushConstants(list->cmd.vk_command_buffer, resolve_pipeline_info.vk_pipeline_layout,
+                            VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(resolve_args), &resolve_args));
                     VK_CALL(vkCmdDraw(list->cmd.vk_command_buffer, 3, region->dstSubresource.layerCount, 0, 0));
                 }
             }
@@ -12680,12 +11927,12 @@ static void d3d12_command_list_resolve_subresource(struct d3d12_command_list *li
     }
 
     d3d12_command_list_end_current_render_pass(list, false);
-    d3d12_command_list_end_transfer_batch(list, false);
+    d3d12_command_list_end_transfer_batch(list);
 
     /* If there are WAW hazards on RESOLVE_DEST, handle those. */
     d3d12_command_list_barrier_batch_init(&batch);
     d3d12_command_list_check_and_resolve_pending_transfer_image_write(list, &batch,
-            dst_resource->res.vk_image, dst_subresource_idx, resolve->dstOffset, resolve->extent);
+            dst_resource->res.vk_image, dst_subresource_idx);
     if (batch.vk_memory_barrier.srcAccessMask != 0)
     {
         batch.vk_memory_barrier.srcStageMask |= VK_PIPELINE_STAGE_2_RESOLVE_BIT;
@@ -12740,8 +11987,7 @@ static void d3d12_command_list_resolve_subresource(struct d3d12_command_list *li
     else
     {
         d3d12_command_list_register_pending_transfer_image_write(
-                list, dst_resource->res.vk_image, dst_subresource_idx, resolve->dstOffset, resolve->extent,
-                VK_PIPELINE_STAGE_2_RESOLVE_BIT);
+                list, dst_resource->res.vk_image, dst_subresource_idx, VK_PIPELINE_STAGE_2_RESOLVE_BIT);
     }
 
     if (dst_resource->flags & VKD3D_RESOURCE_LINEAR_STAGING_COPY)
@@ -12982,7 +12228,7 @@ static void STDMETHODCALLTYPE d3d12_command_list_SetPipelineState(d3d12_command_
         }
     }
 
-    if (VKD3D_CONFIG_FLAG_IS_SET(DEBUG_UTILS) && state &&
+    if ((vkd3d_config_flags & VKD3D_CONFIG_FLAG_DEBUG_UTILS) && state &&
             list->device->vk_info.EXT_debug_utils)
     {
         char buffer[1024];
@@ -13033,7 +12279,7 @@ static void STDMETHODCALLTYPE d3d12_command_list_SetPipelineState(d3d12_command_
     }
 
 #ifdef VKD3D_ENABLE_BREADCRUMBS
-    if (VKD3D_CONFIG_FLAG_IS_SET(BREADCRUMBS) && state)
+    if ((vkd3d_config_flags & VKD3D_CONFIG_FLAG_BREADCRUMBS) && state)
     {
         struct vkd3d_breadcrumb_command cmd;
         cmd.type = VKD3D_BREADCRUMB_COMMAND_SET_SHADER_HASH;
@@ -13093,7 +12339,7 @@ static void STDMETHODCALLTYPE d3d12_command_list_SetPipelineState(d3d12_command_
     if (list->state == state)
         return;
 
-    if (VKD3D_CONFIG_FLAG_IS_SET(RETAIN_PSOS) && state)
+    if ((vkd3d_config_flags & VKD3D_CONFIG_FLAG_RETAIN_PSOS) && state)
         d3d12_command_allocator_retain_pipeline_state(list->allocator, state);
 
     d3d12_command_list_invalidate_current_pipeline(list, false);
@@ -13122,13 +12368,8 @@ static void STDMETHODCALLTYPE d3d12_command_list_SetPipelineState(d3d12_command_
             list->active_pipeline_type = VKD3D_PIPELINE_TYPE_NONE;
     }
 
-    if (!state)
-        return;
-
     if (state->pipeline_type != VKD3D_PIPELINE_TYPE_COMPUTE)
     {
-        bool current_feedback_loop = !!(list->current_meta_flags & VKD3D_SHADER_META_FLAG_FEEDBACK_LOOP);
-
         if (list->dynamic_state.stencil_front.write_mask != state->graphics.ds_desc.front.writeMask ||
                 list->dynamic_state.stencil_back.write_mask != state->graphics.ds_desc.back.writeMask)
         {
@@ -13142,18 +12383,6 @@ static void STDMETHODCALLTYPE d3d12_command_list_SetPipelineState(d3d12_command_
          * FRAGMENT is always last if it exists. */
         if (state->graphics.stages[state->graphics.stage_count - 1].stage == VK_SHADER_STAGE_FRAGMENT_BIT)
             list->current_meta_flags = state->graphics.code[state->graphics.stage_count - 1].meta.flags;
-        else
-            list->current_meta_flags = 0;
-
-        if (list->current_meta_flags & VKD3D_SHADER_META_FLAG_FORCE_GRAPHICS_BARRIER_BEFORE_DRAW)
-        {
-            d3d12_command_list_emit_workaround_graphics_barrier(list);
-            list->current_meta_flags &= ~VKD3D_SHADER_META_FLAG_FORCE_GRAPHICS_BARRIER_BEFORE_DRAW;
-        }
-
-        /* If we change feedback loop state, restart the render pass so we can pick that change up. */
-        if (current_feedback_loop != !!(list->current_meta_flags & VKD3D_SHADER_META_FLAG_FEEDBACK_LOOP))
-            d3d12_command_list_end_current_render_pass(list, false);
     }
     else
     {
@@ -13460,6 +12689,36 @@ static void d3d12_command_list_barrier_batch_end(struct d3d12_command_list *list
 #endif
     }
 
+    if (list->cmd.clear_uav_pending)
+    {
+        const VkPipelineStageFlagBits2 uav_stages =
+                VK_PIPELINE_STAGE_2_PRE_RASTERIZATION_SHADERS_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT |
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+
+        if ((batch->vk_memory_barrier.srcStageMask &
+            (VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT)) &&
+            (batch->vk_memory_barrier.dstStageMask & uav_stages))
+        {
+            list->cmd.clear_uav_pending = false;
+        }
+
+        if (list->cmd.clear_uav_pending)
+        {
+            uint32_t i;
+            for (i = 0; i < batch->image_barrier_count; i++)
+            {
+                if ((batch->vk_image_barriers[i].srcStageMask &
+                    (VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT)) &&
+                    (batch->vk_image_barriers[i].dstStageMask & uav_stages))
+                {
+                    list->cmd.clear_uav_pending = false;
+                    break;
+                }
+            }
+        }
+    }
+
     if (dep_info.imageMemoryBarrierCount || dep_info.memoryBarrierCount)
     {
         d3d12_command_list_check_end_of_command_list_cleanup(list);
@@ -13486,36 +12745,27 @@ static bool vk_subresource_range_overlaps(uint32_t base_a, uint32_t count_a, uin
         return end_b > base_a;
 }
 
-static bool vk_image_barrier_overlaps_subresource(const VkImageMemoryBarrier2 *new_barrier,
-                                                  const VkImageMemoryBarrier2 *existing_barrier,
-                                                  bool *compatible_match)
+static bool vk_image_barrier_overlaps_subresource(const VkImageMemoryBarrier2 *a, const VkImageMemoryBarrier2 *b,
+        bool *exact_match)
 {
-    *compatible_match = false;
-    if (new_barrier->image != existing_barrier->image)
+    *exact_match = false;
+    if (a->image != b->image)
+        return false;
+    if (!(a->subresourceRange.aspectMask & b->subresourceRange.aspectMask))
         return false;
 
-    /* If we're transitioning a subset of the aspect masks, it's okay as long as everything else is the same.
-     * This approach only works when we're adding one aspect at a time. */
-    assert((new_barrier->subresourceRange.aspectMask & (new_barrier->subresourceRange.aspectMask - 1)) == 0);
-
-    *compatible_match =
-            new_barrier->subresourceRange.baseMipLevel == existing_barrier->subresourceRange.baseMipLevel &&
-            new_barrier->subresourceRange.levelCount == existing_barrier->subresourceRange.levelCount &&
-            new_barrier->subresourceRange.baseArrayLayer == existing_barrier->subresourceRange.baseArrayLayer &&
-            new_barrier->subresourceRange.layerCount == existing_barrier->subresourceRange.layerCount;
-
-    /* We can only fuse aspects if the barriers otherwise overlap exactly.
-     * If we don't have exact match and we try to transition separate aspects, we should treat
-     * them as separate barriers. */
-    if (!*compatible_match && !(new_barrier->subresourceRange.aspectMask & existing_barrier->subresourceRange.aspectMask))
-        return false;
+    *exact_match = a->subresourceRange.aspectMask == b->subresourceRange.aspectMask &&
+            a->subresourceRange.baseMipLevel == b->subresourceRange.baseMipLevel &&
+            a->subresourceRange.levelCount == b->subresourceRange.levelCount &&
+            a->subresourceRange.baseArrayLayer == b->subresourceRange.baseArrayLayer &&
+            a->subresourceRange.layerCount == b->subresourceRange.layerCount;
 
     return vk_subresource_range_overlaps(
-                new_barrier->subresourceRange.baseMipLevel, new_barrier->subresourceRange.levelCount,
-                existing_barrier->subresourceRange.baseMipLevel, existing_barrier->subresourceRange.levelCount) &&
+            a->subresourceRange.baseMipLevel, a->subresourceRange.levelCount,
+            b->subresourceRange.baseMipLevel, b->subresourceRange.levelCount) &&
             vk_subresource_range_overlaps(
-                new_barrier->subresourceRange.baseArrayLayer, new_barrier->subresourceRange.layerCount,
-                existing_barrier->subresourceRange.baseArrayLayer, existing_barrier->subresourceRange.layerCount);
+                    a->subresourceRange.baseArrayLayer, a->subresourceRange.layerCount,
+                    b->subresourceRange.baseArrayLayer, b->subresourceRange.layerCount);
 }
 
 static void d3d12_command_list_barrier_batch_add_layout_transition(
@@ -13523,33 +12773,15 @@ static void d3d12_command_list_barrier_batch_add_layout_transition(
         struct d3d12_command_list_barrier_batch *batch,
         const VkImageMemoryBarrier2 *image_barrier)
 {
-    bool layout_match, compatible_match, skip_transition;
+    bool layout_match, exact_match, skip_transition;
     uint32_t i;
-
-    /* To make the fusing as solid as possible, we want to fuse all aspects into one barrier.
-     * To make this algorithm practical, make sure we only transition one aspect at a time. */
-    if ((image_barrier->subresourceRange.aspectMask & (image_barrier->subresourceRange.aspectMask - 1)) != 0)
-    {
-        VkImageAspectFlags aspect_mask = image_barrier->subresourceRange.aspectMask;
-        VkImageMemoryBarrier2 tmp_image_barrier = *image_barrier;
-        while (aspect_mask)
-        {
-            VkImageAspectFlags next_mask = aspect_mask & (aspect_mask - 1);
-            tmp_image_barrier.subresourceRange.aspectMask = aspect_mask & ~next_mask;
-            d3d12_command_list_barrier_batch_add_layout_transition(list, batch, &tmp_image_barrier);
-            aspect_mask = next_mask;
-        }
-
-        return;
-    }
 
     if (batch->image_barrier_count == ARRAY_SIZE(batch->vk_image_barriers))
         d3d12_command_list_barrier_batch_end(list, batch);
 
     for (i = 0; i < batch->image_barrier_count; i++)
     {
-        if (vk_image_barrier_overlaps_subresource(image_barrier, &batch->vk_image_barriers[i],
-                &compatible_match))
+        if (vk_image_barrier_overlaps_subresource(image_barrier, &batch->vk_image_barriers[i], &exact_match))
         {
             /* The barrier batch is used at two places: ResourceBarrier and CopyTextureRegion, which results in
              * different kind of overlaps.
@@ -13567,7 +12799,7 @@ static void d3d12_command_list_barrier_batch_add_layout_transition(
             /* No need to split the barrier if we're not actually doing RMW layout transition. */
             skip_transition = image_barrier->oldLayout == image_barrier->newLayout;
 
-            if (compatible_match && layout_match)
+            if (exact_match && layout_match)
             {
                 /* Exact duplicate, but there may be different stages and accesses in case the application
                  * is doing either illegal or transitive barriers in the same ResourceBarrier().
@@ -13576,9 +12808,6 @@ static void d3d12_command_list_barrier_batch_add_layout_transition(
                 batch->vk_image_barriers[i].srcAccessMask |= image_barrier->srcAccessMask;
                 batch->vk_image_barriers[i].dstStageMask |= image_barrier->dstStageMask;
                 batch->vk_image_barriers[i].dstAccessMask |= image_barrier->dstAccessMask;
-
-                /* If we transition depth and stencil separately, fuse them. */
-                batch->vk_image_barriers[i].subresourceRange.aspectMask |= image_barrier->subresourceRange.aspectMask;
                 return;
             }
             else if (!skip_transition)
@@ -13614,29 +12843,6 @@ static void d3d12_command_list_merge_copy_tracking(struct d3d12_command_list *li
     d3d12_command_list_barrier_batch_add_global_transition(list, batch,
             list->transfer_batch.vk_stages, VK_ACCESS_2_TRANSFER_WRITE_BIT,
             list->transfer_batch.vk_stages, VK_ACCESS_2_TRANSFER_WRITE_BIT);
-
-    if (list->transfer_batch.vk_stages & VK_PIPELINE_STAGE_2_COPY_BIT)
-    {
-        if (list->transfer_batch.read_after_write_hazard_stages)
-        {
-            /* If we're doing a transfer barrier, fuse in any lingering COPY -> RESOURCE barrier. */
-            d3d12_command_list_barrier_batch_add_global_transition(list, batch,
-                   VK_PIPELINE_STAGE_2_COPY_BIT, 0,
-                   list->transfer_batch.read_after_write_hazard_stages, VK_ACCESS_2_SHADER_READ_BIT);
-            list->transfer_batch.read_after_write_hazard_stages = 0;
-        }
-
-        if (list->transfer_batch.write_after_read_hazard_stages)
-        {
-            /* If we're doing a transfer barrier, fuse in any lingering RESOURCE -> COPY barrier. */
-            d3d12_command_list_barrier_batch_add_global_transition(list, batch,
-                    list->transfer_batch.write_after_read_hazard_stages, 0,
-                    VK_PIPELINE_STAGE_2_COPY_BIT, 0);
-            list->transfer_batch.shader_resource_execution_stages_are_idle |= list->transfer_batch.write_after_read_hazard_stages;
-            list->transfer_batch.write_after_read_hazard_stages = 0;
-        }
-    }
-
     d3d12_command_list_reset_transfer_waw_tracking(list);
 }
 
@@ -13893,61 +13099,6 @@ static const char *vkd3d_barrier_access_to_str(D3D12_BARRIER_ACCESS access)
     return buffer;
 }
 
-static bool d3d12_command_list_check_resource_barrier_trivial_copy_resource(
-    struct d3d12_command_list *list, UINT barrier_count, const D3D12_RESOURCE_BARRIER *barriers)
-{
-    VkPipelineStageFlags2 write_after_read_stages = 0;
-    VkPipelineStageFlags2 read_after_write_stages = 0;
-    VkAccessFlags2 dummy = 0;
-    UINT i;
-
-    for (i = 0; i < barrier_count; i++)
-    {
-        const D3D12_RESOURCE_BARRIER *barrier = &barriers[i];
-        const D3D12_RESOURCE_STATES states =
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
-                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-        struct d3d12_resource *preserve_resource;
-
-        if (barrier->Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION)
-            return false;
-        if (!(preserve_resource = impl_from_ID3D12Resource(barrier->Transition.pResource)))
-            return false;
-        if (barrier->Flags & D3D12_RESOURCE_BARRIER_FLAG_BEGIN_ONLY)
-            return false;
-
-        if (barrier->Transition.StateBefore == D3D12_RESOURCE_STATE_COPY_DEST &&
-            (barrier->Transition.StateAfter & states) == barrier->Transition.StateAfter)
-        {
-            vk_access_and_stage_flags_from_d3d12_resource_state(
-                    list, preserve_resource, barrier->Transition.StateAfter,
-                    list->vk_queue_flags, &read_after_write_stages, &dummy);
-        }
-        else if (barrier->Transition.StateAfter == D3D12_RESOURCE_STATE_COPY_DEST &&
-            (barrier->Transition.StateBefore & states) == barrier->Transition.StateBefore)
-        {
-            vk_access_and_stage_flags_from_d3d12_resource_state(
-                    list, preserve_resource, barrier->Transition.StateBefore,
-                    list->vk_queue_flags, &write_after_read_stages, &dummy);
-        }
-        else
-        {
-            return false;
-        }
-
-        d3d12_command_list_track_resource_usage(list, preserve_resource, true);
-    }
-
-    if (read_after_write_stages)
-        d3d12_command_list_debug_mark_label(list, "Defer COPY_DEST -> RESOURCE", 1.0f, 1.0f, 0.0f, 1.0f);
-    if (write_after_read_stages)
-        d3d12_command_list_debug_mark_label(list, "Defer RESOURCE -> COPY_DEST", 1.0f, 1.0f, 0.0f, 1.0f);
-
-    list->transfer_batch.read_after_write_hazard_stages |= read_after_write_stages;
-    list->transfer_batch.write_after_read_hazard_stages |= write_after_read_stages;
-    return true;
-}
-
 static void STDMETHODCALLTYPE d3d12_command_list_ResourceBarrier(d3d12_command_list_iface *iface,
         UINT barrier_count, const D3D12_RESOURCE_BARRIER *barriers)
 {
@@ -13958,15 +13109,9 @@ static void STDMETHODCALLTYPE d3d12_command_list_ResourceBarrier(d3d12_command_l
 
     TRACE("iface %p, barrier_count %u, barriers %p.\n", iface, barrier_count, barriers);
 
-    /* Ignore enhanced barriers. They are much harder to reason about due to the transient nature of Vulkan-style
-     * barriers. This is more or less just a workaround too for terribly written games,
-     * so keep it as simple as it can be for now. */
-    if (d3d12_command_list_check_resource_barrier_trivial_copy_resource(list, barrier_count, barriers))
-        return;
-
     d3d12_command_list_flush_dgc_batch(list);
     d3d12_command_list_end_current_render_pass(list, false);
-    d3d12_command_list_end_transfer_batch(list, false);
+    d3d12_command_list_end_transfer_batch(list);
     d3d12_command_list_barrier_batch_init(&batch);
 
     d3d12_command_list_debug_mark_begin_region(list, "ResourceBarrier");
@@ -14038,7 +13183,7 @@ static void STDMETHODCALLTYPE d3d12_command_list_ResourceBarrier(d3d12_command_l
                     }
                 }
 
-                if (VKD3D_CONFIG_FLAG_IS_SET(DEBUG_UTILS))
+                if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_DEBUG_UTILS)
                 {
                     d3d12_command_list_debug_mark_label_printf(list, list->cmd.vk_command_buffer,
                             1.0f, 1.0f, 0.0f, 1.0f, "Transition cookie %u, subresource %d: %s -> %s",
@@ -14057,10 +13202,7 @@ static void STDMETHODCALLTYPE d3d12_command_list_ResourceBarrier(d3d12_command_l
                 /* Flush pending RTAS updates in case a scratch buffer or input resource gets transitioned */
                 if (d3d12_resource_is_buffer(preserve_resource) && (transition->StateBefore == D3D12_RESOURCE_STATE_UNORDERED_ACCESS ||
                         transition->StateBefore == D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE))
-                {
                     d3d12_command_list_flush_rtas_batch(list);
-                    list->rtas_batch.pending_rtas_work = false;
-                }
 
                 if (d3d12_resource_is_texture(preserve_resource) && (transition->StateBefore == D3D12_RESOURCE_STATE_RENDER_TARGET ||
                         transition->StateBefore == D3D12_RESOURCE_STATE_DEPTH_WRITE))
@@ -14102,9 +13244,6 @@ static void STDMETHODCALLTYPE d3d12_command_list_ResourceBarrier(d3d12_command_l
                         &transition_src_access);
                 if (d3d12_resource_is_texture(preserve_resource))
                     old_layout = vk_image_layout_from_d3d12_resource_state(list, preserve_resource, transition->StateBefore);
-
-                if (transition->StateBefore == D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
-                    list->cmd.clear_uav_pending = false;
 
                 if (preserve_resource->desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)
                 {
@@ -14163,10 +13302,7 @@ static void STDMETHODCALLTYPE d3d12_command_list_ResourceBarrier(d3d12_command_l
 
                 /* Flush pending RTAS builds if the resource could be an RTAS or scratch buffer */
                 if (!preserve_resource || d3d12_resource_is_buffer(preserve_resource))
-                {
                     d3d12_command_list_flush_rtas_batch(list);
-                    list->rtas_batch.pending_rtas_work = false;
-                }
 
                 if (!preserve_resource || d3d12_resource_is_acceleration_structure(preserve_resource))
                     state_mask |= D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE;
@@ -14184,8 +13320,6 @@ static void STDMETHODCALLTYPE d3d12_command_list_ResourceBarrier(d3d12_command_l
                         state_mask, list->vk_queue_flags,
                         &batch.vk_memory_barrier.dstStageMask,
                         &batch.vk_memory_barrier.dstAccessMask);
-
-                list->cmd.clear_uav_pending = false;
 
                 d3d12_command_list_debug_mark_label(list, "UAV", 1.0f, 1.0f, 0.0f, 1.0f);
 
@@ -14211,10 +13345,7 @@ static void STDMETHODCALLTYPE d3d12_command_list_ResourceBarrier(d3d12_command_l
                 {
                     /* Flush pending RTAS builds if we're disabling a potential input resource, scratch or RTAS buffer */
                     if (!before || d3d12_resource_is_buffer(before))
-                    {
                         d3d12_command_list_flush_rtas_batch(list);
-                        list->rtas_batch.pending_rtas_work = false;
-                    }
 
                     /* Flush pending clears for any resource that may alias with the input */
                     if (!before || d3d12_resource_is_texture(before))
@@ -14292,56 +13423,8 @@ static void STDMETHODCALLTYPE d3d12_command_list_ExecuteBundle(d3d12_command_lis
 
 static void vkd3d_pipeline_bindings_set_dirty_sets(struct vkd3d_pipeline_bindings *bindings, uint64_t dirty_mask)
 {
-    bindings->legacy_descriptor_set_dirty_mask = dirty_mask;
+    bindings->descriptor_heap_dirty_mask = dirty_mask;
     bindings->dirty_flags |= VKD3D_PIPELINE_DIRTY_HOISTED_DESCRIPTORS;
-}
-
-static void d3d12_command_list_set_descriptor_heaps(struct d3d12_command_list *list,
-        unsigned int heap_count, ID3D12DescriptorHeap *const *heaps)
-{
-    VkDeviceAddress current_resource_va, current_sampler_va;
-    unsigned int i;
-
-    current_resource_va = list->descriptor_heap.buffers.resource.va;
-    current_sampler_va = list->descriptor_heap.buffers.sampler.va;
-
-    list->descriptor_heap.buffers.resource.heap = NULL;
-    list->descriptor_heap.buffers.sampler.heap = NULL;
-
-    for (i = 0; i < heap_count; i++)
-    {
-        struct d3d12_descriptor_heap *heap = impl_from_ID3D12DescriptorHeap(heaps[i]);
-
-        if (!heap)
-            continue;
-
-        if (heap->desc.Type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV)
-        {
-            list->descriptor_heap.buffers.resource.va = heap->descriptor_buffer.va;
-            list->descriptor_heap.buffers.resource.size = heap->descriptor_buffer.size;
-            list->descriptor_heap.buffers.resource.reserved_offset = heap->descriptor_buffer.reserved_offset;
-            list->descriptor_heap.buffers.resource.heap = heap;
-
-            /* We might need to push new redzone inline data for example. */
-            d3d12_command_list_invalidate_root_parameters(list, &list->graphics_bindings, false, NULL);
-            d3d12_command_list_invalidate_root_parameters(list, &list->compute_bindings, false, NULL);
-        }
-        else if (heap->desc.Type == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER)
-        {
-            list->descriptor_heap.buffers.sampler.va = heap->descriptor_buffer.va;
-            list->descriptor_heap.buffers.sampler.size = heap->descriptor_buffer.size;
-            list->descriptor_heap.buffers.sampler.reserved_offset = heap->descriptor_buffer.reserved_offset;
-            list->descriptor_heap.buffers.sampler.heap = heap;
-        }
-    }
-
-    if (current_resource_va == list->descriptor_heap.buffers.resource.va &&
-            current_sampler_va == list->descriptor_heap.buffers.sampler.va)
-        return;
-
-    /* Immediately bind the heap. This allows e.g. metacommands to more aggressively use the heap as intended. */
-    list->descriptor_heap.buffers.global_heap_dirty = true;
-    d3d12_command_list_update_global_descriptor_heap(list);
 }
 
 static void d3d12_command_list_set_descriptor_heaps_buffers(struct d3d12_command_list *list,
@@ -14352,11 +13435,8 @@ static void d3d12_command_list_set_descriptor_heaps_buffers(struct d3d12_command
     struct d3d12_desc_split d;
     unsigned int i, j;
 
-    current_resource_va = list->descriptor_heap.buffers.db.heap_va_resource;
-    current_sampler_va = list->descriptor_heap.buffers.db.heap_va_sampler;
-
-    list->descriptor_heap.buffers.resource.heap = NULL;
-    list->descriptor_heap.buffers.sampler.heap = NULL;
+    current_resource_va = list->descriptor_heap.buffers.heap_va_resource;
+    current_sampler_va = list->descriptor_heap.buffers.heap_va_sampler;
 
     for (i = 0; i < heap_count; i++)
     {
@@ -14368,9 +13448,8 @@ static void d3d12_command_list_set_descriptor_heaps_buffers(struct d3d12_command
 
         if (heap->desc.Type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV)
         {
-            list->descriptor_heap.buffers.db.heap_va_resource = heap->descriptor_buffer.va;
-            list->descriptor_heap.buffers.db.vk_buffer_resource = heap->descriptor_buffer.vk_buffer;
-            list->descriptor_heap.buffers.resource.heap = heap;
+            list->descriptor_heap.buffers.heap_va_resource = heap->descriptor_buffer.va;
+            list->descriptor_heap.buffers.vk_buffer_resource = heap->descriptor_buffer.vk_buffer;
 
             if (!d3d12_device_use_embedded_mutable_descriptors(list->device))
             {
@@ -14381,20 +13460,19 @@ static void d3d12_command_list_set_descriptor_heaps_buffers(struct d3d12_command
         }
         else if (heap->desc.Type == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER)
         {
-            list->descriptor_heap.buffers.db.heap_va_sampler = heap->descriptor_buffer.va;
-            list->descriptor_heap.buffers.sampler.heap = heap;
+            list->descriptor_heap.buffers.heap_va_sampler = heap->descriptor_buffer.va;
         }
 
-        for (j = 0; j < bindless_state->legacy.set_count; j++)
-            if (bindless_state->legacy.set_info[j].heap_type == heap->desc.Type)
-                list->descriptor_heap.buffers.db.vk_offsets[j] = heap->descriptor_buffer.offsets[set_index++];
+        for (j = 0; j < bindless_state->set_count; j++)
+            if (bindless_state->set_info[j].heap_type == heap->desc.Type)
+                list->descriptor_heap.buffers.vk_offsets[j] = heap->descriptor_buffer.offsets[set_index++];
     }
 
-    if (current_resource_va == list->descriptor_heap.buffers.db.heap_va_resource &&
-            current_sampler_va == list->descriptor_heap.buffers.db.heap_va_sampler)
+    if (current_resource_va == list->descriptor_heap.buffers.heap_va_resource &&
+            current_sampler_va == list->descriptor_heap.buffers.heap_va_sampler)
         return;
 
-    list->descriptor_heap.buffers.global_heap_dirty = true;
+    list->descriptor_heap.buffers.heap_dirty = true;
     /* Invalidation is a bit more aggressive for descriptor buffers.
      * We also need to invalidate any push descriptors. */
     d3d12_command_list_invalidate_root_parameters(list, &list->graphics_bindings, true, NULL);
@@ -14416,9 +13494,9 @@ static void d3d12_command_list_set_descriptor_heaps_sets(struct d3d12_command_li
         if (!heap)
             continue;
 
-        for (j = 0; j < bindless_state->legacy.set_count; j++)
+        for (j = 0; j < bindless_state->set_count; j++)
         {
-            if (bindless_state->legacy.set_info[j].heap_type != heap->desc.Type)
+            if (bindless_state->set_info[j].heap_type != heap->desc.Type)
                 continue;
 
             list->descriptor_heap.sets.vk_sets[j] = heap->sets[set_index++].vk_descriptor_set;
@@ -14442,23 +13520,13 @@ static void STDMETHODCALLTYPE d3d12_command_list_SetDescriptorHeaps(d3d12_comman
         UINT heap_count, ID3D12DescriptorHeap *const *heaps)
 {
     struct d3d12_command_list *list = impl_from_ID3D12GraphicsCommandList(iface);
-    UINT i;
 
     TRACE("iface %p, heap_count %u, heaps %p.\n", iface, heap_count, heaps);
 
     /* We don't capture heap state as part of DGC batch. */
     d3d12_command_list_flush_dgc_batch(list);
 
-    for (i = 0; i < heap_count; i++)
-    {
-        struct d3d12_descriptor_heap *heap = impl_from_ID3D12DescriptorHeap(heaps[i]);
-        if (heap)
-            d3d12_command_allocator_retain_descriptor_heap(list->allocator, heap);
-    }
-
-    if (d3d12_device_use_descriptor_heap(list->device))
-        d3d12_command_list_set_descriptor_heaps(list, heap_count, heaps);
-    else if (d3d12_device_uses_descriptor_buffers(list->device))
+    if (d3d12_device_uses_descriptor_buffers(list->device))
         d3d12_command_list_set_descriptor_heaps_buffers(list, heap_count, heaps);
     else
         d3d12_command_list_set_descriptor_heaps_sets(list, heap_count, heaps);
@@ -14505,33 +13573,6 @@ static void STDMETHODCALLTYPE d3d12_command_list_SetGraphicsRootSignature(d3d12_
             impl_from_ID3D12RootSignature(root_signature));
 }
 
-#ifdef VKD3D_ENABLE_BREADCRUMBS
-static inline void d3d12_command_list_validate_heap_index(struct d3d12_command_list *list,
-        const struct d3d12_root_signature *root_signature, unsigned int index,
-        D3D12_GPU_DESCRIPTOR_HANDLE base_descriptor, uint32_t table_index)
-{
-    /* This path is quite hot, so skip debug checks in release builds. */
-    if (root_signature->descriptor_table_mask_sampler & (1ull << index))
-    {
-        if (list->descriptor_heap.buffers.sampler.heap &&
-            table_index >= list->descriptor_heap.buffers.sampler.heap->desc.NumDescriptors)
-        {
-            WARN("Sampler table offset %u (VA %016"PRIx64") is out of bounds %u >= %u\n", index,
-                base_descriptor.ptr, table_index, list->descriptor_heap.buffers.sampler.heap->desc.NumDescriptors);
-        }
-    }
-    else
-    {
-        if (list->descriptor_heap.buffers.resource.heap &&
-            table_index >= list->descriptor_heap.buffers.resource.heap->desc.NumDescriptors)
-        {
-            WARN("Resource table offset %u (VA %016"PRIx64") is out of bounds %u >= %u\n", index,
-                base_descriptor.ptr, table_index, list->descriptor_heap.buffers.resource.heap->desc.NumDescriptors);
-        }
-    }
-}
-#endif
-
 static inline void d3d12_command_list_set_descriptor_table_embedded(struct d3d12_command_list *list,
         struct vkd3d_pipeline_bindings *bindings, unsigned int index,
         D3D12_GPU_DESCRIPTOR_HANDLE base_descriptor,
@@ -14541,29 +13582,11 @@ static inline void d3d12_command_list_set_descriptor_table_embedded(struct d3d12
     const struct d3d12_root_signature *root_signature = bindings->root_signature;
 
     assert(index < ARRAY_SIZE(bindings->descriptor_tables));
-
-    /* Elden Ring seems to hit this in some cases.
-     * It passes in UINT64_MAX in some cases which happens to be robust on native AMD/NV (but WARP crashes obviously).
-     * AMD is only robust through pure luck. See test_descriptor_heap_broken_table_va for more details.
-     * Since we emit fake VAs, we'll never emit something with MSB set. */
-    if (base_descriptor.ptr & (1ull << 63))
-    {
-        WARN("Corrupt descriptor heap VA table pointer (%016"PRIx64") detected, ignoring.\n",
-            base_descriptor.ptr);
-        return;
-    }
-
     bindings->descriptor_tables[index] = d3d12_desc_heap_offset_from_embedded_gpu_handle(
             base_descriptor, cbv_srv_uav_size_log2, sampler_size_log2);
 
     if (root_signature)
     {
-#ifdef VKD3D_ENABLE_BREADCRUMBS
-        /* This path is quite hot, so skip debug checks in release builds. */
-        d3d12_command_list_validate_heap_index(list, root_signature, index,
-            base_descriptor, bindings->descriptor_tables[index]);
-#endif
-
         if (root_signature->descriptor_table_count)
             bindings->dirty_flags |= VKD3D_PIPELINE_DIRTY_DESCRIPTOR_TABLE_OFFSETS;
         if (root_signature->hoist_info.num_desc)
@@ -14580,28 +13603,11 @@ static inline void d3d12_command_list_set_descriptor_table(struct d3d12_command_
 {
     const struct d3d12_root_signature *root_signature = bindings->root_signature;
 
-    /* Elden Ring seems to hit this in some cases.
-     * It passes in UINT64_MAX in some cases which happens to be robust on native AMD/NV (but WARP crashes obviously).
-     * AMD is only robust through pure luck. See test_descriptor_heap_broken_table_va for more details.
-     * Since we emit fake VAs, we'll never emit something with MSB set. */
-    if (base_descriptor.ptr & (1ull << 63))
-    {
-        WARN("Corrupt descriptor heap VA table pointer (%016"PRIx64") detected, ignoring.\n",
-            base_descriptor.ptr);
-        return;
-    }
-
     assert(index < ARRAY_SIZE(bindings->descriptor_tables));
     bindings->descriptor_tables[index] = d3d12_desc_heap_offset_from_gpu_handle(base_descriptor);
 
     if (root_signature)
     {
-#ifdef VKD3D_ENABLE_BREADCRUMBS
-        /* This path is quite hot, so skip debug checks in release builds. */
-        d3d12_command_list_validate_heap_index(list, root_signature, index,
-            base_descriptor, bindings->descriptor_tables[index]);
-#endif
-
         if (root_signature->descriptor_table_count)
             bindings->dirty_flags |= VKD3D_PIPELINE_DIRTY_DESCRIPTOR_TABLE_OFFSETS;
         if (root_signature->hoist_info.num_desc)
@@ -14613,39 +13619,87 @@ static inline void d3d12_command_list_set_descriptor_table(struct d3d12_command_
     VKD3D_BREADCRUMB_COMMAND_STATE(ROOT_TABLE);
 }
 
-/* Poor man's templates :V */
-#define DECLARE_ROOT_TABLE_VARIANT(variant, resource_log2, sampler_log2) \
-static void STDMETHODCALLTYPE d3d12_command_list_SetComputeRootDescriptorTable_##variant( \
-        d3d12_command_list_iface *iface, \
-        UINT root_parameter_index, D3D12_GPU_DESCRIPTOR_HANDLE base_descriptor) \
-{ \
-    struct d3d12_command_list *list = impl_from_ID3D12GraphicsCommandList(iface); \
- \
-    TRACE("iface %p, root_parameter_index %u, base_descriptor %#"PRIx64".\n", \
-            iface, root_parameter_index, base_descriptor.ptr); \
- \
-    d3d12_command_list_set_descriptor_table_embedded(list, &list->compute_bindings, \
-            root_parameter_index, base_descriptor, resource_log2, sampler_log2); \
-} \
-static void STDMETHODCALLTYPE d3d12_command_list_SetGraphicsRootDescriptorTable_##variant( \
-        d3d12_command_list_iface *iface, \
-        UINT root_parameter_index, D3D12_GPU_DESCRIPTOR_HANDLE base_descriptor) \
-{ \
-    struct d3d12_command_list *list = impl_from_ID3D12GraphicsCommandList(iface); \
- \
-    TRACE("iface %p, root_parameter_index %u, base_descriptor %#"PRIx64".\n", \
-            iface, root_parameter_index, base_descriptor.ptr); \
- \
-    d3d12_command_list_set_descriptor_table_embedded(list, &list->graphics_bindings, \
-            root_parameter_index, base_descriptor, resource_log2, sampler_log2); \
+static void STDMETHODCALLTYPE d3d12_command_list_SetComputeRootDescriptorTable_embedded_64_16(
+        d3d12_command_list_iface *iface,
+        UINT root_parameter_index, D3D12_GPU_DESCRIPTOR_HANDLE base_descriptor)
+{
+    struct d3d12_command_list *list = impl_from_ID3D12GraphicsCommandList(iface);
+
+    TRACE("iface %p, root_parameter_index %u, base_descriptor %#"PRIx64".\n",
+            iface, root_parameter_index, base_descriptor.ptr);
+
+    d3d12_command_list_set_descriptor_table_embedded(list, &list->compute_bindings,
+            root_parameter_index, base_descriptor, 6, 4);
 }
-DECLARE_ROOT_TABLE_VARIANT(embedded_64_16, 6, 4)
-DECLARE_ROOT_TABLE_VARIANT(embedded_32_16, 5, 4)
-DECLARE_ROOT_TABLE_VARIANT(embedded_32_32, 5, 5)
-DECLARE_ROOT_TABLE_VARIANT(embedded_128_32, 7, 5)
-DECLARE_ROOT_TABLE_VARIANT(embedded_default,
-    list->device->bindless_state.cbv_srv_uav_size_log2,
-    list->device->bindless_state.sampler_size_log2)
+
+static void STDMETHODCALLTYPE d3d12_command_list_SetGraphicsRootDescriptorTable_embedded_64_16(
+        d3d12_command_list_iface *iface,
+        UINT root_parameter_index, D3D12_GPU_DESCRIPTOR_HANDLE base_descriptor)
+{
+    struct d3d12_command_list *list = impl_from_ID3D12GraphicsCommandList(iface);
+
+    TRACE("iface %p, root_parameter_index %u, base_descriptor %#"PRIx64".\n",
+            iface, root_parameter_index, base_descriptor.ptr);
+
+    d3d12_command_list_set_descriptor_table_embedded(list, &list->graphics_bindings,
+            root_parameter_index, base_descriptor, 6, 4);
+}
+
+static void STDMETHODCALLTYPE d3d12_command_list_SetComputeRootDescriptorTable_embedded_32_16(
+        d3d12_command_list_iface *iface,
+        UINT root_parameter_index, D3D12_GPU_DESCRIPTOR_HANDLE base_descriptor)
+{
+    struct d3d12_command_list *list = impl_from_ID3D12GraphicsCommandList(iface);
+
+    TRACE("iface %p, root_parameter_index %u, base_descriptor %#"PRIx64".\n",
+            iface, root_parameter_index, base_descriptor.ptr);
+
+    d3d12_command_list_set_descriptor_table_embedded(list, &list->compute_bindings,
+            root_parameter_index, base_descriptor, 5, 4);
+}
+
+static void STDMETHODCALLTYPE d3d12_command_list_SetGraphicsRootDescriptorTable_embedded_32_16(
+        d3d12_command_list_iface *iface,
+        UINT root_parameter_index, D3D12_GPU_DESCRIPTOR_HANDLE base_descriptor)
+{
+    struct d3d12_command_list *list = impl_from_ID3D12GraphicsCommandList(iface);
+
+    TRACE("iface %p, root_parameter_index %u, base_descriptor %#"PRIx64".\n",
+            iface, root_parameter_index, base_descriptor.ptr);
+
+    d3d12_command_list_set_descriptor_table_embedded(list, &list->graphics_bindings,
+            root_parameter_index, base_descriptor, 5, 4);
+}
+
+static void STDMETHODCALLTYPE d3d12_command_list_SetComputeRootDescriptorTable_embedded_default(
+        d3d12_command_list_iface *iface,
+        UINT root_parameter_index, D3D12_GPU_DESCRIPTOR_HANDLE base_descriptor)
+{
+    struct d3d12_command_list *list = impl_from_ID3D12GraphicsCommandList(iface);
+
+    TRACE("iface %p, root_parameter_index %u, base_descriptor %#"PRIx64".\n",
+            iface, root_parameter_index, base_descriptor.ptr);
+
+    d3d12_command_list_set_descriptor_table_embedded(list, &list->compute_bindings,
+            root_parameter_index, base_descriptor,
+            list->device->bindless_state.descriptor_buffer_cbv_srv_uav_size_log2,
+            list->device->bindless_state.descriptor_buffer_sampler_size_log2);
+}
+
+static void STDMETHODCALLTYPE d3d12_command_list_SetGraphicsRootDescriptorTable_embedded_default(
+        d3d12_command_list_iface *iface,
+        UINT root_parameter_index, D3D12_GPU_DESCRIPTOR_HANDLE base_descriptor)
+{
+    struct d3d12_command_list *list = impl_from_ID3D12GraphicsCommandList(iface);
+
+    TRACE("iface %p, root_parameter_index %u, base_descriptor %#"PRIx64".\n",
+            iface, root_parameter_index, base_descriptor.ptr);
+
+    d3d12_command_list_set_descriptor_table_embedded(list, &list->graphics_bindings,
+            root_parameter_index, base_descriptor,
+            list->device->bindless_state.descriptor_buffer_cbv_srv_uav_size_log2,
+            list->device->bindless_state.descriptor_buffer_sampler_size_log2);
+}
 
 static void STDMETHODCALLTYPE d3d12_command_list_SetComputeRootDescriptorTable_default(
         d3d12_command_list_iface *iface,
@@ -15586,7 +14640,7 @@ static void STDMETHODCALLTYPE d3d12_command_list_ClearDepthStencilView(d3d12_com
     const struct d3d12_rtv_desc *dsv_desc = d3d12_rtv_desc_from_cpu_handle(dsv);
     VkImageAspectFlags clear_aspects = 0;
 
-    TRACE("iface %p, dsv %zx, flags %#x, depth %.8e, stencil 0x%02x, rect_count %u, rects %p.\n",
+    TRACE("iface %p, dsv %#lx, flags %#x, depth %.8e, stencil 0x%02x, rect_count %u, rects %p.\n",
             iface, dsv.ptr, flags, depth, stencil, rect_count, rects);
 
     d3d12_command_list_check_render_pass_validation(list, "ClearDepthStencilView called within a render pass.\n", true);
@@ -15720,7 +14774,7 @@ static void STDMETHODCALLTYPE d3d12_command_list_ClearRenderTargetView(d3d12_com
     VkClearValue clear_value;
     int i;
 
-    TRACE("iface %p, rtv %zx, color %p, rect_count %u, rects %p.\n",
+    TRACE("iface %p, rtv %#lx, color %p, rect_count %u, rects %p.\n",
             iface, rtv.ptr, color, rect_count, rects);
 
     d3d12_command_list_check_render_pass_validation(list, "ClearRenderTargetView called within a render pass.\n", true);
@@ -15803,13 +14857,10 @@ static void STDMETHODCALLTYPE d3d12_command_list_ClearRenderTargetView(d3d12_com
 struct vkd3d_clear_uav_info
 {
     DXGI_FORMAT clear_dxgi_format;
-    struct vkd3d_view *view;
-    uint32_t heap_index;
-    bool use_heap;
-
+    bool has_view;
     union
     {
-        struct vkd3d_descriptor_metadata_image_view image;
+        struct vkd3d_view *view;
         struct vkd3d_descriptor_metadata_buffer_view buffer;
     } u;
 };
@@ -15823,7 +14874,6 @@ static void d3d12_command_list_clear_uav(struct d3d12_command_list *list,
     struct vkd3d_clear_uav_pipeline pipeline;
     struct vkd3d_clear_uav_args clear_args;
     VkDescriptorBufferInfo buffer_info;
-    const struct vkd3d_format *format;
     VkDescriptorImageInfo image_info;
     D3D12_RECT full_rect, curr_rect;
     VkWriteDescriptorSet write_set;
@@ -15836,7 +14886,8 @@ static void d3d12_command_list_clear_uav(struct d3d12_command_list *list,
     d3d12_command_list_debug_mark_begin_region(list, "ClearUAV");
 
     d3d12_command_list_invalidate_current_pipeline(list, true);
-    d3d12_command_list_update_global_descriptor_buffer_meta(list);
+    d3d12_command_list_invalidate_root_parameters(list, &list->compute_bindings, true, &list->graphics_bindings);
+    d3d12_command_list_update_descriptor_buffers(list);
 
     sampler_feedback_clear = d3d12_resource_desc_is_sampler_feedback(&resource->desc);
 
@@ -15859,32 +14910,24 @@ static void d3d12_command_list_clear_uav(struct d3d12_command_list *list,
 
     memset(&full_rect, 0, sizeof(full_rect));
 
-    format = vkd3d_get_format(list->device, args->clear_dxgi_format, false);
-
     if (d3d12_resource_is_texture(resource))
     {
-        if (!args->use_heap)
-        {
-            assert(args->view);
-            image_info.sampler = VK_NULL_HANDLE;
-            image_info.imageView = args->view->vk_image_view;
-            image_info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-            write_set.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-            write_set.pImageInfo = &image_info;
-            view_extent = d3d12_resource_get_view_subresource_extent(resource, args->view);
-        }
-        else
-        {
-            VkImageSubresourceLayers vk_subresource;
-            vk_subresource.aspectMask = format->vk_aspect_mask;
-            vk_subresource.mipLevel = args->u.image.mip_slice;
-            vk_subresource.baseArrayLayer = 0;
-            vk_subresource.layerCount = VK_REMAINING_ARRAY_LAYERS;
-            view_extent = d3d12_resource_desc_get_vk_subresource_extent(&resource->desc, format, &vk_subresource);
-        }
+        assert(args->has_view);
+
+        image_info.sampler = VK_NULL_HANDLE;
+        image_info.imageView = args->u.view->vk_image_view;
+        image_info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+        write_set.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        write_set.pImageInfo = &image_info;
+
+        view_extent = d3d12_resource_get_view_subresource_extent(resource, args->u.view);
 
         full_rect.right = view_extent.width;
         full_rect.bottom = view_extent.height;
+
+        layer_count = args->u.view->info.texture.vk_view_type == VK_IMAGE_VIEW_TYPE_3D
+                ? view_extent.depth : args->u.view->info.texture.layer_count;
 
         if (sampler_feedback_clear)
         {
@@ -15893,61 +14936,50 @@ static void d3d12_command_list_clear_uav(struct d3d12_command_list *list,
             full_rect.bottom = padded.height;
         }
 
-        if (resource->desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE3D)
+        /* Robustness would take care of it, but no reason to spam more threads than needed. */
+        if (args->u.view->info.texture.vk_view_type == VK_IMAGE_VIEW_TYPE_3D)
         {
-            layer_count = min(resource->desc.DepthOrArraySize - args->u.image.first_array_slice, args->u.image.array_size);
-        }
-        else
-        {
-            layer_count = min(max(1, resource->desc.DepthOrArraySize >> args->u.image.mip_slice) -
-                              args->u.image.first_array_slice, args->u.image.array_size);
+            layer_count = min(layer_count - args->u.view->info.texture.w_offset, args->u.view->info.texture.w_size);
+            if (layer_count >= 0x80000000u)
+            {
+                ERR("3D slice out of bounds.\n");
+                layer_count = 0;
+            }
         }
 
         pipeline = vkd3d_meta_get_clear_image_uav_pipeline(
-                &list->device->meta_ops, args->u.image.vk_view_type,
-                format->type == VKD3D_FORMAT_TYPE_UINT, args->use_heap);
-        workgroup_size = vkd3d_meta_get_clear_image_uav_workgroup_size(args->u.image.vk_view_type);
+                &list->device->meta_ops, args->u.view->info.texture.vk_view_type,
+                args->u.view->format->type == VKD3D_FORMAT_TYPE_UINT);
+        workgroup_size = vkd3d_meta_get_clear_image_uav_workgroup_size(args->u.view->info.texture.vk_view_type);
     }
     else
     {
         full_rect.bottom = 1;
 
-        if (args->view)
+        if (args->has_view)
         {
-            /* Legacy path. */
-            VkDeviceSize byte_count = args->view->format->byte_count;
-            assert(!args->use_heap);
-            full_rect.right = args->view->info.buffer.size / byte_count;
+            VkDeviceSize byte_count = args->u.view->format->byte_count;
+            full_rect.right = args->u.view->info.buffer.size / byte_count;
 
             write_set.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
-            write_set.pTexelBufferView = &args->view->vk_buffer_view;
-        }
-        else if (format)
-        {
-            VkDeviceSize byte_count = format->byte_count;
-            assert(args->use_heap);
-            full_rect.right = args->u.buffer.range / byte_count;
+            write_set.pTexelBufferView = &args->u.view->vk_buffer_view;
         }
         else
         {
-            /* Plain SSBO clear. StructuredBuffers are not allowed, but RAW is (since it has R32_TYPELESS). */
             full_rect.right = args->u.buffer.range / sizeof(uint32_t);
 
-            if (!args->use_heap)
-            {
-                write_set.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                write_set.pBufferInfo = &buffer_info;
-                /* resource heap offset is already in descriptor */
-                buffer_info.buffer = resource->res.vk_buffer;
-                buffer_info.offset = resource->mem.offset + (args->u.buffer.va - resource->res.va);
-                buffer_info.range = args->u.buffer.range;
-            }
+            write_set.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            write_set.pBufferInfo = &buffer_info;
+            /* resource heap offset is already in descriptor */
+            buffer_info.buffer = resource->res.vk_buffer;
+            buffer_info.offset = resource->mem.offset + (args->u.buffer.va - resource->res.va);
+            buffer_info.range = args->u.buffer.range;
         }
 
         layer_count = 1;
         pipeline = vkd3d_meta_get_clear_buffer_uav_pipeline(&list->device->meta_ops,
-                !format || format->type == VKD3D_FORMAT_TYPE_UINT,
-                format == NULL, args->use_heap);
+                !args->has_view || args->u.view->format->type == VKD3D_FORMAT_TYPE_UINT,
+                !args->has_view);
         workgroup_size = vkd3d_meta_get_clear_buffer_uav_workgroup_size();
     }
 
@@ -15956,16 +14988,8 @@ static void d3d12_command_list_clear_uav(struct d3d12_command_list *list,
 
     VK_CALL(vkCmdBindPipeline(list->cmd.vk_command_buffer,
             VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.vk_pipeline));
-
-    if (args->use_heap)
-    {
-        d3d12_command_list_meta_push_descriptor_index(list, list->cmd.vk_command_buffer, 0, args->heap_index);
-    }
-    else
-    {
-        VK_CALL(vkCmdPushDescriptorSetKHR(list->cmd.vk_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                pipeline.vk_pipeline_layout, 0, 1, &write_set));
-    }
+    VK_CALL(vkCmdPushDescriptorSetKHR(list->cmd.vk_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+            pipeline.vk_pipeline_layout, 0, 1, &write_set));
 
     for (i = 0; i < rect_count || !i; i++)
     {
@@ -15995,9 +15019,9 @@ static void d3d12_command_list_clear_uav(struct d3d12_command_list *list,
             clear_args.extent.width = curr_rect.right - clear_args.offset.x;
             clear_args.extent.height = curr_rect.bottom - clear_args.offset.y;
 
-            d3d12_command_list_meta_push_data(list, list->cmd.vk_command_buffer,
+            VK_CALL(vkCmdPushConstants(list->cmd.vk_command_buffer,
                     pipeline.vk_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT,
-                    sizeof(clear_args), &clear_args);
+                    0, sizeof(clear_args), &clear_args));
 
             VK_CALL(vkCmdDispatch(list->cmd.vk_command_buffer,
                     min(workgroup_count.width - j, max_workgroup_count),
@@ -16009,7 +15033,7 @@ static void d3d12_command_list_clear_uav(struct d3d12_command_list *list,
      * very unfortunate behavior from 11on12 where ClearUAV are implicitly barriers, similar to how
      * transfer ops work. Too many cases in the wild where this stuff just breaks,
      * so be conservative. */
-    if (!VKD3D_CONFIG_FLAG_IS_SET(NO_CLEAR_UAV_SYNC))
+    if (!(vkd3d_config_flags & VKD3D_CONFIG_FLAG_NO_CLEAR_UAV_SYNC))
         list->cmd.clear_uav_pending = true;
 
     d3d12_command_list_debug_mark_end_region(list);
@@ -16027,7 +15051,6 @@ static void d3d12_command_list_clear_uav_with_copy(struct d3d12_command_list *li
     unsigned int base_layer, layer_count, i, j;
     struct vkd3d_clear_uav_pipeline pipeline;
     struct vkd3d_scratch_allocation scratch;
-    VkImageSubresourceLayers vk_subresource;
     struct vkd3d_clear_uav_args clear_args;
     VkCopyBufferToImageInfo2 copy_info;
     VkDeviceSize scratch_buffer_size;
@@ -16040,23 +15063,19 @@ static void d3d12_command_list_clear_uav_with_copy(struct d3d12_command_list *li
     VkMemoryBarrier2 barrier;
     VkExtent3D view_extent;
     uint32_t element_count;
-    uint32_t heap_index;
 
     d3d12_command_list_track_resource_usage(list, resource, true);
     d3d12_command_list_end_current_render_pass(list, false);
     d3d12_command_list_debug_mark_begin_region(list, "ClearUAVWithCopy");
 
     d3d12_command_list_invalidate_current_pipeline(list, true);
-    d3d12_command_list_update_global_descriptor_buffer_meta(list);
+    d3d12_command_list_invalidate_root_parameters(list, &list->compute_bindings, true, &list->graphics_bindings);
+    d3d12_command_list_update_descriptor_buffers(list);
 
-    assert(!args->view && !args->use_heap);
+    assert(args->has_view);
     assert(d3d12_resource_is_texture(resource));
 
-    vk_subresource.aspectMask = format->vk_aspect_mask;
-    vk_subresource.mipLevel = args->u.image.mip_slice;
-    vk_subresource.baseArrayLayer = 0;
-    vk_subresource.layerCount = VK_REMAINING_ARRAY_LAYERS;
-    view_extent = d3d12_resource_desc_get_vk_subresource_extent(&resource->desc, format, &vk_subresource);
+    view_extent = d3d12_resource_get_view_subresource_extent(resource, args->u.view);
 
     full_rect.left = 0;
     full_rect.right = view_extent.width;
@@ -16093,43 +15112,32 @@ static void d3d12_command_list_clear_uav_with_copy(struct d3d12_command_list *li
         return;
     }
 
-    heap_index = d3d12_command_list_allocate_meta_buffer_view(
-        list, scratch.va, scratch_buffer_size, format->vk_format,
-        VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER);
-
-    pipeline = vkd3d_meta_get_clear_buffer_uav_pipeline(&list->device->meta_ops, true, false,
-        heap_index != UINT32_MAX);
+    pipeline = vkd3d_meta_get_clear_buffer_uav_pipeline(&list->device->meta_ops, true, false);
     workgroup_size = vkd3d_meta_get_clear_buffer_uav_workgroup_size();
 
-    if (heap_index != UINT32_MAX)
+    if (!vkd3d_create_vk_buffer_view(list->device, scratch.buffer, format, scratch.offset, scratch_buffer_size, &vk_buffer_view))
     {
-        d3d12_command_list_meta_push_descriptor_index(list, list->cmd.vk_command_buffer, 0, heap_index);
+        ERR("Failed to create buffer view for UAV clear.\n");
+        return;
     }
-    else
+
+    if (!(d3d12_command_allocator_add_buffer_view(list->allocator, vk_buffer_view)))
     {
-        if (!vkd3d_create_vk_buffer_view(list->device, scratch.buffer, format, scratch.offset,
-                scratch_buffer_size, VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT, &vk_buffer_view))
-        {
-            ERR("Failed to create buffer view for UAV clear.\n");
-            return;
-        }
-
-        if (!(d3d12_command_allocator_add_buffer_view(list->allocator, vk_buffer_view)))
-        {
-            ERR("Failed to add buffer view.\n");
-            VK_CALL(vkDestroyBufferView(list->device->vk_device, vk_buffer_view, NULL));
-            return;
-        }
-
-        memset(&write_set, 0, sizeof(write_set));
-        write_set.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write_set.descriptorCount = 1;
-        write_set.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
-        write_set.pTexelBufferView = &vk_buffer_view;
-
-        VK_CALL(vkCmdPushDescriptorSetKHR(list->cmd.vk_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                pipeline.vk_pipeline_layout, 0, 1, &write_set));
+        ERR("Failed to add buffer view.\n");
+        VK_CALL(vkDestroyBufferView(list->device->vk_device, vk_buffer_view, NULL));
+        return;
     }
+
+    memset(&write_set, 0, sizeof(write_set));
+    write_set.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write_set.descriptorCount = 1;
+    write_set.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
+    write_set.pTexelBufferView = &vk_buffer_view;
+
+    VK_CALL(vkCmdBindPipeline(list->cmd.vk_command_buffer,
+            VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.vk_pipeline));
+    VK_CALL(vkCmdPushDescriptorSetKHR(list->cmd.vk_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+            pipeline.vk_pipeline_layout, 0, 1, &write_set));
 
     clear_args.clear_color = *clear_value;
     clear_args.offset.x = 0;
@@ -16137,12 +15145,9 @@ static void d3d12_command_list_clear_uav_with_copy(struct d3d12_command_list *li
     clear_args.extent.width = element_count;
     clear_args.extent.height = 1;
 
-    d3d12_command_list_meta_push_data(list, list->cmd.vk_command_buffer,
+    VK_CALL(vkCmdPushConstants(list->cmd.vk_command_buffer,
             pipeline.vk_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT,
-            sizeof(clear_args), &clear_args);
-
-    VK_CALL(vkCmdBindPipeline(list->cmd.vk_command_buffer,
-            VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.vk_pipeline));
+            0, sizeof(clear_args), &clear_args));
 
     VK_CALL(vkCmdDispatch(list->cmd.vk_command_buffer,
             vkd3d_compute_workgroup_count(element_count, workgroup_size.width), 1, 1));
@@ -16155,11 +15160,10 @@ static void d3d12_command_list_clear_uav_with_copy(struct d3d12_command_list *li
     dep_info.memoryBarrierCount = 1;
     dep_info.pMemoryBarriers = &barrier;
 
-    /* Ensure that we get WAW ordering with other clears. */
     memset(&barrier, 0, sizeof(barrier));
     barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-    barrier.srcStageMask = vk_queue_shader_stages(list->device, list->vk_queue_flags) | VK_PIPELINE_STAGE_2_CLEAR_BIT;
-    barrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    barrier.srcStageMask = vk_queue_shader_stages(list->device, list->vk_queue_flags);
+    barrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
     barrier.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
     barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_TRANSFER_READ_BIT;
 
@@ -16171,24 +15175,28 @@ static void d3d12_command_list_clear_uav_with_copy(struct d3d12_command_list *li
     copy_region.bufferRowLength = 0;
     copy_region.bufferImageHeight = 0;
 
-    base_layer = args->u.image.first_array_slice;
+    copy_region.imageSubresource = vk_subresource_layers_from_view(args->u.view);
 
-    copy_region.imageSubresource.aspectMask = format->vk_aspect_mask;
-    copy_region.imageSubresource.mipLevel = args->u.image.mip_slice;
-    copy_region.imageSubresource.baseArrayLayer = base_layer;
-    copy_region.imageOffset.z = 0;
-    copy_region.imageExtent.depth = 1;
-    copy_region.imageSubresource.layerCount = 1;
-
-    if (resource->desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE3D)
+    if (args->u.view->info.texture.vk_view_type == VK_IMAGE_VIEW_TYPE_3D)
     {
-        layer_count = min(resource->desc.DepthOrArraySize - args->u.image.first_array_slice, args->u.image.array_size);
+        base_layer = args->u.view->info.texture.w_offset;
+        layer_count = view_extent.depth;
+        layer_count = min(layer_count - args->u.view->info.texture.w_offset, args->u.view->info.texture.w_size);
+        if (layer_count >= 0x80000000u)
+        {
+            ERR("3D slice out of bounds.\n");
+            layer_count = 0;
+        }
     }
     else
     {
-        layer_count = min(max(1, resource->desc.DepthOrArraySize >> args->u.image.mip_slice) -
-                          args->u.image.first_array_slice, args->u.image.array_size);
+        copy_region.imageOffset.z = 0;
+        base_layer = copy_region.imageSubresource.baseArrayLayer;
+        layer_count = copy_region.imageSubresource.layerCount;
     }
+
+    copy_region.imageExtent.depth = 1;
+    copy_region.imageSubresource.layerCount = 1;
 
     copy_info.sType = VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2;
     copy_info.pNext = NULL;
@@ -16230,14 +15238,10 @@ static void d3d12_command_list_clear_uav_with_copy(struct d3d12_command_list *li
         }
     }
 
-    /* Ensure that we get WAW ordering with other clears. */
     barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
     barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    barrier.dstStageMask = vk_queue_shader_stages(list->device, list->vk_queue_flags) | VK_PIPELINE_STAGE_2_CLEAR_BIT;
-    barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
-
-    /* Any pending clears would be resolved with this roundtrip. */
-    list->cmd.clear_uav_pending = false;
+    barrier.dstStageMask = vk_queue_shader_stages(list->device, list->vk_queue_flags);
+    barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
 
     VK_CALL(vkCmdPipelineBarrier2(list->cmd.vk_command_buffer, &dep_info));
 
@@ -16250,7 +15254,7 @@ static void d3d12_command_list_clear_uav_with_copy(struct d3d12_command_list *li
 static VkClearColorValue vkd3d_fixup_clear_uav_swizzle(struct d3d12_device *device,
         const struct vkd3d_format *clear_format, VkClearColorValue color)
 {
-    if (clear_format->dxgi_format == DXGI_FORMAT_A8_UNORM && clear_format->vk_format != VK_FORMAT_A8_UNORM)
+    if (clear_format->dxgi_format == DXGI_FORMAT_A8_UNORM && clear_format->vk_format != VK_FORMAT_A8_UNORM_KHR)
     {
         VkClearColorValue result;
         result.float32[0] = color.float32[3];
@@ -16304,23 +15308,20 @@ static const struct vkd3d_format *vkd3d_clear_uav_find_uint_format(struct d3d12_
 }
 
 static inline bool vkd3d_clear_uav_info_from_metadata(struct vkd3d_clear_uav_info *args,
-        const struct vkd3d_descriptor_metadata_view *metadata)
+        struct d3d12_desc_split_metadata metadata)
 {
-    args->view = NULL;
-    args->use_heap = false;
-    args->heap_index = UINT32_MAX;
-
-    if (metadata->info.flags & VKD3D_DESCRIPTOR_FLAG_IMAGE_VIEW)
+    if (metadata.view->info.flags & VKD3D_DESCRIPTOR_FLAG_IMAGE_VIEW)
     {
-        args->u.image = metadata->info.image;
-        args->view = metadata->info.image.view;
-        args->clear_dxgi_format = metadata->info.image.dxgi_format;
+        args->has_view = true;
+        args->u.view = metadata.view->info.image.view;
+        args->clear_dxgi_format = metadata.view->info.image.view->format->dxgi_format;
         return true;
     }
-    else if (metadata->info.flags & VKD3D_DESCRIPTOR_FLAG_BUFFER_VA_RANGE)
+    else if (metadata.view->info.flags & VKD3D_DESCRIPTOR_FLAG_BUFFER_VA_RANGE)
     {
-        args->u.buffer = metadata->info.buffer;
-        args->clear_dxgi_format = metadata->info.buffer.dxgi_format;
+        args->u.buffer = metadata.view->info.buffer;
+        args->has_view = false;
+        args->clear_dxgi_format = metadata.view->info.buffer.dxgi_format;
         return true;
     }
     else
@@ -16401,362 +15402,12 @@ static bool vkd3d_clear_uav_synthesize_buffer_view(struct d3d12_command_list *li
     view_desc.size = args->u.buffer.range;
     view_desc.format = override_format ? override_format :
             vkd3d_get_format(list->device, args->clear_dxgi_format, false);
-    view_desc.usage = VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT;
 
     if (!view_desc.format || !vkd3d_create_buffer_view(list->device, &view_desc, inline_view))
     {
         ERR("Failed to create buffer view.\n");
         return false;
     }
-
-    return true;
-}
-
-static void vkd3d_texture_view_desc_convert_from_metadata(
-        struct d3d12_resource *resource,
-        const struct vkd3d_format *format,
-        struct vkd3d_texture_view_desc *desc,
-        const struct vkd3d_descriptor_metadata_image_view *meta)
-{
-    memset(desc, 0, sizeof(*desc));
-
-    desc->image = resource->res.vk_image;
-    desc->format = format;
-    desc->aspect_mask = vk_image_aspect_flags_from_d3d12(resource->format, meta->plane_slice);
-    desc->image_usage = VK_IMAGE_USAGE_STORAGE_BIT;
-    desc->miplevel_count = 1;
-    desc->layer_count = 1;
-    desc->w_size = 1;
-    desc->allowed_swizzle = false;
-    desc->view_type = meta->vk_view_type;
-    desc->miplevel_idx = meta->mip_slice;
-
-    if (meta->vk_view_type == VK_IMAGE_VIEW_TYPE_3D)
-    {
-        desc->w_offset = meta->first_array_slice;
-        desc->w_size = meta->array_size;
-    }
-    else
-    {
-        desc->layer_idx = meta->first_array_slice;
-        desc->layer_count = meta->array_size;
-    }
-}
-
-static bool d3d12_command_list_clear_uav_builtin(struct d3d12_command_list *list,
-        struct d3d12_resource *resource, const struct vkd3d_clear_uav_info *args, const void *values,
-        UINT rect_count, const D3D12_RECT *rects, bool is_float)
-{
-    const struct vkd3d_vk_device_procs *vk_procs = &list->device->vk_procs;
-    const struct vkd3d_format *uint_format;
-    const struct vkd3d_format *format;
-    static uint32_t zero_pattern[4];
-
-    format = vkd3d_get_format(list->device, args->clear_dxgi_format, false);
-
-    if (args->clear_dxgi_format)
-        uint_format = vkd3d_clear_uav_find_uint_format(list->device, args->clear_dxgi_format);
-    else
-        uint_format = vkd3d_get_format(list->device, DXGI_FORMAT_R32_UINT, false);
-
-    /* Raw buffer UAVs use DXGI_FORMAT_UNKNOWN, but their clear operations are
-     * R32_UINT-centric just like the descriptor-based fallback below. */
-    if (!format && !args->clear_dxgi_format && d3d12_resource_is_buffer(resource))
-        format = uint_format;
-
-    if (!format)
-        return false;
-
-    if (d3d12_resource_is_buffer(resource))
-    {
-        VkDeviceAddress start_va, end_va;
-        uint32_t fill_pattern = 0;
-        VkClearColorValue color;
-        uint32_t i;
-
-        /* CmdFillBuffer must be aligned to 4 bytes. */
-        if ((args->u.buffer.va | args->u.buffer.range) & 3)
-            return false;
-
-        start_va = args->u.buffer.va;
-        end_va = start_va + args->u.buffer.range;
-
-        /* For small formats, the region rects might not align to 4 byte.
-         * Validate this. */
-        if (format->byte_count < 4)
-        {
-            for (i = 0; i < rect_count; i++)
-            {
-                if ((rects[i].left * format->byte_count) & 3)
-                    return false;
-                if ((rects[i].right * format->byte_count) & 3)
-                    return false;
-            }
-        }
-
-        /* Clearing to zero is trivial no matter the format. */
-        if (memcmp(values, zero_pattern, sizeof(zero_pattern)) == 0)
-        {
-            fill_pattern = 0;
-        }
-        else if (is_float)
-        {
-            const float *f32_values = values;
-            memcpy(&fill_pattern, values, sizeof(fill_pattern));
-
-            switch (args->clear_dxgi_format)
-            {
-                case DXGI_FORMAT_R32_FLOAT:
-                    /* Only float format that we can trivially understand how to interpret as u32.
-                     * TYPELESS is not allowed here. */
-                    break;
-
-                case DXGI_FORMAT_R32G32_FLOAT:
-                    /* Multi-component is fine as long as all clear values agree. */
-                    if (f32_values[1] != f32_values[0])
-                        return false;
-                    break;
-
-                case DXGI_FORMAT_R32G32B32A32_FLOAT:
-                    if (f32_values[1] != f32_values[0] ||
-                        f32_values[2] != f32_values[0] ||
-                        f32_values[3] != f32_values[0])
-                    {
-                        return false;
-                    }
-                    break;
-
-                default:
-                    /* TODO: We don't know how to convert the format. Requires spec-accurate rounding behavior.
-                     * For FP formats this is possible, but for UNORM/SNORM we cannot guarantee invariance
-                     * with GPU behavior since rounding rules are not exactly defined. */
-                    FIXME_ONCE("Could have achieved fast buffer clear of format #%x, but no impl is available.\n",
-                             args->clear_dxgi_format);
-                    return false;
-            }
-        }
-        else /* uint path */
-        {
-            /* Format reinterpretation is much easier when working in uint. */
-            uint32_t bytes_per_component;
-            uint32_t num_components;
-
-            if (!uint_format)
-                return false;
-
-            memcpy(color.uint32, values, sizeof(color.uint32));
-
-            if (args->clear_dxgi_format)
-            {
-                color = vkd3d_fixup_clear_uav_uint_color(list->device, args->clear_dxgi_format, color);
-                color = vkd3d_fixup_clear_uav_swizzle(list->device, format, color);
-                vkd3d_mask_uint_clear_color(color.uint32, uint_format->vk_format);
-            }
-
-            switch (uint_format->vk_format)
-            {
-                case VK_FORMAT_R32_UINT:
-                    num_components = 1;
-                    bytes_per_component = 4;
-                    break;
-
-                case VK_FORMAT_R32G32_UINT:
-                    num_components = 2;
-                    bytes_per_component = 4;
-                    break;
-
-                case VK_FORMAT_R32G32B32A32_UINT:
-                    num_components = 4;
-                    bytes_per_component = 4;
-                    break;
-
-                case VK_FORMAT_R16_UINT:
-                    num_components = 1;
-                    bytes_per_component = 2;
-                    break;
-
-                case VK_FORMAT_R16G16_UINT:
-                    num_components = 2;
-                    bytes_per_component = 2;
-                    break;
-
-                case VK_FORMAT_R16G16B16A16_UINT:
-                    num_components = 4;
-                    bytes_per_component = 2;
-                    break;
-
-                case VK_FORMAT_R8_UINT:
-                    num_components = 1;
-                    bytes_per_component = 1;
-                    break;
-
-                case VK_FORMAT_R8G8_UINT:
-                    num_components = 2;
-                    bytes_per_component = 1;
-                    break;
-
-                case VK_FORMAT_R8G8B8A8_UINT:
-                    num_components = 4;
-                    bytes_per_component = 1;
-                    break;
-
-                default:
-                    return false;
-            }
-
-            if (num_components * bytes_per_component > sizeof(uint32_t))
-            {
-                /* We can allow the copy as long as the components agree.
-                 * Technically we could allow a RGRG packing style for 16-bit, but
-                 * no need to overcomplicate this. */
-                for (i = 1; i < num_components; i++)
-                    if (color.uint32[0] != color.uint32[i])
-                        return false;
-                num_components = sizeof(uint32_t) / bytes_per_component;
-            }
-
-            /* Pack the components together into one u32 payload. */
-            for (i = 0; i < num_components; i++)
-                memcpy(void_ptr_offset(&fill_pattern, i * bytes_per_component), &color.uint32[i], bytes_per_component);
-
-            /* Splat as necessary. */
-            if (num_components * bytes_per_component == 1)
-                fill_pattern = 0x01010101 * fill_pattern;
-            else if (num_components * bytes_per_component == 2)
-                fill_pattern = 0x00010001 * fill_pattern;
-        }
-
-        /* For other ClearUAVFloat() formats, be conservative.
-         * We would need to handle rounding exactly like the implementation
-         * would for possible invariance reasons.
-         * E.g. a game might rely on ClearRTV for UNORM to around the same way as ClearUAV with same FP values.
-         * We have no sensible way to guarantee that here, so just bail unless we hit the trivial cases. */
-
-        d3d12_command_list_track_resource_usage(list, resource, true);
-        d3d12_command_list_end_current_render_pass(list, false);
-        d3d12_command_list_debug_mark_begin_region(list, "ClearUAV Fast Fill");
-        if (rect_count)
-        {
-            for (i = 0; i < rect_count; i++)
-            {
-                VkDeviceAddress lo_va = start_va + rects[i].left * format->byte_count;
-                VkDeviceAddress hi_va = min(end_va, start_va + rects[i].right * format->byte_count);
-                if (lo_va >= hi_va)
-                    continue;
-                VK_CALL(vkCmdFillBuffer(list->cmd.vk_command_buffer,
-                        resource->res.vk_buffer,
-                        resource->mem.offset + (lo_va - resource->res.va),
-                        hi_va - lo_va, fill_pattern));
-            }
-        }
-        else
-        {
-            VK_CALL(vkCmdFillBuffer(list->cmd.vk_command_buffer,
-                    resource->res.vk_buffer,
-                    resource->mem.offset + (args->u.buffer.va - resource->res.va),
-                    args->u.buffer.range, fill_pattern));
-        }
-        d3d12_command_list_debug_mark_end_region(list);
-    }
-    else
-    {
-        VkImageSubresourceRange vk_subresource_range;
-        VkImageSubresourceLayers vk_subresource;
-        VkClearColorValue color;
-        VkExtent3D view_extent;
-        uint32_t layer_count;
-
-        /* CmdClearColorImage only clears full subresources.
-         * It would be UB to try to clear the full subresource more than once. */
-        if (rect_count > 1)
-            return false;
-
-        /* Don't bother handling these special cases. */
-        if (d3d12_resource_desc_is_sampler_feedback(&resource->desc))
-            return false;
-
-        /* A float format image can only be cleared with a FP32 value.
-         * Ignore this if we're clearing to zero anyway. */
-        if (is_float && format->type != VKD3D_FORMAT_TYPE_OTHER && memcmp(values, zero_pattern, sizeof(zero_pattern)) != 0)
-            return false;
-
-        /* If we're clearing an integer format image, we can only clear it with proper SINT format,
-         * otherwise we risk clearing with a value that is out of range of the SINT format which will create undefined values.
-		 * Fallback to normal descriptors. This path can probably be improved with lots of extra code to check for ranges, etc. */
-        if (!is_float && format->type != VKD3D_FORMAT_TYPE_UINT && memcmp(values, zero_pattern, sizeof(zero_pattern)) != 0)
-            return false;
-
-        /* Would need complicated format reinterpretation. Can add special cases as needed if important.
-         * If we're clearing to zero, any format reinterpretation can be conveniently ignored. */
-        if (memcmp(values, zero_pattern, sizeof(zero_pattern)) != 0 && resource->desc.Format != args->clear_dxgi_format)
-            return false;
-
-        if (is_float)
-        {
-            /* All the formats are 1:1. Use the clear color as-is without any issue. Observe clamping rules however. */
-            copy_and_clamp_clear_color(format->vk_format, color.float32, values);
-            color = vkd3d_fixup_clear_uav_swizzle(list->device, format, color);
-        }
-        else
-        {
-            memcpy(&color.uint32, values, sizeof(color.uint32));
-            color = vkd3d_fixup_clear_uav_uint_color(list->device, args->clear_dxgi_format, color);
-            color = vkd3d_fixup_clear_uav_swizzle(list->device, format, color);
-            vkd3d_mask_uint_clear_color(color.uint32, uint_format->vk_format);
-        }
-
-        vk_subresource.aspectMask = format->vk_aspect_mask;
-        vk_subresource.mipLevel = args->u.image.mip_slice;
-        vk_subresource.baseArrayLayer = 0;
-        vk_subresource.layerCount = VK_REMAINING_ARRAY_LAYERS;
-        view_extent = d3d12_resource_desc_get_vk_subresource_extent(&resource->desc, format, &vk_subresource);
-
-        /* Accept a single full-subresource rect. */
-        if (rect_count)
-        {
-            if (rects[0].left > 0 || rects[0].top > 0 ||
-                rects[0].right < (int)view_extent.width || rects[0].bottom < (int)view_extent.height)
-            {
-                return false;
-            }
-        }
-
-        if (resource->desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D)
-        {
-            /* We cannot clear a subset of slices with fast path. */
-            if (args->u.image.first_array_slice != 0)
-                return false;
-            if (args->u.image.array_size < view_extent.depth)
-                return false;
-
-            layer_count = 1;
-        }
-        else
-        {
-            layer_count = min(resource->desc.DepthOrArraySize - args->u.image.first_array_slice, args->u.image.array_size);
-        }
-
-        vk_subresource_range.aspectMask = format->vk_aspect_mask;
-        vk_subresource_range.baseArrayLayer = args->u.image.first_array_slice;
-        vk_subresource_range.layerCount = layer_count;
-        vk_subresource_range.baseMipLevel = args->u.image.mip_slice;
-        vk_subresource_range.levelCount = 1;
-
-        d3d12_command_list_track_resource_usage(list, resource, true);
-        d3d12_command_list_end_current_render_pass(list, false);
-        d3d12_command_list_debug_mark_begin_region(list, "ClearUAV Fast Clear");
-        VK_CALL(vkCmdClearColorImage(list->cmd.vk_command_buffer,
-                resource->res.vk_image, VK_IMAGE_LAYOUT_GENERAL,
-                &color, 1, &vk_subresource_range));
-        d3d12_command_list_debug_mark_end_region(list);
-    }
-
-    /* Applications are supposed to use barriers here, but native drivers inherited some
-     * very unfortunate behavior from 11on12 where ClearUAV are implicitly barriers, similar to how
-     * transfer ops work. Too many cases in the wild where this stuff just breaks,
-     * so be conservative. */
-    if (!VKD3D_CONFIG_FLAG_IS_SET(NO_CLEAR_UAV_SYNC))
-        list->cmd.clear_uav_pending = true;
 
     return true;
 }
@@ -16774,7 +15425,7 @@ static void STDMETHODCALLTYPE d3d12_command_list_ClearUnorderedAccessViewUint(d3
     struct vkd3d_clear_uav_info args;
     VkClearColorValue color;
 
-    TRACE("iface %p, gpu_handle %#"PRIx64", cpu_handle %zx, resource %p, values %p, rect_count %u, rects %p.\n",
+    TRACE("iface %p, gpu_handle %#"PRIx64", cpu_handle %lx, resource %p, values %p, rect_count %u, rects %p.\n",
             iface, gpu_handle.ptr, cpu_handle.ptr, resource, values, rect_count, rects);
 
     d3d12_command_list_check_render_pass_validation(list, "ClearUnorderedAccessViewUint called within a render pass.\n", true);
@@ -16790,27 +15441,14 @@ static void STDMETHODCALLTYPE d3d12_command_list_ClearUnorderedAccessViewUint(d3
     if (!resource_impl || !metadata.view)
         return;
 
-    if (!vkd3d_clear_uav_info_from_metadata(&args, metadata.view))
+    if (!vkd3d_clear_uav_info_from_metadata(&args, metadata))
         return;
 
-    /* We may be able to implement the clear trivially with vkCmdClearColorImage or vkCmdFillBuffer.
-     * Do so if possible since it's expected to be much more efficient than spamming shaders. */
-    if (d3d12_command_list_clear_uav_builtin(list, resource_impl, &args, values, rect_count, rects, false))
-        return;
-
-    /* This is illegal D3D12, but we need to robust against it. Only warn if we cannot trivially implement the clear. */
-    if (!list->descriptor_heap.buffers.resource.heap && d3d12_device_use_descriptor_heap(list->device))
-        WARN("ClearUAVUint called without active heap.\n");
-
-    if (d3d12_resource_is_texture(resource_impl) && !(args.u.image.flags & VKD3D_DESCRIPTOR_FLAG_IMAGE_VIEW))
+    if (d3d12_resource_is_texture(resource_impl) && !args.has_view)
     {
-        WARN("Image clear mismatch.\n");
-        return;
-    }
-
-    if (d3d12_resource_is_buffer(resource_impl) && !(args.u.buffer.flags & VKD3D_DESCRIPTOR_FLAG_BUFFER_VA_RANGE))
-    {
-        WARN("Buffer clear mismatch.\n");
+        /* Theoretically possibly for buggy application that tries to clear a buffer view with a texture resource.
+         * Safeguard against crash. */
+        WARN("Attempted to clear buffer with image resource.\n");
         return;
     }
 
@@ -16821,44 +15459,28 @@ static void STDMETHODCALLTYPE d3d12_command_list_ClearUnorderedAccessViewUint(d3
 
     /* Handle formatted buffer clears.
      * Always defer creating the VkBufferView until this time. */
-    if (d3d12_resource_is_buffer(resource_impl))
+    if (!args.has_view && args.clear_dxgi_format)
     {
-        if (args.clear_dxgi_format)
+        uint_format = vkd3d_clear_uav_find_uint_format(list->device, args.clear_dxgi_format);
+        if (!uint_format)
         {
-            uint_format = vkd3d_clear_uav_find_uint_format(list->device, args.clear_dxgi_format);
-            if (!uint_format)
-            {
-                ERR("Unhandled format %d.\n", clear_format->dxgi_format);
-                return;
-            }
-
-            color = vkd3d_fixup_clear_uav_uint_color(list->device, clear_format->dxgi_format, color);
-            color = vkd3d_fixup_clear_uav_swizzle(list->device, clear_format, color);
-            vkd3d_mask_uint_clear_color(color.uint32, uint_format->vk_format);
-        }
-        else
-        {
-            /* Structured buffer UAV clears are not allowed, so if it's raw, it's BAB, which is R32_UINT centric. */
-            uint_format = vkd3d_get_format(list->device, DXGI_FORMAT_R32_UINT, false);
+            ERR("Unhandled format %d.\n", clear_format->dxgi_format);
+            return;
         }
 
-        args.clear_dxgi_format = uint_format->dxgi_format;
+        color = vkd3d_fixup_clear_uav_uint_color(list->device, clear_format->dxgi_format, color);
+        color = vkd3d_fixup_clear_uav_swizzle(list->device, clear_format, color);
+        vkd3d_mask_uint_clear_color(color.uint32, uint_format->vk_format);
 
-        args.heap_index = d3d12_command_list_allocate_meta_buffer_view(list,
-                args.u.buffer.va, args.u.buffer.range, uint_format->vk_format,
-                VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER);
-        args.use_heap = args.heap_index != UINT32_MAX;
+        if (!vkd3d_clear_uav_synthesize_buffer_view(list, resource_impl, &args, uint_format, &inline_view))
+            return;
 
-        /* We cannot allocate space in the heap, have to fallback to legacy :'( */
-        if (!args.use_heap)
-        {
-            if (!vkd3d_clear_uav_synthesize_buffer_view(list, resource_impl, &args, uint_format, &inline_view))
-                return;
-            args.view = inline_view;
-        }
+        args.u.view = inline_view;
+        args.has_view = true;
     }
     else if (d3d12_resource_is_texture(resource_impl) && clear_format->type != VKD3D_FORMAT_TYPE_UINT)
     {
+        const struct vkd3d_view *base_view = metadata.view->info.image.view;
         uint_format = vkd3d_clear_uav_find_uint_format(list->device, clear_format->dxgi_format);
         color = vkd3d_fixup_clear_uav_uint_color(list->device, clear_format->dxgi_format, color);
         color = vkd3d_fixup_clear_uav_swizzle(list->device, clear_format, color);
@@ -16871,53 +15493,48 @@ static void STDMETHODCALLTYPE d3d12_command_list_ClearUnorderedAccessViewUint(d3
 
         vkd3d_mask_uint_clear_color(color.uint32, uint_format->vk_format);
 
-        /* If the clear color is 0, we can safely use the existing view to perform the
-         * clear since the bit pattern will not change. Otherwise, fill a scratch buffer
-         * with the packed clear value and perform a buffer to image copy.
-         * We have no SINT clear variant, and SINT is always compatible with UINT due to flexible casting rules in D3D12. */
-        if (clear_format->type != VKD3D_FORMAT_TYPE_SINT &&
-                !color.uint32[0] && !color.uint32[1] && !color.uint32[2] && !color.uint32[3])
-            uint_format = clear_format;
-
-        if (!d3d12_resource_view_format_is_compatible(resource_impl, uint_format))
-        {
-            /* We'll synthesize a custom buffer view here. */
-            args.view = NULL;
-
-            d3d12_command_list_clear_uav_with_copy(list, resource_impl,
-                    &args, &color, uint_format, rect_count, rects);
-            return;
-        }
-
-        args.clear_dxgi_format = uint_format->dxgi_format;
-        clear_format = uint_format;
-    }
-    else if (d3d12_resource_is_texture(resource_impl))
-    {
-        vkd3d_mask_uint_clear_color(color.uint32, clear_format->vk_format);
-    }
-
-    if (d3d12_resource_is_texture(resource_impl))
-    {
-        if (!args.view || args.view->format != clear_format)
+        if (d3d12_resource_view_format_is_compatible(resource_impl, uint_format))
         {
             struct vkd3d_texture_view_desc view_desc;
-            vkd3d_texture_view_desc_convert_from_metadata(resource_impl, clear_format, &view_desc, &args.u.image);
+            memset(&view_desc, 0, sizeof(view_desc));
 
-            args.heap_index = d3d12_command_list_allocate_meta_image_view(list, &view_desc, VK_IMAGE_LAYOUT_GENERAL);
-            args.use_heap = args.heap_index != UINT32_MAX;
+            view_desc.image = resource_impl->res.vk_image;
+            view_desc.view_type = base_view->info.texture.vk_view_type;
+            view_desc.format = uint_format;
+            view_desc.miplevel_idx = base_view->info.texture.miplevel_idx;
+            view_desc.miplevel_count = 1;
+            view_desc.layer_idx = base_view->info.texture.layer_idx;
+            view_desc.layer_count = base_view->info.texture.layer_count;
+            view_desc.w_offset = base_view->info.texture.w_offset;
+            view_desc.w_size = base_view->info.texture.w_size;
+            view_desc.aspect_mask = base_view->info.texture.aspect_mask;
+            view_desc.image_usage = VK_IMAGE_USAGE_STORAGE_BIT;
+            view_desc.allowed_swizzle = false;
 
-            if (!args.use_heap)
+            if (!vkd3d_create_texture_view(list->device, &view_desc, &args.u.view))
             {
-                if (!vkd3d_create_texture_view(list->device, &view_desc, &inline_view))
-                {
-                    ERR("Failed to create image view.\n");
-                    return;
-                }
+                ERR("Failed to create image view.\n");
+                return;
+            }
 
-                args.view = inline_view;
+            inline_view = args.u.view;
+        }
+        else
+        {
+            /* If the clear color is 0, we can safely use the existing view to perform the
+             * clear since the bit pattern will not change. Otherwise, fill a scratch buffer
+             * with the packed clear value and perform a buffer to image copy. */
+            if (color.uint32[0] || color.uint32[1] || color.uint32[2] || color.uint32[3])
+            {
+                d3d12_command_list_clear_uav_with_copy(list, resource_impl,
+                        &args, &color, uint_format, rect_count, rects);
+                return;
             }
         }
+    }
+    else if (args.has_view)
+    {
+        vkd3d_mask_uint_clear_color(color.uint32, clear_format->vk_format);
     }
 
     d3d12_command_list_clear_uav(list, resource_impl, &args, &color, rect_count, rects);
@@ -16941,7 +15558,7 @@ static void STDMETHODCALLTYPE d3d12_command_list_ClearUnorderedAccessViewFloat(d
     struct vkd3d_clear_uav_info args;
     VkClearColorValue color;
 
-    TRACE("iface %p, gpu_handle %#"PRIx64", cpu_handle %zx, resource %p, values %p, rect_count %u, rects %p.\n",
+    TRACE("iface %p, gpu_handle %#"PRIx64", cpu_handle %lx, resource %p, values %p, rect_count %u, rects %p.\n",
             iface, gpu_handle.ptr, cpu_handle.ptr, resource, values, rect_count, rects);
 
     d3d12_command_list_check_render_pass_validation(list, "ClearUnorderedAccessViewFloat called within a render pass.\n", true);
@@ -16955,8 +15572,16 @@ static void STDMETHODCALLTYPE d3d12_command_list_ClearUnorderedAccessViewFloat(d
     if (!resource_impl || !metadata.view)
         return;
 
-    if (!vkd3d_clear_uav_info_from_metadata(&args, metadata.view))
+    if (!vkd3d_clear_uav_info_from_metadata(&args, metadata))
         return;
+
+    if (d3d12_resource_is_texture(resource_impl) && !args.has_view)
+    {
+        /* Theoretically possibly for buggy application that tries to clear a buffer view with a texture resource.
+         * Safeguard against crash. */
+        WARN("Attempted to clear buffer with image resource.\n");
+        return;
+    }
 
     if (args.clear_dxgi_format)
     {
@@ -16966,70 +15591,16 @@ static void STDMETHODCALLTYPE d3d12_command_list_ClearUnorderedAccessViewFloat(d
     }
     else
     {
-        WARN("Attempting to clear float UAV without format.\n");
-        return;
+        memset(&color, 0, sizeof(color));
     }
 
-    /* We may be able to implement the clear trivially with vkCmdClearColorImage or vkCmdFillBuffer.
-     * Do so if possible since it's expected to be much more efficient than spamming shaders. */
-    if (d3d12_command_list_clear_uav_builtin(list, resource_impl, &args, values, rect_count, rects, true))
-        return;
-
-    /* This is illegal D3D12, but we need to robust against it. Only warn if we cannot trivially implement the clear. */
-    if (!list->descriptor_heap.buffers.resource.heap && d3d12_device_use_descriptor_heap(list->device))
-        WARN("ClearUAVFloat called without active heap.\n");
-
-    if (d3d12_resource_is_texture(resource_impl) && !(args.u.image.flags & VKD3D_DESCRIPTOR_FLAG_IMAGE_VIEW))
+    if (!args.has_view && args.clear_dxgi_format)
     {
-        WARN("Image clear mismatch.\n");
-        return;
-    }
+        if (!vkd3d_clear_uav_synthesize_buffer_view(list, resource_impl, &args, NULL, &inline_view))
+            return;
 
-    if (d3d12_resource_is_buffer(resource_impl) && !(args.u.buffer.flags & VKD3D_DESCRIPTOR_FLAG_BUFFER_VA_RANGE))
-    {
-        WARN("Buffer clear mismatch.\n");
-        return;
-    }
-
-    if (d3d12_resource_is_texture(resource_impl))
-    {
-        if (!args.view)
-        {
-            struct vkd3d_texture_view_desc view_desc;
-            vkd3d_texture_view_desc_convert_from_metadata(resource_impl, clear_format, &view_desc, &args.u.image);
-
-            /* It's not legal D3D12 for apps to hit this, but native drivers always seem to just use the CPU descriptor
-             * and push the descriptor somehow. Since we have to anticipate broken games in the wild, we cannot trust
-             * the bound GPU heap. */
-            args.heap_index = d3d12_command_list_allocate_meta_image_view(list, &view_desc, VK_IMAGE_LAYOUT_GENERAL);
-            args.use_heap = args.heap_index != UINT32_MAX;
-
-            if (!args.use_heap)
-            {
-                if (!vkd3d_create_texture_view(list->device, &view_desc, &inline_view))
-                {
-                    ERR("Failed to create image view.\n");
-                    return;
-                }
-
-                args.view  = inline_view;
-            }
-        }
-    }
-    else
-    {
-        args.heap_index = d3d12_command_list_allocate_meta_buffer_view(list,
-                args.u.buffer.va, args.u.buffer.range, clear_format->vk_format,
-                VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER);
-        args.use_heap = args.heap_index != UINT32_MAX;
-
-        /* We cannot allocate space in the heap, have to fallback to legacy :'( */
-        if (!args.use_heap)
-        {
-            if (!vkd3d_clear_uav_synthesize_buffer_view(list, resource_impl, &args, clear_format, &inline_view))
-                return;
-            args.view = inline_view;
-        }
+        args.u.view = inline_view;
+        args.has_view = true;
     }
 
     d3d12_command_list_clear_uav(list, resource_impl, &args, &color, rect_count, rects);
@@ -17380,7 +15951,7 @@ static void d3d12_command_list_add_query_resolve(struct d3d12_command_list *list
         const struct vkd3d_query_resolve_entry *entry)
 {
     /* Ensure that other writes to the buffer execute before the resolve */
-    d3d12_command_list_end_transfer_batch(list, false);
+    d3d12_command_list_end_transfer_batch(list);
 
     if (!vkd3d_array_reserve((void**)&list->query_resolves, &list->query_resolve_size,
             list->query_resolve_count + 1, sizeof(*list->query_resolves)))
@@ -17511,6 +16082,7 @@ static void d3d12_command_list_resolve_binary_occlusion_queries(struct d3d12_com
     VkDependencyInfo dep_info;
 
     d3d12_command_list_invalidate_current_pipeline(list, true);
+    d3d12_command_list_invalidate_root_parameters(list, &list->compute_bindings, true, &list->graphics_bindings);
 
     memset(&dep_info, 0, sizeof(dep_info));
     dep_info.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
@@ -17540,9 +16112,9 @@ static void d3d12_command_list_resolve_binary_occlusion_queries(struct d3d12_com
     args.src_va = src_va;
     args.query_count = count;
 
-    d3d12_command_list_meta_push_data(list, list->cmd.vk_command_buffer,
+    VK_CALL(vkCmdPushConstants(list->cmd.vk_command_buffer,
             query_ops->vk_resolve_pipeline_layout,
-            VK_SHADER_STAGE_COMPUTE_BIT, sizeof(args), &args);
+            VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(args), &args));
 
     workgroup_count = vkd3d_compute_workgroup_count(count, VKD3D_QUERY_OP_WORKGROUP_SIZE);
     VK_CALL(vkCmdDispatch(list->cmd.vk_command_buffer, workgroup_count, 1, 1));
@@ -17570,12 +16142,6 @@ static void STDMETHODCALLTYPE d3d12_command_list_ResolveQueryData(d3d12_command_
             "dst_buffer %p, aligned_dst_buffer_offset %#"PRIx64".\n",
             iface, heap, type, start_index, query_count,
             dst_buffer, aligned_dst_buffer_offset);
-
-    if (query_heap->flags & D3D12_QUERY_HEAP_FLAG_CPU_RESOLVE)
-    {
-        WARN("ResolveQueryData is not allowed on CPU resolve heaps.\n");
-        return;
-    }
 
     d3d12_command_list_check_render_pass_validation(list, "ResolveQueryData called within a render pass.\n", true);
     d3d12_command_list_flush_dgc_batch(list);
@@ -17678,6 +16244,8 @@ static void STDMETHODCALLTYPE d3d12_command_list_SetPredication(d3d12_command_li
             /* If we cannot hoist the predication work. */
             d3d12_command_list_end_current_render_pass(list, true);
             d3d12_command_list_invalidate_current_pipeline(list, true);
+            d3d12_command_list_invalidate_root_parameters(list, &list->compute_bindings, true,
+                    &list->graphics_bindings);
         }
 
         resolve_args.src_va = resource->res.va + aligned_buffer_offset;
@@ -17686,9 +16254,8 @@ static void STDMETHODCALLTYPE d3d12_command_list_SetPredication(d3d12_command_li
 
         VK_CALL(vkCmdBindPipeline(vk_patch_cmd_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                 predicate_ops->vk_resolve_pipeline));
-        d3d12_command_list_meta_push_data(list, vk_patch_cmd_buffer,
-                predicate_ops->vk_resolve_pipeline_layout,
-                VK_SHADER_STAGE_COMPUTE_BIT, sizeof(resolve_args), &resolve_args);
+        VK_CALL(vkCmdPushConstants(vk_patch_cmd_buffer, predicate_ops->vk_resolve_pipeline_layout,
+                VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(resolve_args), &resolve_args));
         VK_CALL(vkCmdDispatch(vk_patch_cmd_buffer, 1, 1, 1));
 
         memset(&vk_barrier, 0, sizeof(vk_barrier));
@@ -18237,9 +16804,8 @@ static void d3d12_command_list_execute_indirect_state_template_dgc(
         else
             list->cmd.indirect_meta->need_compute_to_indirect_barrier = true;
 
-        d3d12_command_list_meta_push_data(list, vk_patch_cmd_buffer,
-                signature->state_template.dgc.pipeline.vk_pipeline_layout,
-                VK_SHADER_STAGE_COMPUTE_BIT, sizeof(patch_args), &patch_args);
+        VK_CALL(vkCmdPushConstants(vk_patch_cmd_buffer, signature->state_template.dgc.pipeline.vk_pipeline_layout,
+                VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(patch_args), &patch_args));
         VK_CALL(vkCmdBindPipeline(vk_patch_cmd_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                 signature->state_template.dgc.pipeline.vk_pipeline));
 
@@ -18575,8 +17141,6 @@ static void STDMETHODCALLTYPE d3d12_command_list_ExecuteIndirect(d3d12_command_l
     VKD3D_BREADCRUMB_COOKIE(count_impl ? count_impl->res.cookie.index : 0);
     VKD3D_BREADCRUMB_AUX64(count_buffer_offset);
 
-    d3d12_command_list_end_transfer_batch(list, true);
-
     if (sig_impl->requires_state_template)
     {
         d3d12_command_list_execute_indirect_state_template_dgc(list, sig_impl,
@@ -18663,6 +17227,7 @@ static void STDMETHODCALLTYPE d3d12_command_list_ExecuteIndirect(d3d12_command_l
         scratch.va = arg_impl->res.va + arg_buffer_offset;
     }
 
+    d3d12_command_list_end_transfer_batch(list);
     switch (last_arg_desc->Type)
     {
         case D3D12_INDIRECT_ARGUMENT_TYPE_DRAW:
@@ -18929,7 +17494,8 @@ static void d3d12_command_list_encode_sampler_feedback(struct d3d12_command_list
         return;
 
     d3d12_command_list_invalidate_current_pipeline(list, true);
-    d3d12_command_list_update_global_descriptor_buffer_meta(list);
+    d3d12_command_list_update_descriptor_buffers(list);
+    d3d12_command_list_invalidate_root_parameters(list, &list->compute_bindings, true, &list->graphics_bindings);
     d3d12_command_list_debug_mark_begin_region(list, "SamplerFeedbackEncode");
 
     /* Fixup subresource indices. */
@@ -18991,8 +17557,8 @@ static void d3d12_command_list_encode_sampler_feedback(struct d3d12_command_list
 
     if (src->desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
     {
-        uint32_t src_index = UINT32_MAX, dst_index = UINT32_MAX;
-        bool use_heap;
+        vkd3d_meta_get_sampler_feedback_resolve_pipeline(&list->device->meta_ops,
+                VKD3D_SAMPLER_FEEDBACK_RESOLVE_BUFFER_TO_MIN_MIP, &pipeline_info);
 
         dst_view_desc.view_type = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
 
@@ -19007,40 +17573,19 @@ static void d3d12_command_list_encode_sampler_feedback(struct d3d12_command_list
         src_buffer_view_desc.size = extent.width * extent.height;
         src_buffer_view_desc.offset = src->mem.offset;
         src_buffer_view_desc.buffer = src->res.vk_buffer;
-        src_buffer_view_desc.usage = VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT;
 
-        dst_index = d3d12_command_list_allocate_meta_image_view(list, &dst_view_desc, VK_IMAGE_LAYOUT_GENERAL);
-        src_index = d3d12_command_list_allocate_meta_buffer_view(list,
-            src->res.va, src_buffer_view_desc.size, VK_FORMAT_R8_UINT,
-            VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER);
+        if (!vkd3d_create_buffer_view(list->device, &src_buffer_view_desc, &src_view))
+            goto cleanup;
+        if (!vkd3d_create_texture_view(list->device, &dst_view_desc, &dst_view))
+            goto cleanup;
 
-        use_heap = src_index != UINT32_MAX && dst_index != UINT32_MAX;
+        vk_image_info[0].imageView = dst_view->vk_image_view;
 
-        vkd3d_meta_get_sampler_feedback_resolve_pipeline(&list->device->meta_ops,
-                VKD3D_SAMPLER_FEEDBACK_RESOLVE_BUFFER_TO_MIN_MIP, &pipeline_info, use_heap);
-
-        if (use_heap)
-        {
-            d3d12_command_list_meta_push_descriptor_index(list, list->cmd.vk_command_buffer, 0, dst_index);
-            d3d12_command_list_meta_push_descriptor_index(list, list->cmd.vk_command_buffer, 2, src_index);
-        }
-        else
-        {
-            if (!vkd3d_create_buffer_view(list->device, &src_buffer_view_desc, &src_view))
-                goto cleanup;
-            if (!vkd3d_create_texture_view(list->device, &dst_view_desc, &dst_view))
-                goto cleanup;
-
-            vk_image_info[0].imageView = dst_view->vk_image_view;
-
-            vk_descriptor_writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            vk_descriptor_writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
-            vk_descriptor_writes[1].dstBinding = 2;
-            vk_descriptor_writes[1].pTexelBufferView = &src_view->vk_buffer_view;
-            vk_descriptor_writes[1].descriptorCount = 1;
-            VK_CALL(vkCmdPushDescriptorSetKHR(list->cmd.vk_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                    pipeline_info.vk_layout, 0, ARRAY_SIZE(vk_descriptor_writes), vk_descriptor_writes));
-        }
+        vk_descriptor_writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        vk_descriptor_writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
+        vk_descriptor_writes[1].dstBinding = 2;
+        vk_descriptor_writes[1].pTexelBufferView = &src_view->vk_buffer_view;
+        vk_descriptor_writes[1].descriptorCount = 1;
 
         /* MinMip does not support rect semantics, so go ahead. */
 
@@ -19049,10 +17594,10 @@ static void d3d12_command_list_encode_sampler_feedback(struct d3d12_command_list
 
         VK_CALL(vkCmdBindPipeline(list->cmd.vk_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                 pipeline_info.vk_pipeline));
-
-        d3d12_command_list_meta_push_data(list, list->cmd.vk_command_buffer,
-                pipeline_info.vk_layout, VK_SHADER_STAGE_COMPUTE_BIT,
-                sizeof(args), &args);
+        VK_CALL(vkCmdPushDescriptorSetKHR(list->cmd.vk_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                pipeline_info.vk_layout, 0, ARRAY_SIZE(vk_descriptor_writes), vk_descriptor_writes));
+        VK_CALL(vkCmdPushConstants(list->cmd.vk_command_buffer, pipeline_info.vk_layout,
+                VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(args), &args));
 
         extent.width = vkd3d_compute_workgroup_count(extent.width,
                 vkd3d_meta_get_sampler_feedback_workgroup_size().width);
@@ -19072,8 +17617,10 @@ static void d3d12_command_list_encode_sampler_feedback(struct d3d12_command_list
     }
     else
     {
-        uint32_t src_index = UINT32_MAX, dst_index = UINT32_MAX;
-        bool use_heap;
+        vkd3d_meta_get_sampler_feedback_resolve_pipeline(&list->device->meta_ops,
+                dst->desc.Format == DXGI_FORMAT_SAMPLER_FEEDBACK_MIN_MIP_OPAQUE ?
+                        VKD3D_SAMPLER_FEEDBACK_RESOLVE_IMAGE_TO_MIN_MIP :
+                        VKD3D_SAMPLER_FEEDBACK_RESOLVE_IMAGE_TO_MIP_USED, &pipeline_info);
 
         memset(&src_image_view_desc, 0, sizeof(src_image_view_desc));
         src_image_view_desc.image = src->res.vk_image;
@@ -19144,45 +17691,21 @@ static void d3d12_command_list_encode_sampler_feedback(struct d3d12_command_list
         dep_info.pImageMemoryBarriers = &vk_image_barrier;
         VK_CALL(vkCmdPipelineBarrier2(list->cmd.vk_command_buffer, &dep_info));
 
-        dst_index = d3d12_command_list_allocate_meta_image_view(list, &dst_view_desc, VK_IMAGE_LAYOUT_GENERAL);
-        src_index = d3d12_command_list_allocate_meta_image_view(list, &src_image_view_desc,
-                d3d12_resource_pick_layout(src, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
-        use_heap = src_index != UINT32_MAX && dst_index != UINT32_MAX;
+        if (!vkd3d_create_texture_view(list->device, &src_image_view_desc, &src_view))
+            goto cleanup;
+        if (!vkd3d_create_texture_view(list->device, &dst_view_desc, &dst_view))
+            goto cleanup;
 
-        vkd3d_meta_get_sampler_feedback_resolve_pipeline(&list->device->meta_ops,
-                dst->desc.Format == DXGI_FORMAT_SAMPLER_FEEDBACK_MIN_MIP_OPAQUE ?
-                VKD3D_SAMPLER_FEEDBACK_RESOLVE_IMAGE_TO_MIN_MIP :
-                VKD3D_SAMPLER_FEEDBACK_RESOLVE_IMAGE_TO_MIP_USED, &pipeline_info, use_heap);
+        vk_image_info[0].imageView = dst_view->vk_image_view;
+        vk_image_info[1].imageView = src_view->vk_image_view;
+        vk_image_info[1].sampler = VK_NULL_HANDLE;
+        vk_image_info[1].imageLayout = d3d12_resource_pick_layout(src, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-        if (use_heap)
-        {
-            d3d12_command_list_meta_push_descriptor_index(list, list->cmd.vk_command_buffer, 0, dst_index);
-            d3d12_command_list_meta_push_descriptor_index(list, list->cmd.vk_command_buffer, 1, src_index);
-        }
-        else
-        {
-            if (!vkd3d_create_texture_view(list->device, &src_image_view_desc, &src_view))
-                goto cleanup;
-            if (!vkd3d_create_texture_view(list->device, &dst_view_desc, &dst_view))
-                goto cleanup;
-
-            vk_image_info[0].imageView = dst_view->vk_image_view;
-            vk_image_info[1].imageView = src_view->vk_image_view;
-            vk_image_info[1].sampler = VK_NULL_HANDLE;
-            vk_image_info[1].imageLayout = d3d12_resource_pick_layout(src, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-
-            vk_descriptor_writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            vk_descriptor_writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-            vk_descriptor_writes[1].dstBinding = 1;
-            vk_descriptor_writes[1].pImageInfo = &vk_image_info[1];
-            vk_descriptor_writes[1].descriptorCount = 1;
-
-            VK_CALL(vkCmdPushDescriptorSetKHR(list->cmd.vk_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                    pipeline_info.vk_layout, 0, ARRAY_SIZE(vk_descriptor_writes), vk_descriptor_writes));
-        }
-
-        VK_CALL(vkCmdBindPipeline(list->cmd.vk_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                pipeline_info.vk_pipeline));
+        vk_descriptor_writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        vk_descriptor_writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        vk_descriptor_writes[1].dstBinding = 1;
+        vk_descriptor_writes[1].pImageInfo = &vk_image_info[1];
+        vk_descriptor_writes[1].descriptorCount = 1;
 
         if (dst->desc.Format == DXGI_FORMAT_SAMPLER_FEEDBACK_MIP_REGION_USED_OPAQUE)
         {
@@ -19227,9 +17750,12 @@ static void d3d12_command_list_encode_sampler_feedback(struct d3d12_command_list
             args.resolve_width = transcoded_width;
             args.resolve_height = transcoded_height;
 
-            d3d12_command_list_meta_push_data(list, list->cmd.vk_command_buffer,
-                    pipeline_info.vk_layout, VK_SHADER_STAGE_COMPUTE_BIT,
-                    sizeof(args), &args);
+            VK_CALL(vkCmdBindPipeline(list->cmd.vk_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                    pipeline_info.vk_pipeline));
+            VK_CALL(vkCmdPushDescriptorSetKHR(list->cmd.vk_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                    pipeline_info.vk_layout, 0, ARRAY_SIZE(vk_descriptor_writes), vk_descriptor_writes));
+            VK_CALL(vkCmdPushConstants(list->cmd.vk_command_buffer, pipeline_info.vk_layout,
+                    VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(args), &args));
 
             extent.width = vkd3d_compute_workgroup_count(args.resolve_width,
                     vkd3d_meta_get_sampler_feedback_workgroup_size().width);
@@ -19266,10 +17792,8 @@ static void d3d12_command_list_encode_sampler_feedback(struct d3d12_command_list
         VK_CALL(vkCmdPipelineBarrier2(list->cmd.vk_command_buffer, &dep_info));
     }
 
-    if (src_view)
-        d3d12_command_allocator_add_view(list->allocator, src_view);
-    if (dst_view)
-        d3d12_command_allocator_add_view(list->allocator, dst_view);
+    d3d12_command_allocator_add_view(list->allocator, src_view);
+    d3d12_command_allocator_add_view(list->allocator, dst_view);
 
     /* Resolve does not count as a placed initialization,
      * so don't try to be clever here and compute writes_full_subresource.
@@ -19317,8 +17841,12 @@ static void d3d12_command_list_decode_sampler_feedback(struct d3d12_command_list
         return;
 
     d3d12_command_list_invalidate_current_pipeline(list, true);
-    d3d12_command_list_update_global_descriptor_buffer_meta(list);
+    d3d12_command_list_update_descriptor_buffers(list);
     d3d12_command_list_debug_mark_begin_region(list, "SamplerFeedbackDecode");
+    if (dst->desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+        d3d12_command_list_invalidate_root_parameters(list, &list->compute_bindings, true, &list->graphics_bindings);
+    else
+        d3d12_command_list_invalidate_root_parameters(list, &list->graphics_bindings, true, &list->compute_bindings);
 
     /* Fixup subresource indices. */
     if (src->desc.Format == DXGI_FORMAT_SAMPLER_FEEDBACK_MIN_MIP_OPAQUE)
@@ -19384,12 +17912,12 @@ static void d3d12_command_list_decode_sampler_feedback(struct d3d12_command_list
 
     if (dst->desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
     {
-        uint32_t src_index = UINT32_MAX, dst_index = UINT32_MAX;
-        bool use_heap;
-
         vk_image_barrier[0].dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         vk_image_barrier[0].subresourceRange.layerCount = src_view_desc.layer_count;
         vk_image_barrier[0].subresourceRange.levelCount = src_view_desc.miplevel_count;
+
+        vkd3d_meta_get_sampler_feedback_resolve_pipeline(&list->device->meta_ops,
+                VKD3D_SAMPLER_FEEDBACK_RESOLVE_MIN_MIP_TO_BUFFER, &pipeline_info);
 
         src_view_desc.view_type = VK_IMAGE_VIEW_TYPE_2D;
 
@@ -19404,40 +17932,19 @@ static void d3d12_command_list_decode_sampler_feedback(struct d3d12_command_list
         dst_buffer_view_desc.size = extent.width * extent.height;
         dst_buffer_view_desc.offset = dst->mem.offset;
         dst_buffer_view_desc.buffer = dst->res.vk_buffer;
-        dst_buffer_view_desc.usage = VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT;
 
-        src_index = d3d12_command_list_allocate_meta_image_view(list,
-                &src_view_desc, d3d12_resource_pick_layout(src, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
-        dst_index = d3d12_command_list_allocate_meta_buffer_view(list,
-                dst->res.va, dst_buffer_view_desc.size, VK_FORMAT_R8_UINT,
-                VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER);
-        use_heap = src_index != UINT32_MAX && dst_index != UINT32_MAX;
+        if (!vkd3d_create_texture_view(list->device, &src_view_desc, &src_view))
+            goto cleanup;
+        if (!vkd3d_create_buffer_view(list->device, &dst_buffer_view_desc, &dst_view))
+            goto cleanup;
 
-        vkd3d_meta_get_sampler_feedback_resolve_pipeline(&list->device->meta_ops,
-                VKD3D_SAMPLER_FEEDBACK_RESOLVE_MIN_MIP_TO_BUFFER, &pipeline_info, use_heap);
+        vk_image_info.imageView = src_view->vk_image_view;
 
-        if (use_heap)
-        {
-            d3d12_command_list_meta_push_descriptor_index(list, list->cmd.vk_command_buffer, 0, dst_index);
-            d3d12_command_list_meta_push_descriptor_index(list, list->cmd.vk_command_buffer, 1, src_index);
-        }
-        else
-        {
-            if (!vkd3d_create_texture_view(list->device, &src_view_desc, &src_view))
-                goto cleanup;
-            if (!vkd3d_create_buffer_view(list->device, &dst_buffer_view_desc, &dst_view))
-                goto cleanup;
-
-            vk_image_info.imageView = src_view->vk_image_view;
-
-            vk_descriptor_writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            vk_descriptor_writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
-            vk_descriptor_writes[1].dstBinding = 0;
-            vk_descriptor_writes[1].pTexelBufferView = &dst_view->vk_buffer_view;
-            vk_descriptor_writes[1].descriptorCount = 1;
-            VK_CALL(vkCmdPushDescriptorSetKHR(list->cmd.vk_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                    pipeline_info.vk_layout, 0, ARRAY_SIZE(vk_descriptor_writes), vk_descriptor_writes));
-        }
+        vk_descriptor_writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        vk_descriptor_writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
+        vk_descriptor_writes[1].dstBinding = 0;
+        vk_descriptor_writes[1].pTexelBufferView = &dst_view->vk_buffer_view;
+        vk_descriptor_writes[1].descriptorCount = 1;
 
         args.resolve_width = extent.width;
         args.resolve_height = extent.height;
@@ -19462,10 +17969,10 @@ static void d3d12_command_list_decode_sampler_feedback(struct d3d12_command_list
 
         VK_CALL(vkCmdBindPipeline(list->cmd.vk_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                 pipeline_info.vk_pipeline));
-
-        d3d12_command_list_meta_push_data(list, list->cmd.vk_command_buffer,
-                pipeline_info.vk_layout, VK_SHADER_STAGE_COMPUTE_BIT,
-                sizeof(args), &args);
+        VK_CALL(vkCmdPushDescriptorSetKHR(list->cmd.vk_command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                pipeline_info.vk_layout, 0, ARRAY_SIZE(vk_descriptor_writes), vk_descriptor_writes));
+        VK_CALL(vkCmdPushConstants(list->cmd.vk_command_buffer, pipeline_info.vk_layout,
+                VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(args), &args));
 
         extent.width = vkd3d_compute_workgroup_count(extent.width,
                 vkd3d_meta_get_sampler_feedback_workgroup_size().width);
@@ -19486,14 +17993,17 @@ static void d3d12_command_list_decode_sampler_feedback(struct d3d12_command_list
         vk_image_barrier[0].dstAccessMask = 0;
         VK_CALL(vkCmdPipelineBarrier2(list->cmd.vk_command_buffer, &dep_info));
 
-        if (src_view)
-            d3d12_command_allocator_add_view(list->allocator, src_view);
-        if (dst_view)
-            d3d12_command_allocator_add_view(list->allocator, dst_view);
+        d3d12_command_allocator_add_view(list->allocator, src_view);
+        d3d12_command_allocator_add_view(list->allocator, dst_view);
     }
     else
     {
         vk_image_barrier[0].dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+
+        vkd3d_meta_get_sampler_feedback_resolve_pipeline(&list->device->meta_ops,
+                src->desc.Format == DXGI_FORMAT_SAMPLER_FEEDBACK_MIN_MIP_OPAQUE ?
+                        VKD3D_SAMPLER_FEEDBACK_RESOLVE_MIN_MIP_TO_IMAGE :
+                        VKD3D_SAMPLER_FEEDBACK_RESOLVE_MIP_USED_TO_IMAGE, &pipeline_info);
 
         memset(&dst_image_view_desc, 0, sizeof(dst_image_view_desc));
         dst_image_view_desc.image = dst->res.vk_image;
@@ -19590,7 +18100,6 @@ static void d3d12_command_list_decode_sampler_feedback(struct d3d12_command_list
 
         memset(&rendering_info, 0, sizeof(rendering_info));
         rendering_info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-        rendering_info.flags = d3d12_device_get_rendering_flags(list->device);
         rendering_info.renderArea.offset.x = dst_x;
         rendering_info.renderArea.offset.y = dst_y;
         rendering_info.colorAttachmentCount = 1;
@@ -19610,9 +18119,6 @@ static void d3d12_command_list_decode_sampler_feedback(struct d3d12_command_list
 
         for (i = 0; i < num_mip_iterations; i++)
         {
-            uint32_t src_index = UINT32_MAX;
-            bool use_heap;
-
             if (dst_view)
             {
                 vkd3d_view_decref(dst_view, list->device);
@@ -19625,30 +18131,10 @@ static void d3d12_command_list_decode_sampler_feedback(struct d3d12_command_list
                 src_view = NULL;
             }
 
-            src_index = d3d12_command_list_allocate_meta_image_view(list, &src_view_desc,
-                    d3d12_resource_pick_layout(src, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
-            use_heap = src_index != UINT32_MAX;
-
-            vkd3d_meta_get_sampler_feedback_resolve_pipeline(&list->device->meta_ops,
-                    src->desc.Format == DXGI_FORMAT_SAMPLER_FEEDBACK_MIN_MIP_OPAQUE ?
-                    VKD3D_SAMPLER_FEEDBACK_RESOLVE_MIN_MIP_TO_IMAGE :
-                    VKD3D_SAMPLER_FEEDBACK_RESOLVE_MIP_USED_TO_IMAGE, &pipeline_info, use_heap);
-
+            if (!vkd3d_create_texture_view(list->device, &src_view_desc, &src_view))
+                goto cleanup;
             if (!vkd3d_create_texture_view(list->device, &dst_image_view_desc, &dst_view))
                 goto cleanup;
-
-            if (use_heap)
-            {
-                d3d12_command_list_meta_push_descriptor_index(list, list->cmd.vk_command_buffer, 1, src_index);
-            }
-            else
-            {
-                if (!vkd3d_create_texture_view(list->device, &src_view_desc, &src_view))
-                    goto cleanup;
-                vk_image_info.imageView = src_view->vk_image_view;
-                VK_CALL(vkCmdPushDescriptorSetKHR(list->cmd.vk_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                        pipeline_info.vk_layout, 0, 1, vk_descriptor_writes));
-            }
 
             /* Transcoded output doesn't have to cover everything. Cover minimum. */
             extent = d3d12_resource_desc_get_subresource_extent(&dst->desc, dst->format, dst_image_view_desc.miplevel_idx);
@@ -19685,26 +18171,24 @@ static void d3d12_command_list_decode_sampler_feedback(struct d3d12_command_list
             viewport.width = (float)rendering_info.renderArea.extent.width;
             viewport.height = (float)rendering_info.renderArea.extent.height;
 
+            vk_image_info.imageView = src_view->vk_image_view;
+
             VK_CALL(vkCmdBeginRendering(list->cmd.vk_command_buffer, &rendering_info));
             VK_CALL(vkCmdBindPipeline(list->cmd.vk_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     pipeline_info.vk_pipeline));
             VK_CALL(vkCmdSetViewport(list->cmd.vk_command_buffer, 0, 1, &viewport));
             VK_CALL(vkCmdSetScissor(list->cmd.vk_command_buffer, 0, 1, &rendering_info.renderArea));
-
-            d3d12_command_list_meta_push_data(list, list->cmd.vk_command_buffer,
-                    pipeline_info.vk_layout, VK_SHADER_STAGE_FRAGMENT_BIT,
-                    sizeof(args), &args);
-
+            VK_CALL(vkCmdPushDescriptorSetKHR(list->cmd.vk_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    pipeline_info.vk_layout, 0, 1, vk_descriptor_writes));
+            VK_CALL(vkCmdPushConstants(list->cmd.vk_command_buffer, pipeline_info.vk_layout,
+                    VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(args), &args));
             VK_CALL(vkCmdDraw(list->cmd.vk_command_buffer, 3, dst_image_view_desc.layer_count, 0, 0));
             VK_CALL(vkCmdEndRendering(list->cmd.vk_command_buffer));
 
             dst_image_view_desc.miplevel_idx++;
             args.mip_level++;
-
-            if (src_view)
-                d3d12_command_allocator_add_view(list->allocator, src_view);
-            if (dst_view)
-                d3d12_command_allocator_add_view(list->allocator, dst_view);
+            d3d12_command_allocator_add_view(list->allocator, src_view);
+            d3d12_command_allocator_add_view(list->allocator, dst_view);
         }
 
         vk_image_barrier[0].srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
@@ -19873,7 +18357,7 @@ static void STDMETHODCALLTYPE d3d12_command_list_ResolveSubresourceRegion(d3d12_
 
         d3d12_command_list_barrier_batch_init(&barriers);
         d3d12_command_list_check_and_resolve_pending_transfer_image_write(list, &barriers,
-                dst_resource->res.vk_image, dst_sub_resource_idx, dst_offset, extent);
+                dst_resource->res.vk_image, dst_sub_resource_idx);
         d3d12_command_list_copy_image_transition_images(list, &barriers,
             dst_resource, dst_resource->format, src_resource,
             src_resource->format, &image_copy, false,
@@ -19892,8 +18376,7 @@ static void STDMETHODCALLTYPE d3d12_command_list_ResolveSubresourceRegion(d3d12_
         {
             /* Remember that there is a potential WAW hazard. */
             d3d12_command_list_register_pending_transfer_image_write(
-                    list, dst_resource->res.vk_image, dst_sub_resource_idx, dst_offset, extent,
-                    VK_PIPELINE_STAGE_2_RESOLVE_BIT);
+                    list, dst_resource->res.vk_image, dst_sub_resource_idx, VK_PIPELINE_STAGE_2_RESOLVE_BIT);
         }
 
         d3d12_command_list_barrier_batch_end(list, &barriers);
@@ -20023,7 +18506,7 @@ static void STDMETHODCALLTYPE d3d12_command_list_WriteBufferImmediate(d3d12_comm
             else
             {
                 /* Flush pending transfers first to maintain correct order of operations */
-                d3d12_command_list_end_transfer_batch(list, false);
+                d3d12_command_list_end_transfer_batch(list);
                 d3d12_command_list_flush_rtas_batch(list);
                 d3d12_command_list_end_wbi_batch(list);
             }
@@ -20969,7 +19452,7 @@ static void STDMETHODCALLTYPE d3d12_command_list_InitializeMetaCommand(d3d12_com
     struct d3d12_meta_command *meta_command_object = impl_from_ID3D12MetaCommand(meta_command);
     struct d3d12_command_list *list = impl_from_ID3D12GraphicsCommandList(iface);
 
-    TRACE("iface %p, meta_command %p, parameter_data %p, parameter_size %zu.\n",
+    TRACE("iface %p, meta_command %p, parameter_data %p, parameter_size %lu.\n",
             iface, meta_command, parameter_data, parameter_size);
 
     /* Not all meta commands require initialization */
@@ -20979,7 +19462,7 @@ static void STDMETHODCALLTYPE d3d12_command_list_InitializeMetaCommand(d3d12_com
     list->cmd.estimated_cost += VKD3D_COMMAND_COST_HIGH;
 
     d3d12_command_list_end_current_render_pass(list, true);
-    d3d12_command_list_end_transfer_batch(list, false);
+    d3d12_command_list_end_transfer_batch(list);
     d3d12_command_list_invalidate_all_state(list);
 
     meta_command_object->init_proc(meta_command_object, list, parameter_data, parameter_size);
@@ -20991,7 +19474,7 @@ static void STDMETHODCALLTYPE d3d12_command_list_ExecuteMetaCommand(d3d12_comman
     struct d3d12_meta_command *meta_command_object = impl_from_ID3D12MetaCommand(meta_command);
     struct d3d12_command_list *list = impl_from_ID3D12GraphicsCommandList(iface);
 
-    TRACE("iface %p, meta_command %p, parameter_data %p, parameter_size %zu.\n",
+    TRACE("iface %p, meta_command %p, parameter_data %p, parameter_size %lu.\n",
             iface, meta_command, parameter_data, parameter_size);
 
     list->cmd.estimated_cost += VKD3D_COMMAND_COST_HIGH;
@@ -21001,7 +19484,7 @@ static void STDMETHODCALLTYPE d3d12_command_list_ExecuteMetaCommand(d3d12_comman
     d3d12_command_list_flush_dgc_batch(list);
 
     d3d12_command_list_end_current_render_pass(list, true);
-    d3d12_command_list_end_transfer_batch(list, true);
+    d3d12_command_list_end_transfer_batch(list);
     d3d12_command_list_invalidate_all_state(list);
 
     meta_command_object->exec_proc(meta_command_object, list, parameter_data, parameter_size);
@@ -21013,47 +19496,17 @@ static void d3d12_command_list_free_rtas_batch(struct d3d12_command_list *list)
 
     vkd3d_free(rtas_batch->build_infos);
     vkd3d_free(rtas_batch->geometry_infos);
-    vkd3d_free(rtas_batch->omm_triangles_infos);
+    vkd3d_free(rtas_batch->omm_infos);
     vkd3d_free(rtas_batch->range_infos);
     vkd3d_free(rtas_batch->range_ptrs);
     vkd3d_free(rtas_batch->omm_build_infos);
     vkd3d_free(rtas_batch->omm_usage_infos);
-    vkd3d_free(rtas_batch->scratch_usage);
-    vkd3d_free(rtas_batch->postbuild_infos);
-}
-
-static bool d3d12_command_list_register_rtas_scratch_range(
-        struct d3d12_command_list *list, VkDeviceAddress scratch, VkDeviceSize size)
-{
-    struct d3d12_rtas_batch_state *rtas_batch = &list->rtas_batch;
-    VkDeviceAddress scratch_end = scratch + size;
-    size_t i;
-
-    for (i = 0; i < rtas_batch->scratch_usage_count; i++)
-    {
-        if (max(rtas_batch->scratch_usage[i].va_start, scratch) < min(rtas_batch->scratch_usage[i].va_end, scratch_end))
-        {
-            /* The last element is already allocated and we cannot submit that quite yet. */
-            list->rtas_batch.build_info_count--;
-
-            WARN("Application bug detected. Attempting to use scratch which is currently in flight on GPU. Flushing batch.\n");
-            d3d12_command_list_flush_rtas_batch(list);
-            return true;
-        }
-    }
-
-    vkd3d_array_reserve((void **)&rtas_batch->scratch_usage, &rtas_batch->scratch_usage_size,
-        rtas_batch->scratch_usage_count + 1, sizeof(*rtas_batch->scratch_usage));
-    rtas_batch->scratch_usage[rtas_batch->scratch_usage_count].va_start = scratch;
-    rtas_batch->scratch_usage[rtas_batch->scratch_usage_count].va_end = scratch_end;
-    rtas_batch->scratch_usage_count++;
-    return false;
 }
 
 static bool d3d12_command_list_allocate_rtas_build_info(struct d3d12_command_list *list, uint32_t geometry_count,
         VkAccelerationStructureBuildGeometryInfoKHR **build_info,
         VkAccelerationStructureGeometryKHR **geometry_infos,
-        VkAccelerationStructureTrianglesOpacityMicromapKHR **omm_triangles_infos,
+        VkAccelerationStructureTrianglesOpacityMicromapEXT **omm_infos,
         VkAccelerationStructureBuildRangeInfoKHR **range_infos)
 {
     struct d3d12_rtas_batch_state *rtas_batch = &list->rtas_batch;
@@ -21072,14 +19525,12 @@ static bool d3d12_command_list_allocate_rtas_build_info(struct d3d12_command_lis
         return false;
     }
 
-    if (list->device->device_info.supports_opacity_micromap)
+    if (d3d12_device_supports_ray_tracing_tier_1_2(list->device) &&
+            !vkd3d_array_reserve((void **)&rtas_batch->omm_infos, &rtas_batch->omm_info_size,
+            rtas_batch->geometry_info_count + geometry_count, sizeof(*rtas_batch->omm_infos)))
     {
-        if (!vkd3d_array_reserve((void **)&rtas_batch->omm_triangles_infos, &rtas_batch->omm_triangles_info_size,
-                rtas_batch->geometry_info_count + geometry_count, sizeof(*rtas_batch->omm_triangles_infos)))
-        {
-            ERR("Failed to allocate opacity micromap info array.\n");
-            return false;
-        }
+        ERR("Failed to allocate opacity micromap info array.\n");
+        return false;
     }
 
     if (!vkd3d_array_reserve((void **)&rtas_batch->range_infos, &rtas_batch->range_info_size,
@@ -21091,10 +19542,10 @@ static bool d3d12_command_list_allocate_rtas_build_info(struct d3d12_command_lis
 
     *build_info = &rtas_batch->build_infos[rtas_batch->build_info_count];
     *geometry_infos = &rtas_batch->geometry_infos[rtas_batch->geometry_info_count];
-    if (list->device->device_info.supports_opacity_micromap)
-        *omm_triangles_infos = &rtas_batch->omm_triangles_infos[rtas_batch->geometry_info_count];
+    if (d3d12_device_supports_ray_tracing_tier_1_2(list->device))
+        *omm_infos = &rtas_batch->omm_infos[rtas_batch->geometry_info_count];
     else
-        *omm_triangles_infos = NULL;
+        *omm_infos = NULL;
     *range_infos = &rtas_batch->range_infos[rtas_batch->geometry_info_count];
 
     rtas_batch->build_info_count += 1;
@@ -21104,31 +19555,15 @@ static bool d3d12_command_list_allocate_rtas_build_info(struct d3d12_command_lis
 }
 
 static bool d3d12_command_list_allocate_omm_build_info(struct d3d12_command_list *list, uint32_t usage_count,
-        VkAccelerationStructureBuildGeometryInfoKHR **build_info,
-        VkAccelerationStructureGeometryKHR **geometry_info,
-        VkAccelerationStructureGeometryMicromapDataKHR **geometry_micromap_data,
-        VkMicromapUsageKHR **usage_infos)
+        VkMicromapBuildInfoEXT **build_info,
+        VkMicromapUsageEXT **usage_infos)
 {
     struct d3d12_rtas_batch_state *rtas_batch = &list->rtas_batch;
-
-    if (!vkd3d_array_reserve((void **)&rtas_batch->build_infos, &rtas_batch->build_info_size,
-            rtas_batch->build_info_count + 1, sizeof(*rtas_batch->build_infos)))
-    {
-        ERR("Failed to allocate build info array.\n");
-        return false;
-    }
-
-    if (!vkd3d_array_reserve((void **)&rtas_batch->geometry_infos, &rtas_batch->geometry_info_size,
-            rtas_batch->geometry_info_count + 1, sizeof(*rtas_batch->geometry_infos)))
-    {
-        ERR("Failed to allocate geometry info array.\n");
-        return false;
-    }
 
     if (!vkd3d_array_reserve((void **)&rtas_batch->omm_build_infos, &rtas_batch->omm_build_info_size,
             rtas_batch->omm_build_info_count + 1, sizeof(*rtas_batch->omm_build_infos)))
     {
-        ERR("Failed to allocate omm build info array.\n");
+        ERR("Failed to allocate build info array.\n");
         return false;
     }
 
@@ -21139,21 +19574,9 @@ static bool d3d12_command_list_allocate_omm_build_info(struct d3d12_command_list
         return false;
     }
 
-    /* In this case it is just reserved to not interfere with BLAS */
-    if (!vkd3d_array_reserve((void **)&rtas_batch->range_infos, &rtas_batch->range_info_size,
-            rtas_batch->geometry_info_count + 1, sizeof(*rtas_batch->range_infos)))
-    {
-        ERR("Failed to allocate range info array.\n");
-        return false;
-    }
-
-    *build_info = &rtas_batch->build_infos[rtas_batch->build_info_count];
-    *geometry_info = &rtas_batch->geometry_infos[rtas_batch->geometry_info_count];
-    *geometry_micromap_data = &rtas_batch->omm_build_infos[rtas_batch->omm_build_info_count];
+    *build_info = &rtas_batch->omm_build_infos[rtas_batch->omm_build_info_count];
     *usage_infos = &rtas_batch->omm_usage_infos[rtas_batch->omm_usage_info_count];
 
-    rtas_batch->build_info_count += 1;
-    rtas_batch->geometry_info_count += 1;
     rtas_batch->omm_build_info_count += 1;
     rtas_batch->omm_usage_info_count += usage_count;
 
@@ -21168,14 +19591,21 @@ static void d3d12_command_list_clear_rtas_batch(struct d3d12_command_list *list)
     rtas_batch->geometry_info_count = 0;
     rtas_batch->omm_build_info_count = 0;
     rtas_batch->omm_usage_info_count = 0;
-    rtas_batch->scratch_usage_count = 0;
-    rtas_batch->postbuild_infos_count = 0;
 }
 
-static void d3d12_command_list_fixup_rtas_batch(struct d3d12_command_list *list)
+static void d3d12_command_list_flush_rtas_batch(struct d3d12_command_list *list)
 {
+    const struct vkd3d_vk_device_procs *vk_procs = &list->device->vk_procs;
     struct d3d12_rtas_batch_state *rtas_batch = &list->rtas_batch;
     unsigned int i, geometry_index, usage_index;
+
+    if (!rtas_batch->build_info_count && !rtas_batch->omm_build_info_count)
+        return;
+
+    d3d12_command_list_check_end_of_command_list_cleanup(list);
+
+    TRACE("list %p, build_info_count %zu, omm_build_info_count %zu.\n", list,
+            rtas_batch->build_info_count, rtas_batch->omm_build_info_count);
 
     if (rtas_batch->build_info_count &&
             !vkd3d_array_reserve((void **)&rtas_batch->range_ptrs, &rtas_batch->range_ptr_size,
@@ -21194,163 +19624,70 @@ static void d3d12_command_list_fixup_rtas_batch(struct d3d12_command_list *list)
         assert(geometry_index + geometry_count <= rtas_batch->geometry_info_count);
 
         rtas_batch->build_infos[i].pGeometries = &rtas_batch->geometry_infos[geometry_index];
-        if (rtas_batch->geometry_infos[geometry_index].geometryType == VK_GEOMETRY_TYPE_MICROMAP_KHR)
-            rtas_batch->range_ptrs[i] = NULL;
-        else
-            rtas_batch->range_ptrs[i] = &rtas_batch->range_infos[geometry_index];
+        rtas_batch->range_ptrs[i] = &rtas_batch->range_infos[geometry_index];
 
         geometry_index += geometry_count;
     }
 
-    if (list->device->device_info.supports_opacity_micromap)
+    /* Assign usage count pointers */
+    usage_index = 0;
+
+    for (i = 0; i < rtas_batch->omm_build_info_count; i++)
     {
-        /* Assign geometry info next pointers */
-        uint32_t omm_index = 0;
-        geometry_index = 0;
+        uint32_t usage_count = rtas_batch->omm_build_infos[i].usageCountsCount;
+        assert(usage_index + usage_count <= rtas_batch->omm_usage_info_count);
 
-        for (i = 0; i < rtas_batch->build_info_count; i++)
-        {
-            uint32_t geometry_count = rtas_batch->build_infos[i].geometryCount;
-            assert(geometry_index + geometry_count <= rtas_batch->geometry_info_count);
+        rtas_batch->omm_build_infos[i].pUsageCounts = &rtas_batch->omm_usage_infos[usage_index];
 
-            if (rtas_batch->geometry_infos[geometry_index].geometryType == VK_GEOMETRY_TYPE_MICROMAP_KHR)
-            {
-                rtas_batch->geometry_infos[geometry_index].pNext = &rtas_batch->omm_build_infos[omm_index];
-                omm_index += 1;
-            }
-
-            geometry_index += geometry_count;
-        }
-
-        /* Assign usage count pointers */
-        usage_index = 0;
-
-        for (i = 0; i < rtas_batch->omm_build_info_count; i++)
-        {
-            uint32_t usage_count = rtas_batch->omm_build_infos[i].usageCountsCount;
-            assert(usage_index + usage_count <= rtas_batch->omm_usage_info_count);
-
-            rtas_batch->omm_build_infos[i].pUsageCounts = &rtas_batch->omm_usage_infos[usage_index];
-
-            usage_index += usage_count;
-        }
-
-        /* pNext pointers on Geometry AS. Currently limited to Opacity micromaps */
-        if (rtas_batch->omm_triangles_infos)
-        {
-            for (i = 0; i < rtas_batch->geometry_info_count; i++)
-            {
-                VkAccelerationStructureGeometryKHR *geometry = &rtas_batch->geometry_infos[i];
-                VkAccelerationStructureTrianglesOpacityMicromapKHR *omm_khr = &rtas_batch->omm_triangles_infos[i];
-
-                if (geometry->geometry.triangles.pNext)
-                {
-                    assert(geometry->geometry.triangles.sType == VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR);
-                    assert(geometry->sType == VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR);
-                    assert(geometry->geometryType == VK_GEOMETRY_TYPE_TRIANGLES_KHR);
-                    assert(omm_khr->sType == VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_TRIANGLES_OPACITY_MICROMAP_KHR);
-                    geometry->geometry.triangles.pNext = NULL;
-                    vk_prepend_struct(&geometry->geometry.triangles, omm_khr);
-                }
-            }
-        }
+        usage_index += usage_count;
     }
-}
 
-static void d3d12_command_list_flush_rtas_batch(struct d3d12_command_list *list)
-{
-    const struct vkd3d_vk_device_procs *vk_procs = &list->device->vk_procs;
-    struct d3d12_rtas_batch_state *rtas_batch = &list->rtas_batch;
+    d3d12_command_list_end_current_render_pass(list, true);
+    d3d12_command_list_end_transfer_batch(list);
 
     if (rtas_batch->build_info_count)
-    {
-        d3d12_command_list_check_end_of_command_list_cleanup(list);
-
-        TRACE("list %p, build_info_count %zu.\n", list,
-                rtas_batch->build_info_count);
-
-        d3d12_command_list_fixup_rtas_batch(list);
-        d3d12_command_list_end_current_render_pass(list, true);
-        d3d12_command_list_end_transfer_batch(list, false);
-
         VK_CALL(vkCmdBuildAccelerationStructuresKHR(list->cmd.vk_command_buffer,
                 rtas_batch->build_info_count, rtas_batch->build_infos, rtas_batch->range_ptrs));
 
-        VKD3D_BREADCRUMB_COMMAND(BUILD_RTAS);
-    }
-
-    if (rtas_batch->postbuild_infos_count)
-    {
-        d3d12_command_list_check_end_of_command_list_cleanup(list);
-
-        TRACE("list %p, postbuild_infos_count %zu.\n", list,
-                rtas_batch->postbuild_infos_count);
-
-        d3d12_command_list_end_current_render_pass(list, true);
-        d3d12_command_list_end_transfer_batch(list, false);
-
-        vkd3d_acceleration_structure_flush_postbuild_batch(list,
-                rtas_batch->postbuild_infos, rtas_batch->postbuild_infos_count);
-
-        VKD3D_BREADCRUMB_COMMAND(EMIT_RTAS_POSTBUILD);
-    }
+    if (rtas_batch->omm_build_info_count)
+        VK_CALL(vkCmdBuildMicromapsEXT(list->cmd.vk_command_buffer,
+                rtas_batch->omm_build_info_count, rtas_batch->omm_build_infos));
 
     d3d12_command_list_clear_rtas_batch(list);
-}
-
-static void d3d12_command_list_flush_rtas_barrier(struct d3d12_command_list *list)
-{
-    const struct vkd3d_vk_device_procs *vk_procs = &list->device->vk_procs;
-    VkMemoryBarrier2 vk_barrier;
-    VkDependencyInfo dep_info;
-
-    memset(&vk_barrier, 0, sizeof(vk_barrier));
-    vk_barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-    vk_barrier.srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
-    vk_barrier.srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
-    vk_barrier.dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
-    vk_barrier.dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
-
-    memset(&dep_info, 0, sizeof(dep_info));
-    dep_info.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    dep_info.memoryBarrierCount = 1;
-    dep_info.pMemoryBarriers = &vk_barrier;
-
-    VK_CALL(vkCmdPipelineBarrier2(list->cmd.vk_command_buffer, &dep_info));
-    list->rtas_batch.pending_rtas_work = false;
 }
 
 static void d3d12_command_list_build_raytracing_opacity_micromap_array(struct d3d12_command_list *list,
         const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC *desc, UINT num_postbuild_info_descs,
         const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC *postbuild_info_descs)
 {
-    VkAccelerationStructureGeometryMicromapDataKHR *geometry_micromap_data;
-    VkAccelerationStructureBuildGeometryInfoKHR *build_info;
-    VkAccelerationStructureGeometryKHR *geometry_info;
-    VkAccelerationStructureKHR micromap;
-    VkMicromapUsageKHR *usage_infos;
+    VkMicromapBuildInfoEXT *build_info;
+    VkMicromapUsageEXT *usage_infos;
     uint32_t usage_info_count;
+
+    if (!d3d12_device_supports_ray_tracing_tier_1_2(list->device))
+    {
+        ERR("Opacity micromap is not supported. Calling this is invalid.\n");
+        return;
+    }
 
     usage_info_count = desc->Inputs.pOpacityMicromapArrayDesc->NumOmmHistogramEntries;
 
     if (!d3d12_command_list_allocate_omm_build_info(list, usage_info_count,
-            &build_info, &geometry_info, &geometry_micromap_data, &usage_infos))
+            &build_info, &usage_infos))
         return;
 
-    if (!vkd3d_opacity_micromap_convert_inputs(list->device, &desc->Inputs, build_info, geometry_info,
-                geometry_micromap_data, usage_infos))
+    if (!vkd3d_opacity_micromap_convert_inputs(list->device, &desc->Inputs, build_info, usage_infos))
     {
         ERR("Failed to convert inputs.\n");
         return;
     }
 
-    micromap = VK_NULL_HANDLE;
     if (desc->DestAccelerationStructureData)
     {
-        micromap = vkd3d_va_map_place_acceleration_structure(&list->device->memory_allocator.va_map,
-                        list->device, desc->DestAccelerationStructureData, VKD3D_RTAS_KIND_NON_TLAS);
-        build_info->dstAccelerationStructure = micromap;
-        if (build_info->dstAccelerationStructure == VK_NULL_HANDLE)
+        build_info->dstMicromap =
+                vkd3d_va_map_place_opacity_micromap(&list->device->memory_allocator.va_map,
+                        list->device, desc->DestAccelerationStructureData);
+        if (build_info->dstMicromap == VK_NULL_HANDLE)
         {
             ERR("Failed to place destMicromap. Dropping call.\n");
             return;
@@ -21362,7 +19699,7 @@ static void d3d12_command_list_build_raytracing_opacity_micromap_array(struct d3
 #ifdef VKD3D_ENABLE_BREADCRUMBS
     /* Immediately record the OMM build command here so that we don't have
      * to create a deep copy of the entire D3D12 input description */
-    if (VKD3D_CONFIG_FLAG_IS_SET(BREADCRUMBS))
+    if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_BREADCRUMBS)
     {
         d3d12_command_list_flush_rtas_batch(list);
 
@@ -21371,22 +19708,18 @@ static void d3d12_command_list_build_raytracing_opacity_micromap_array(struct d3
         VKD3D_BREADCRUMB_AUX64(desc->ScratchAccelerationStructureData);
         {
             const struct vkd3d_vk_device_procs *vk_procs = &list->device->vk_procs;
-            uint32_t i;
-
-            VkAccelerationStructureBuildSizesInfoKHR size_info;
+            VkMicromapBuildSizesInfoEXT size_info;
+            unsigned int i;
 
             memset(&size_info, 0, sizeof(size_info));
-            size_info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
+            size_info.sType = VK_STRUCTURE_TYPE_MICROMAP_BUILD_SIZES_INFO_EXT;
 
-            /* These pointers are normally not set until flush. */
-            build_info->pGeometries = geometry_info;
-
-            VK_CALL(vkGetAccelerationStructureBuildSizesKHR(list->device->vk_device,
-                    VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, build_info, NULL, &size_info));
-
-            VKD3D_BREADCRUMB_TAG("Build requirements [Size, Build Scratch]");
-            VKD3D_BREADCRUMB_AUX64(size_info.accelerationStructureSize);
+            VK_CALL(vkGetMicromapBuildSizesEXT(list->device->vk_device,
+                    VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, build_info, &size_info));
+            VKD3D_BREADCRUMB_TAG("Build requirements [Size, Build Scratch, Discardable]");
+            VKD3D_BREADCRUMB_AUX64(size_info.micromapSize);
             VKD3D_BREADCRUMB_AUX64(size_info.buildScratchSize);
+            VKD3D_BREADCRUMB_AUX32(size_info.discardable);
 
             VKD3D_BREADCRUMB_TAG("Inputs [Flags, VA, Descs VA, Descs stride]");
             VKD3D_BREADCRUMB_AUX32(desc->Inputs.Flags);
@@ -21410,72 +19743,110 @@ static void d3d12_command_list_build_raytracing_opacity_micromap_array(struct d3
 
     if (num_postbuild_info_descs)
     {
-        uint32_t i;
-        vkd3d_array_reserve((void**)&list->rtas_batch.postbuild_infos, &list->rtas_batch.postbuild_infos_size,
-                            list->rtas_batch.postbuild_infos_count + num_postbuild_info_descs,
-                            sizeof(*list->rtas_batch.postbuild_infos));
+        /* This doesn't seem to get used very often, so just record the build command
+         * for now. If this ever becomes a performance issue, we can add postbuild info
+         * to the batch. */
+        d3d12_command_list_flush_rtas_batch(list);
 
-        for (i = 0; i < num_postbuild_info_descs; i++)
-        {
-            struct vk_acceleration_structure_postbuild_info *info =
-                    &list->rtas_batch.postbuild_infos[list->rtas_batch.postbuild_infos_count++];
-            info->desc = postbuild_info_descs[i];
-            info->rtas_vk = micromap;
-            info->rtas_va = 0;
-            info->is_omm = true;
-        }
+        vkd3d_opacity_micromap_emit_immediate_postbuild_info(list,
+                num_postbuild_info_descs, postbuild_info_descs,
+                build_info->dstMicromap);
     }
 
     VKD3D_BREADCRUMB_COMMAND(BUILD_OMM);
 }
 
-static void d3d12_command_list_build_raytracing_blas_and_tlas(struct d3d12_command_list *list,
+static void STDMETHODCALLTYPE d3d12_command_list_BuildRaytracingAccelerationStructure(d3d12_command_list_iface *iface,
         const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC *desc, UINT num_postbuild_info_descs,
         const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC *postbuild_info_descs)
 {
-    VkAccelerationStructureTrianglesOpacityMicromapKHR *omm_triangles_infos;
+    struct d3d12_command_list *list = impl_from_ID3D12GraphicsCommandList(iface);
     const struct vkd3d_vk_device_procs *vk_procs = &list->device->vk_procs;
+    VkAccelerationStructureTrianglesOpacityMicromapEXT *omm_infos = NULL;
+    struct d3d12_rtas_batch_state *rtas_batch = &list->rtas_batch;
     VkAccelerationStructureBuildGeometryInfoKHR *build_info;
     VkAccelerationStructureBuildRangeInfoKHR *range_infos;
     VkAccelerationStructureGeometryKHR *geometry_infos;
-    VkAccelerationStructureBuildSizesInfoKHR size_info;
-    VkBuildAccelerationStructureFlagsKHR old_flags;
-    VkBuildAccelerationStructureModeKHR old_mode;
-    uint32_t primitive_counts_scratch[64];
-    enum vkd3d_rtas_kind rtas_kind;
-    uint32_t *primitive_counts;
+    uint32_t *primitive_counts = NULL;
+    VkMemoryBarrier2 vk_barrier;
+    VkDependencyInfo dep_info;
     uint32_t geometry_count;
+
+    TRACE("iface %p, desc %p, num_postbuild_info_descs %u, postbuild_info_descs %p\n",
+            iface, desc, num_postbuild_info_descs, postbuild_info_descs);
+
+    d3d12_command_list_check_render_pass_validation(list, "BuildRaytracingAccelerationStructure called within a render pass.\n", true);
+    d3d12_command_list_flush_dgc_batch(list);
+
+    if (!d3d12_device_supports_ray_tracing_tier_1_0(list->device))
+    {
+        WARN("Acceleration structure is not supported. Calling this is invalid.\n");
+        return;
+    }
+
+    list->cmd.estimated_cost += VKD3D_COMMAND_COST_HIGH;
+
+    /* Do not batch TLAS and BLAS builds into the same command, since doing so
+     * is disallowed if there are data dependencies between the builds. This
+     * happens in Cyberpunk 2077, which does not emit appropriate UAV barriers. */
+    if ((rtas_batch->build_info_count || rtas_batch->omm_build_info_count) &&
+            rtas_batch->build_type != desc->Inputs.Type)
+    {
+        d3d12_command_list_flush_rtas_batch(list);
+
+        memset(&vk_barrier, 0, sizeof(vk_barrier));
+        vk_barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+        vk_barrier.srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+        vk_barrier.srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        vk_barrier.dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+        vk_barrier.dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+
+        if (list->device->device_info.opacity_micromap_features.micromap)
+        {
+            vk_barrier.srcAccessMask |= VK_ACCESS_2_MICROMAP_READ_BIT_EXT | VK_ACCESS_2_MICROMAP_WRITE_BIT_EXT;
+            vk_barrier.dstAccessMask |= VK_ACCESS_2_MICROMAP_READ_BIT_EXT | VK_ACCESS_2_MICROMAP_WRITE_BIT_EXT;
+        }
+
+        memset(&dep_info, 0, sizeof(dep_info));
+        dep_info.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dep_info.memoryBarrierCount = 1;
+        dep_info.pMemoryBarriers = &vk_barrier;
+
+        VK_CALL(vkCmdPipelineBarrier2(list->cmd.vk_command_buffer, &dep_info));
+    }
+
+    rtas_batch->build_type = desc->Inputs.Type;
+
+    if (rtas_batch->build_type == D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_OPACITY_MICROMAP_ARRAY)
+    {
+        d3d12_command_list_build_raytracing_opacity_micromap_array(list,
+                desc, num_postbuild_info_descs, postbuild_info_descs);
+        return;
+    }
 
     geometry_count = vkd3d_acceleration_structure_get_geometry_count(&desc->Inputs);
 
-    if (geometry_count <= ARRAY_SIZE(primitive_counts_scratch))
-        primitive_counts = primitive_counts_scratch;
-    else
+#ifdef VKD3D_ENABLE_BREADCRUMBS
+    if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_BREADCRUMBS)
         primitive_counts = vkd3d_malloc(geometry_count * sizeof(*primitive_counts));
+#endif
 
     if (!d3d12_command_list_allocate_rtas_build_info(list, geometry_count,
-            &build_info, &geometry_infos, &omm_triangles_infos, &range_infos))
+            &build_info, &geometry_infos, &omm_infos, &range_infos))
         return;
 
     if (!vkd3d_acceleration_structure_convert_inputs(list->device, &desc->Inputs,
-            build_info, geometry_infos, omm_triangles_infos, range_infos, primitive_counts))
+            build_info, geometry_infos, omm_infos, range_infos, primitive_counts))
     {
         ERR("Failed to convert inputs.\n");
         return;
     }
 
-    if (!vkd3d_acceleration_structure_resolve_omm_va_maps(list->device, &desc->Inputs,
-            omm_triangles_infos))
-        return;
-
-    rtas_kind = (desc->Inputs.Type == D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL) ?
-        VKD3D_RTAS_KIND_TLAS : VKD3D_RTAS_KIND_NON_TLAS;
-
     if (desc->DestAccelerationStructureData)
     {
         build_info->dstAccelerationStructure =
                 vkd3d_va_map_place_acceleration_structure(&list->device->memory_allocator.va_map,
-                        list->device, desc->DestAccelerationStructureData, rtas_kind);
+                        list->device, desc->DestAccelerationStructureData);
         if (build_info->dstAccelerationStructure == VK_NULL_HANDLE)
         {
             ERR("Failed to place destAccelerationStructure. Dropping call.\n");
@@ -21488,7 +19859,7 @@ static void d3d12_command_list_build_raytracing_blas_and_tlas(struct d3d12_comma
     {
         build_info->srcAccelerationStructure =
                 vkd3d_va_map_place_acceleration_structure(&list->device->memory_allocator.va_map,
-                        list->device, desc->SourceAccelerationStructureData, rtas_kind);
+                        list->device, desc->SourceAccelerationStructureData);
         if (build_info->srcAccelerationStructure == VK_NULL_HANDLE)
         {
             ERR("Failed to place srcAccelerationStructure. Dropping call.\n");
@@ -21497,47 +19868,14 @@ static void d3d12_command_list_build_raytracing_blas_and_tlas(struct d3d12_comma
     }
 
     build_info->scratchData.deviceAddress = desc->ScratchAccelerationStructureData;
-    memset(&size_info, 0, sizeof(size_info));
-
-    /* Resolve scratch hazards. Stop batching if we detect broken application pattern.
-     * Observed in Witcher 3. Only do this for RTAS. No known issues with OMMs (yet ...). */
-
-    old_flags = build_info->flags;
-    old_mode = build_info->mode;
-
-    if (desc->Inputs.Flags & D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE)
-    {
-        build_info->mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
-        build_info->flags |= VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
-    }
-
-    /* These pointers are normally not set until flush. */
-    build_info->pGeometries = geometry_infos;
-
-    size_info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
-    VK_CALL(vkGetAccelerationStructureBuildSizesKHR(list->device->vk_device,
-            VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, build_info,
-            primitive_counts, &size_info));
-
-    build_info->flags = old_flags;
-    build_info->mode = old_mode;
-
-    if (d3d12_command_list_register_rtas_scratch_range(
-            list, desc->ScratchAccelerationStructureData,
-            (desc->Inputs.Flags & D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE)
-                ? size_info.updateScratchSize : size_info.buildScratchSize))
-    {
-        /* The batch is restarted, need to rebuild. */
-        d3d12_command_list_flush_rtas_barrier(list);
-        d3d12_command_list_build_raytracing_blas_and_tlas(list, desc, num_postbuild_info_descs, postbuild_info_descs);
-        return;
-    }
 
 #ifdef VKD3D_ENABLE_BREADCRUMBS
     /* Immediately record the RTAS build command here so that we don't have
      * to create a deep copy of the entire D3D12 input description */
-    if (VKD3D_CONFIG_FLAG_IS_SET(BREADCRUMBS))
+    if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_BREADCRUMBS)
     {
+        d3d12_command_list_flush_rtas_batch(list);
+
         VKD3D_BREADCRUMB_TAG("RTAS build [Dest VA, Source VA, Scratch VA]");
         VKD3D_BREADCRUMB_AUX64(desc->DestAccelerationStructureData);
         VKD3D_BREADCRUMB_AUX64(desc->SourceAccelerationStructureData);
@@ -21546,6 +19884,19 @@ static void d3d12_command_list_build_raytracing_blas_and_tlas(struct d3d12_comma
                 "Update" : "Create");
         VKD3D_BREADCRUMB_TAG(desc->Inputs.Type == D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL ? "Top" : "Bottom");
         {
+            VkAccelerationStructureBuildSizesInfoKHR size_info;
+
+            memset(&size_info, 0, sizeof(size_info));
+            size_info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
+
+            if (desc->Inputs.Flags & D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE)
+            {
+                build_info->mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+                build_info->flags |= VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
+            }
+            VK_CALL(vkGetAccelerationStructureBuildSizesKHR(list->device->vk_device,
+                    VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, build_info,
+                    primitive_counts, &size_info));
             VKD3D_BREADCRUMB_TAG("Build requirements [Size, Build Scratch, Update Scratch]");
             VKD3D_BREADCRUMB_AUX64(size_info.accelerationStructureSize);
             VKD3D_BREADCRUMB_AUX64(size_info.buildScratchSize);
@@ -21591,106 +19942,31 @@ static void d3d12_command_list_build_raytracing_blas_and_tlas(struct d3d12_comma
                 }
             }
         }
+
+        vkd3d_free(primitive_counts);
     }
 #endif
 
-    if (primitive_counts != primitive_counts_scratch)
-        vkd3d_free(primitive_counts);
-
     if (num_postbuild_info_descs)
     {
-        uint32_t i;
-        vkd3d_array_reserve((void**)&list->rtas_batch.postbuild_infos, &list->rtas_batch.postbuild_infos_size,
-                            list->rtas_batch.postbuild_infos_count + num_postbuild_info_descs, sizeof(*list->rtas_batch.postbuild_infos));
-
-        /* Postbuild happens in UAV state, so we don't have to consider sync in general.
-         * The only guarantee we get from spec when using this immediate mode of query
-         * is that implementation takes care of the RTAS build -> query write sync internally.
-         * We handle that implicitly when resolving the query since there's a UAV -> TRANSFER barrier. */
-        for (i = 0; i < num_postbuild_info_descs; i++)
-        {
-            struct vk_acceleration_structure_postbuild_info *info =
-                    &list->rtas_batch.postbuild_infos[list->rtas_batch.postbuild_infos_count++];
-            info->desc = postbuild_info_descs[i];
-            info->rtas_vk = build_info->dstAccelerationStructure;
-            info->rtas_va = desc->DestAccelerationStructureData;
-            info->is_omm = false;
-            info->rtas_kind = rtas_kind;
-        }
-    }
-}
-
-static void STDMETHODCALLTYPE d3d12_command_list_BuildRaytracingAccelerationStructure(d3d12_command_list_iface *iface,
-        const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC *desc, UINT num_postbuild_info_descs,
-        const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC *postbuild_info_descs)
-{
-    struct d3d12_command_list *list = impl_from_ID3D12GraphicsCommandList(iface);
-    struct d3d12_rtas_batch_state *rtas_batch = &list->rtas_batch;
-    bool assume_hazard;
-
-    TRACE("iface %p, desc %p, num_postbuild_info_descs %u, postbuild_info_descs %p\n",
-            iface, desc, num_postbuild_info_descs, postbuild_info_descs);
-
-    d3d12_command_list_check_render_pass_validation(list, "BuildRaytracingAccelerationStructure called within a render pass.\n", true);
-    d3d12_command_list_flush_dgc_batch(list);
-    /* NON_PIXEL_SHADER_RESOURCE can be for VBO/IBO/Transfer buffer. */
-    d3d12_command_list_end_transfer_batch(list, true);
-
-    if (!d3d12_device_supports_ray_tracing_tier_1_0(list->device))
-    {
-        WARN("Acceleration structure is not supported. Calling this is invalid.\n");
-        return;
-    }
-
-    list->cmd.estimated_cost += VKD3D_COMMAND_COST_HIGH;
-
-    /* Do not batch TLAS and BLAS builds into the same command, since doing so
-     * is disallowed if there are data dependencies between the builds. This
-     * happens in Cyberpunk 2077, which does not emit appropriate UAV barriers.
-     * Also, if we ever transition between the modes, assume we need to resolve the hazard.
-     * Sometimes it's possible that RTAS batch gets flushed without appropriate barriers.
-     * There is no concrete proof of this being required yet, but it's a useful debug config. */
-    if (VKD3D_CONFIG_FLAG_IS_SET(EXTRA_RTAS_SYNC))
-    {
-        assume_hazard = rtas_batch->pending_rtas_work &&
-                        (rtas_batch->build_type != desc->Inputs.Type ||
-                         ((rtas_batch->build_flags ^ desc->Inputs.Flags) &
-                          D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE));
-    }
-    else
-    {
-        assume_hazard = rtas_batch->build_info_count && rtas_batch->build_type != desc->Inputs.Type;
-    }
-
-    if (assume_hazard)
-    {
+        /* This doesn't seem to get used very often, so just record the build command
+         * for now. If this ever becomes a performance issue, we can add postbuild info
+         * to the batch. */
         d3d12_command_list_flush_rtas_batch(list);
-        d3d12_command_list_flush_rtas_barrier(list);
+
+        vkd3d_acceleration_structure_emit_immediate_postbuild_info(list,
+                num_postbuild_info_descs, postbuild_info_descs,
+                build_info->dstAccelerationStructure);
     }
 
-    rtas_batch->build_type = desc->Inputs.Type;
-    rtas_batch->build_flags = desc->Inputs.Flags;
-
-    if (rtas_batch->build_type == D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_OPACITY_MICROMAP_ARRAY)
-        d3d12_command_list_build_raytracing_opacity_micromap_array(list,
-                desc, num_postbuild_info_descs, postbuild_info_descs);
-    else
-        d3d12_command_list_build_raytracing_blas_and_tlas(list,
-                desc, num_postbuild_info_descs, postbuild_info_descs);
-
-    rtas_batch->pending_rtas_work = true;
+    VKD3D_BREADCRUMB_COMMAND(BUILD_RTAS);
 }
 
 static void STDMETHODCALLTYPE d3d12_command_list_EmitRaytracingAccelerationStructurePostbuildInfo(d3d12_command_list_iface *iface,
         const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC *desc, UINT num_acceleration_structures,
         const D3D12_GPU_VIRTUAL_ADDRESS *src_data)
 {
-    VkDeviceSize stride =
-            desc->InfoType == D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_SERIALIZATION ?
-            2 * sizeof(uint64_t) : sizeof(uint64_t);
     struct d3d12_command_list *list = impl_from_ID3D12GraphicsCommandList(iface);
-    uint32_t i;
-
     TRACE("iface %p, desc %p, num_acceleration_structures %u, src_data %p\n",
             iface, desc, num_acceleration_structures, src_data);
 
@@ -21706,21 +19982,10 @@ static void STDMETHODCALLTYPE d3d12_command_list_EmitRaytracingAccelerationStruc
     list->cmd.estimated_cost += VKD3D_COMMAND_COST_LOW;
 
     d3d12_command_list_end_current_render_pass(list, true);
+    vkd3d_acceleration_structure_emit_postbuild_info(list,
+            desc, num_acceleration_structures, src_data);
 
-    vkd3d_array_reserve((void**)&list->rtas_batch.postbuild_infos, &list->rtas_batch.postbuild_infos_size,
-                        list->rtas_batch.postbuild_infos_count + num_acceleration_structures,
-                        sizeof(*list->rtas_batch.postbuild_infos));
-
-    for (i = 0; i < num_acceleration_structures; i++)
-    {
-        struct vk_acceleration_structure_postbuild_info *info =
-                &list->rtas_batch.postbuild_infos[list->rtas_batch.postbuild_infos_count++];
-        info->desc = *desc;
-        info->desc.DestBuffer += i * stride;
-        info->rtas_va = src_data[i];
-        info->rtas_vk = VK_NULL_HANDLE;
-        info->is_omm = false;
-    }
+    VKD3D_BREADCRUMB_COMMAND(EMIT_RTAS_POSTBUILD);
 }
 
 static void STDMETHODCALLTYPE d3d12_command_list_CopyRaytracingAccelerationStructure(d3d12_command_list_iface *iface,
@@ -21729,7 +19994,7 @@ static void STDMETHODCALLTYPE d3d12_command_list_CopyRaytracingAccelerationStruc
 {
     struct d3d12_command_list *list = impl_from_ID3D12GraphicsCommandList(iface);
     VkAccelerationStructureKHR src_as;
-    enum vkd3d_rtas_kind rtas_kind;
+    VkMicromapEXT src_omm;
 
     TRACE("iface %p, dst_data %#"PRIx64", src_data %#"PRIx64", mode %u\n",
           iface, dst_data, src_data, mode);
@@ -21746,37 +20011,45 @@ static void STDMETHODCALLTYPE d3d12_command_list_CopyRaytracingAccelerationStruc
     list->cmd.estimated_cost += VKD3D_COMMAND_COST_HIGH;
 
     d3d12_command_list_end_current_render_pass(list, true);
-    d3d12_command_list_end_transfer_batch(list, false);
+    d3d12_command_list_end_transfer_batch(list);
 
-    if (VKD3D_CONFIG_FLAG_IS_SET(EXTRA_RTAS_SYNC) && list->rtas_batch.pending_rtas_work)
+    if (d3d12_device_supports_ray_tracing_tier_1_2(list->device))
     {
-        /* Speculate that application forgot a barrier before compaction. */
-        d3d12_command_list_flush_rtas_batch(list);
-        d3d12_command_list_flush_rtas_barrier(list);
+        vkd3d_va_map_try_read_rtas(&list->device->memory_allocator.va_map,
+                list->device, src_data, &src_as, &src_omm);
+
+        if (src_as != VK_NULL_HANDLE)
+        {
+            vkd3d_acceleration_structure_copy(list, dst_data, src_as, mode);
+            VKD3D_BREADCRUMB_AUX64(dst_data);
+            VKD3D_BREADCRUMB_AUX64(src_data);
+            VKD3D_BREADCRUMB_AUX32(mode);
+            VKD3D_BREADCRUMB_COMMAND(COPY_RTAS);
+            return;
+        }
+        else if (src_omm != VK_NULL_HANDLE)
+        {
+            vkd3d_opacity_micromap_copy(list, dst_data, src_omm, mode);
+            VKD3D_BREADCRUMB_AUX64(dst_data);
+            VKD3D_BREADCRUMB_AUX64(src_data);
+            VKD3D_BREADCRUMB_AUX32(mode);
+            VKD3D_BREADCRUMB_COMMAND(COPY_OMM);
+            return;
+        }
+        else
+            FIXME("Failed to query existing RTAS for VA 0x%"PRIx64", falling back to placement.\n", src_data);
     }
 
-    /* We have not observed broken copy -> trace sync in the wild so far.
-     * Don't consider this pending RTAS work until we have evidence of real-world breakage. */
-
-    vkd3d_va_map_try_read_rtas(&list->device->memory_allocator.va_map,
-            list->device, src_data, &src_as, &rtas_kind);
-
-    if (src_as == VK_NULL_HANDLE)
-    {
-        WARN("Copy placing unknown AS at #%" PRIx64 " future BLP queries may not be reliable.\n", src_data);
-        rtas_kind = VKD3D_RTAS_KIND_UNKNOWN;
-        src_as = vkd3d_va_map_place_acceleration_structure(&list->device->memory_allocator.va_map, list->device,
-                src_data, rtas_kind);
-    }
+    src_as = vkd3d_va_map_place_acceleration_structure(
+            &list->device->memory_allocator.va_map, list->device, src_data);
 
     if (src_as != VK_NULL_HANDLE)
     {
-        vkd3d_acceleration_structure_copy(list, dst_data, src_as, mode, rtas_kind);
+        vkd3d_acceleration_structure_copy(list, dst_data, src_as, mode);
         VKD3D_BREADCRUMB_AUX64(dst_data);
         VKD3D_BREADCRUMB_AUX64(src_data);
         VKD3D_BREADCRUMB_AUX32(mode);
         VKD3D_BREADCRUMB_COMMAND(COPY_RTAS);
-        return;
     }
     else
         ERR("Invalid src address #%"PRIx64" for RTAS copy.\n", src_data);
@@ -21808,7 +20081,7 @@ static void STDMETHODCALLTYPE d3d12_command_list_SetPipelineState1(d3d12_command
     }
 
 #ifdef VKD3D_ENABLE_BREADCRUMBS
-    if (VKD3D_CONFIG_FLAG_IS_SET(BREADCRUMBS) && state)
+    if ((vkd3d_config_flags & VKD3D_CONFIG_FLAG_BREADCRUMBS) && state)
     {
         struct vkd3d_breadcrumb_command cmd;
         size_t i;
@@ -21878,7 +20151,7 @@ static void STDMETHODCALLTYPE d3d12_command_list_DispatchRays(d3d12_command_list
     hit_table = convert_strided_range(&desc->HitGroupTable);
     callable_table = convert_strided_range(&desc->CallableShaderTable);
 
-    d3d12_command_list_end_transfer_batch(list, true);
+    d3d12_command_list_end_transfer_batch(list);
 
     if (!d3d12_command_list_update_raygen_state(list))
     {
@@ -22172,10 +20445,6 @@ static VkPipelineStageFlags2 vk_stage_flags_from_d3d12_barrier(struct d3d12_comm
     if (sync & (D3D12_BARRIER_SYNC_COMPUTE_SHADING | D3D12_BARRIER_SYNC_CLEAR_UNORDERED_ACCESS_VIEW))
         stages |= VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
 
-    /* We sometimes make use of native clear command when it works in our favour. */
-    if (sync & D3D12_BARRIER_SYNC_CLEAR_UNORDERED_ACCESS_VIEW)
-        stages |= VK_PIPELINE_STAGE_2_CLEAR_BIT;
-
     if (sync & D3D12_BARRIER_SYNC_RAYTRACING)
         stages |= VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
 
@@ -22215,8 +20484,7 @@ static VkPipelineStageFlags2 vk_stage_flags_from_d3d12_barrier(struct d3d12_comm
     return stages;
 }
 
-static VkAccessFlags2 vk_access_flags_from_d3d12_barrier(struct d3d12_command_list *list,
-        D3D12_BARRIER_SYNC sync, D3D12_BARRIER_ACCESS access)
+static VkAccessFlags2 vk_access_flags_from_d3d12_barrier(struct d3d12_command_list *list, D3D12_BARRIER_ACCESS access)
 {
     VkAccessFlags2 vk_access = 0;
 
@@ -22234,11 +20502,7 @@ static VkAccessFlags2 vk_access_flags_from_d3d12_barrier(struct d3d12_command_li
     if (access & D3D12_BARRIER_ACCESS_RENDER_TARGET)
         vk_access |= VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT;
     if (access & D3D12_BARRIER_ACCESS_UNORDERED_ACCESS)
-    {
         vk_access |= VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
-        if (sync & D3D12_BARRIER_SYNC_CLEAR_UNORDERED_ACCESS_VIEW)
-            vk_access |= VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    }
     if (access & D3D12_BARRIER_ACCESS_DEPTH_STENCIL_READ)
         vk_access |= VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
     if (access & D3D12_BARRIER_ACCESS_DEPTH_STENCIL_WRITE)
@@ -22417,7 +20681,7 @@ static void d3d12_command_list_process_enhanced_barrier_global(struct d3d12_comm
         return;
     }
 
-    if (VKD3D_CONFIG_FLAG_IS_SET(DEBUG_UTILS))
+    if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_DEBUG_UTILS)
     {
         d3d12_command_list_debug_mark_label_printf(list, list->cmd.vk_command_buffer,
                 1.0f, 1.0f, 0.0f, 1.0f, "Global barrier (%s / %s) -> (%s / %s)",
@@ -22435,8 +20699,8 @@ static void d3d12_command_list_process_enhanced_barrier_global(struct d3d12_comm
 
     src_stages = vk_stage_flags_from_d3d12_barrier(list, barrier->SyncBefore, barrier->AccessBefore);
     dst_stages = vk_stage_flags_from_d3d12_barrier(list, barrier->SyncAfter, barrier->AccessAfter);
-    src_access = vk_access_flags_from_d3d12_barrier(list, barrier->SyncBefore, barrier->AccessBefore);
-    dst_access = vk_access_flags_from_d3d12_barrier(list, barrier->SyncAfter, barrier->AccessAfter);
+    src_access = vk_access_flags_from_d3d12_barrier(list, barrier->AccessBefore);
+    dst_access = vk_access_flags_from_d3d12_barrier(list, barrier->AccessAfter);
 
     src_stages = vk_sanitize_stage_flags_for_access(list, src_stages, src_access);
     dst_stages = vk_sanitize_stage_flags_for_access(list, dst_stages, dst_access);
@@ -22449,23 +20713,11 @@ static void d3d12_command_list_process_enhanced_barrier_global(struct d3d12_comm
         list->cmd.observes_indirect_argument_barrier = true;
     }
 
-    if (barrier->SyncBefore == D3D12_BARRIER_SYNC_CLEAR_UNORDERED_ACCESS_VIEW ||
-        barrier->SyncBefore == D3D12_BARRIER_SYNC_ALL)
-    {
-        list->cmd.clear_uav_pending = false;
-    }
-
     if (barrier->SyncBefore & (D3D12_BARRIER_SYNC_ALL | D3D12_BARRIER_SYNC_BUILD_RAYTRACING_ACCELERATION_STRUCTURE))
-    {
         d3d12_command_list_flush_rtas_batch(list);
-        list->rtas_batch.pending_rtas_work = false;
-    }
 
-    if (barrier->SyncBefore & (D3D12_BARRIER_SYNC_ALL | D3D12_BARRIER_SYNC_RENDER_TARGET |
-        D3D12_BARRIER_SYNC_DEPTH_STENCIL | D3D12_BARRIER_SYNC_DRAW))
-    {
+    if (barrier->SyncBefore & (D3D12_BARRIER_SYNC_ALL | D3D12_BARRIER_SYNC_RENDER_TARGET | D3D12_BARRIER_SYNC_DEPTH_STENCIL))
         d3d12_command_list_flush_clears(list, NULL, NULL);
-    }
 
     d3d12_command_list_merge_copy_tracking_global_barrier(list, barrier, batch);
     d3d12_command_list_barrier_batch_add_global_transition(list, batch,
@@ -22483,7 +20735,7 @@ static void d3d12_command_list_process_enhanced_barrier_buffer(struct d3d12_comm
     global.AccessAfter = barrier->AccessAfter;
     d3d12_command_list_process_enhanced_barrier_global(list, batch, &global);
 
-    if (VKD3D_CONFIG_FLAG_IS_SET(DEBUG_UTILS))
+    if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_DEBUG_UTILS)
     {
         d3d12_command_list_debug_mark_label_printf(list, list->cmd.vk_command_buffer,
                 1.0f, 1.0f, 0.0f, 1.0f, "Buffer barrier (%s / %s) -> (%s / %s)",
@@ -22521,7 +20773,7 @@ static void d3d12_command_list_process_enhanced_barrier_texture(struct d3d12_com
         return;
     }
 
-    if (VKD3D_CONFIG_FLAG_IS_SET(DEBUG_UTILS))
+    if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_DEBUG_UTILS)
     {
         d3d12_command_list_debug_mark_label_printf(list, list->cmd.vk_command_buffer,
                 1.0f, 1.0f, 0.0f, 1.0f, "Texture barrier cookie %u: (layout %s -> %s) (%s / %s) -> (%s / %s)",
@@ -22568,10 +20820,16 @@ static void d3d12_command_list_process_enhanced_barrier_texture(struct d3d12_com
     if (barrier->SyncAfter == D3D12_BARRIER_SYNC_SPLIT)
         return;
 
-    /* Technically, we can be a bit more conservative, but e.g. FH6 is completely broken here
-     * and expects clears to be synced without using appropriate stage flags or even layouts.
-     * There shouldn't be much of a concern to flushing clears here since it's per-resource. */
-    d3d12_command_list_flush_clears(list, resource, NULL);
+    if (barrier->Subresources.NumMipLevels != 0 && barrier->Subresources.NumArraySlices == 0)
+        WARN("NumArraySlices == 0 promotes to 1 slice.\n");
+
+    /* Observed in the wild. Earlier testing suggested it was a no-op,
+     * but only way to interpret this based on game behavior is 1 plane. */
+    if (barrier->Subresources.NumMipLevels != 0 && barrier->Subresources.NumPlanes == 0)
+        WARN("NumPlanes == 0 promotes to 1 plane.\n");
+
+    if (barrier->SyncBefore & (D3D12_BARRIER_SYNC_ALL | D3D12_BARRIER_SYNC_RENDER_TARGET | D3D12_BARRIER_SYNC_DEPTH_STENCIL))
+        d3d12_command_list_flush_clears(list, resource, NULL);
 
     global_barrier.SyncBefore = barrier->SyncBefore;
     global_barrier.SyncAfter = barrier->SyncAfter;
@@ -22613,28 +20871,19 @@ static void d3d12_command_list_process_enhanced_barrier_texture(struct d3d12_com
         d3d12_command_list_flush_subresource_updates(list);
     }
 
-    if (barrier->SyncBefore == D3D12_BARRIER_SYNC_CLEAR_UNORDERED_ACCESS_VIEW ||
-        barrier->SyncBefore == D3D12_BARRIER_SYNC_ALL)
-    {
-        list->cmd.clear_uav_pending = false;
-    }
-
     vk_transition.srcStageMask = vk_stage_flags_from_d3d12_barrier(list, barrier->SyncBefore, barrier->AccessBefore);
     vk_transition.dstStageMask = vk_stage_flags_from_d3d12_barrier(list, barrier->SyncAfter, barrier->AccessAfter);
-    vk_transition.srcAccessMask = vk_access_flags_from_d3d12_barrier(list, barrier->SyncBefore, barrier->AccessBefore);
-    vk_transition.dstAccessMask = vk_access_flags_from_d3d12_barrier(list, barrier->SyncAfter, barrier->AccessAfter);
+    vk_transition.srcAccessMask = vk_access_flags_from_d3d12_barrier(list, barrier->AccessBefore);
+    vk_transition.dstAccessMask = vk_access_flags_from_d3d12_barrier(list, barrier->AccessAfter);
     vk_transition.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     vk_transition.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     vk_transition.image = resource->res.vk_image;
 
     if (!d3d12_device_supports_unified_layouts(list->device))
     {
-        /* All COPY operations on images do their own barriers, so we don't have to explicitly flush or invalidate.
-         * UAV Clear and Resolve use proper layout always, so let those go through. */
-        if (!(vk_transition.srcStageMask & (VK_PIPELINE_STAGE_2_CLEAR_BIT | VK_PIPELINE_STAGE_2_RESOLVE_BIT)))
-            vk_transition.srcAccessMask &= ~(VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_TRANSFER_READ_BIT);
-        if (!(vk_transition.dstStageMask & (VK_PIPELINE_STAGE_2_CLEAR_BIT | VK_PIPELINE_STAGE_2_RESOLVE_BIT)))
-            vk_transition.dstAccessMask &= ~(VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_TRANSFER_READ_BIT);
+        /* All COPY operations on images do their own barriers, so we don't have to explicitly flush or invalidate. */
+        vk_transition.srcAccessMask &= ~(VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_TRANSFER_READ_BIT);
+        vk_transition.dstAccessMask &= ~(VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_TRANSFER_READ_BIT);
     }
 
     vk_transition.srcStageMask = vk_sanitize_stage_flags_for_access(list, vk_transition.srcStageMask, vk_transition.srcAccessMask);
@@ -22651,7 +20900,7 @@ static void d3d12_command_list_process_enhanced_barrier_texture(struct d3d12_com
         vk_transition.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
     if (barrier->LayoutBefore == D3D12_BARRIER_LAYOUT_UNDEFINED && !(barrier->Flags & D3D12_TEXTURE_BARRIER_FLAG_DISCARD))
-        FIXME_ONCE("Transitioning away from UNDEFINED, but there is no DISCARD flag. Uncertain what is expected here. vkd3d-proton will force a discard.\n");
+        FIXME("Transitioning away from UNDEFINED, but there is no DISCARD flag. Uncertain what is expected here. vkd3d-proton will force a discard.\n");
 
     d3d12_command_list_barrier_batch_add_layout_transition(list, batch, &vk_transition);
 
@@ -22723,7 +20972,7 @@ static void STDMETHODCALLTYPE d3d12_command_list_Barrier(d3d12_command_list_ifac
 
     d3d12_command_list_flush_dgc_batch(list);
     d3d12_command_list_end_current_render_pass(list, false);
-    d3d12_command_list_end_transfer_batch(list, false);
+    d3d12_command_list_end_transfer_batch(list);
     d3d12_command_list_barrier_batch_init(&batch);
 
     d3d12_command_list_debug_mark_begin_region(list, "Barrier");
@@ -22977,8 +21226,6 @@ static CONST_VTBL struct ID3D12GraphicsCommandList10Vtbl d3d12_command_list_vtbl
 VKD3D_DECLARE_D3D12_GRAPHICS_COMMAND_LIST_VARIANT(default, default);
 VKD3D_DECLARE_D3D12_GRAPHICS_COMMAND_LIST_VARIANT(embedded_64_16, embedded_64_16);
 VKD3D_DECLARE_D3D12_GRAPHICS_COMMAND_LIST_VARIANT(embedded_32_16, embedded_32_16);
-VKD3D_DECLARE_D3D12_GRAPHICS_COMMAND_LIST_VARIANT(embedded_32_32, embedded_32_32);
-VKD3D_DECLARE_D3D12_GRAPHICS_COMMAND_LIST_VARIANT(embedded_128_32, embedded_128_32);
 VKD3D_DECLARE_D3D12_GRAPHICS_COMMAND_LIST_VARIANT(embedded_default, embedded_default);
 
 #ifdef VKD3D_ENABLE_PROFILING
@@ -22992,7 +21239,7 @@ static struct d3d12_command_list *unsafe_impl_from_ID3D12CommandList(ID3D12Comma
     return CONTAINING_RECORD(iface, struct d3d12_command_list, ID3D12GraphicsCommandList_iface);
 }
 
-extern CONST_VTBL struct ID3D12GraphicsCommandListExt2Vtbl d3d12_command_list_vkd3d_ext_vtbl;
+extern CONST_VTBL struct ID3D12GraphicsCommandListExt1Vtbl d3d12_command_list_vkd3d_ext_vtbl;
 
 static void d3d12_command_list_init_attachment_info(VkRenderingAttachmentInfo *attachment_info)
 {
@@ -23010,18 +21257,10 @@ static void d3d12_command_list_init_rendering_info(struct d3d12_device *device, 
     rendering_info->info.pColorAttachments = rendering_info->rtv;
 
     for (i = 0; i < D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT; i++)
-    {
         d3d12_command_list_init_attachment_info(&rendering_info->rtv[i]);
-        rendering_info->rtv_flags[i].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_FLAGS_INFO_KHR;
-    }
 
     d3d12_command_list_init_attachment_info(&rendering_info->depth);
     d3d12_command_list_init_attachment_info(&rendering_info->stencil);
-
-    rendering_info->info.flags = d3d12_device_get_rendering_flags(device);
-    if (device->device_info.maintenance_10_features.maintenance10)
-        for (i = 0; i < D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT; i++)
-            rendering_info->rtv[i].pNext = &rendering_info->rtv_flags[i];
 
     if (device->device_info.fragment_shading_rate_features.attachmentFragmentShadingRate)
     {
@@ -23057,25 +21296,15 @@ static HRESULT d3d12_command_list_init(struct d3d12_command_list *list, struct d
         {
             /* Specialize SetDescriptorTable calls since we need different code paths for those,
              * and they are quite hot. */
-            if (device->bindless_state.cbv_srv_uav_size == 64 &&
-                    device->bindless_state.sampler_size == 16)
+            if (device->bindless_state.descriptor_buffer_cbv_srv_uav_size == 64 &&
+                    device->bindless_state.descriptor_buffer_sampler_size == 16)
             {
                 list->ID3D12GraphicsCommandList_iface.lpVtbl = &d3d12_command_list_vtbl_embedded_64_16;
             }
-            else if (device->bindless_state.cbv_srv_uav_size == 32 &&
-                    device->bindless_state.sampler_size == 16)
+            else if (device->bindless_state.descriptor_buffer_cbv_srv_uav_size == 32 &&
+                    device->bindless_state.descriptor_buffer_sampler_size == 16)
             {
                 list->ID3D12GraphicsCommandList_iface.lpVtbl = &d3d12_command_list_vtbl_embedded_32_16;
-            }
-            else if (device->bindless_state.cbv_srv_uav_size == 32 &&
-                    device->bindless_state.sampler_size == 32)
-            {
-                list->ID3D12GraphicsCommandList_iface.lpVtbl = &d3d12_command_list_vtbl_embedded_32_32;
-            }
-            else if (device->bindless_state.cbv_srv_uav_size == 128 &&
-                    device->bindless_state.sampler_size == 32)
-            {
-                list->ID3D12GraphicsCommandList_iface.lpVtbl = &d3d12_command_list_vtbl_embedded_128_32;
             }
             else
             {
@@ -23146,9 +21375,7 @@ struct d3d12_command_list *d3d12_command_list_from_iface(ID3D12CommandList *ifac
     is_valid |=
             iface->lpVtbl == (struct ID3D12CommandListVtbl *)&d3d12_command_list_vtbl_default ||
             iface->lpVtbl == (struct ID3D12CommandListVtbl *)&d3d12_command_list_vtbl_embedded_64_16 ||
-            iface->lpVtbl == (struct ID3D12CommandListVtbl *)&d3d12_command_list_vtbl_embedded_32_32 ||
             iface->lpVtbl == (struct ID3D12CommandListVtbl *)&d3d12_command_list_vtbl_embedded_32_16 ||
-            iface->lpVtbl == (struct ID3D12CommandListVtbl *)&d3d12_command_list_vtbl_embedded_128_32 ||
             iface->lpVtbl == (struct ID3D12CommandListVtbl *)&d3d12_command_list_vtbl_embedded_default;
 
     if (!is_valid)
@@ -23165,7 +21392,7 @@ static inline struct d3d12_command_queue *impl_from_ID3D12CommandQueue(ID3D12Com
     return CONTAINING_RECORD(iface, struct d3d12_command_queue, ID3D12CommandQueue_iface);
 }
 
-VKD3D_METHODENTRY_NONSTATIC(HRESULT) d3d12_command_queue_QueryInterface(ID3D12CommandQueue *iface,
+HRESULT STDMETHODCALLTYPE d3d12_command_queue_QueryInterface(ID3D12CommandQueue *iface,
         REFIID riid, void **object)
 {
     struct d3d12_command_queue *command_queue = impl_from_ID3D12CommandQueue(iface);
@@ -23179,8 +21406,7 @@ VKD3D_METHODENTRY_NONSTATIC(HRESULT) d3d12_command_queue_QueryInterface(ID3D12Co
             || IsEqualGUID(riid, &IID_ID3D12Pageable)
             || IsEqualGUID(riid, &IID_ID3D12DeviceChild)
             || IsEqualGUID(riid, &IID_ID3D12Object)
-            || IsEqualGUID(riid, &IID_IUnknown)
-            || IsEqualGUID(riid, &IID_ID3D12ExtDummyInterface))
+            || IsEqualGUID(riid, &IID_IUnknown))
     {
         ID3D12CommandQueue_AddRef(iface);
         *object = iface;
@@ -23214,20 +21440,20 @@ VKD3D_METHODENTRY_NONSTATIC(HRESULT) d3d12_command_queue_QueryInterface(ID3D12Co
     return E_NOINTERFACE;
 }
 
-VKD3D_METHODENTRY_NONSTATIC(ULONG) d3d12_command_queue_AddRef(ID3D12CommandQueue *iface)
+ULONG STDMETHODCALLTYPE d3d12_command_queue_AddRef(ID3D12CommandQueue *iface)
 {
     struct d3d12_command_queue *command_queue = impl_from_ID3D12CommandQueue(iface);
-    unsigned int refcount = InterlockedIncrement(&command_queue->refcount);
+    ULONG refcount = InterlockedIncrement(&command_queue->refcount);
 
     TRACE("%p increasing refcount to %u.\n", command_queue, refcount);
 
     return refcount;
 }
 
-VKD3D_METHODENTRY_NONSTATIC(ULONG) d3d12_command_queue_Release(ID3D12CommandQueue *iface)
+ULONG STDMETHODCALLTYPE d3d12_command_queue_Release(ID3D12CommandQueue *iface)
 {
     struct d3d12_command_queue *command_queue = impl_from_ID3D12CommandQueue(iface);
-    unsigned int refcount = InterlockedDecrement(&command_queue->refcount);
+    ULONG refcount = InterlockedDecrement(&command_queue->refcount);
 
     TRACE("%p decreasing refcount to %u.\n", command_queue, refcount);
 
@@ -23238,18 +21464,13 @@ VKD3D_METHODENTRY_NONSTATIC(ULONG) d3d12_command_queue_Release(ID3D12CommandQueu
         d3d_destruction_notifier_free(&command_queue->destruction_notifier);
         vkd3d_private_store_destroy(&command_queue->private_store);
 
-        /* It's important to unmap the queue first, before we send the STOP signal.
-         * Once the STOP signal has been received by command queue thread,
-         * it will no longer process commands.
-         * This can be a problem for unrelated code like resource retaining
-         * that attempts to loop over mapped queues and send submits to them. */
-        d3d12_device_unmap_vkd3d_queue(command_queue->vkd3d_queue, command_queue);
-
         d3d12_command_queue_submit_stop(command_queue);
 
         pthread_join(command_queue->submission_thread, NULL);
         pthread_mutex_destroy(&command_queue->queue_lock);
         pthread_cond_destroy(&command_queue->queue_cond);
+
+        d3d12_device_unmap_vkd3d_queue(command_queue->vkd3d_queue, command_queue);
 
         vkd3d_fence_worker_stop(&command_queue->fence_worker, device);
 
@@ -23268,7 +21489,7 @@ VKD3D_METHODENTRY_NONSTATIC(ULONG) d3d12_command_queue_Release(ID3D12CommandQueu
     return refcount;
 }
 
-VKD3D_METHODENTRY(HRESULT) d3d12_command_queue_GetPrivateData(ID3D12CommandQueue *iface,
+static HRESULT STDMETHODCALLTYPE d3d12_command_queue_GetPrivateData(ID3D12CommandQueue *iface,
         REFGUID guid, UINT *data_size, void *data)
 {
     struct d3d12_command_queue *command_queue = impl_from_ID3D12CommandQueue(iface);
@@ -23278,7 +21499,7 @@ VKD3D_METHODENTRY(HRESULT) d3d12_command_queue_GetPrivateData(ID3D12CommandQueue
     return vkd3d_get_private_data(&command_queue->private_store, guid, data_size, data);
 }
 
-VKD3D_METHODENTRY(HRESULT) d3d12_command_queue_SetPrivateData(ID3D12CommandQueue *iface,
+static HRESULT STDMETHODCALLTYPE d3d12_command_queue_SetPrivateData(ID3D12CommandQueue *iface,
         REFGUID guid, UINT data_size, const void *data)
 {
     struct d3d12_command_queue *command_queue = impl_from_ID3D12CommandQueue(iface);
@@ -23289,7 +21510,7 @@ VKD3D_METHODENTRY(HRESULT) d3d12_command_queue_SetPrivateData(ID3D12CommandQueue
             NULL, NULL);
 }
 
-VKD3D_METHODENTRY(HRESULT) d3d12_command_queue_SetPrivateDataInterface(ID3D12CommandQueue *iface,
+static HRESULT STDMETHODCALLTYPE d3d12_command_queue_SetPrivateDataInterface(ID3D12CommandQueue *iface,
         REFGUID guid, const IUnknown *data)
 {
     struct d3d12_command_queue *command_queue = impl_from_ID3D12CommandQueue(iface);
@@ -23300,7 +21521,7 @@ VKD3D_METHODENTRY(HRESULT) d3d12_command_queue_SetPrivateDataInterface(ID3D12Com
             NULL, NULL);
 }
 
-VKD3D_METHODENTRY(HRESULT) d3d12_command_queue_GetDevice(ID3D12CommandQueue *iface, REFIID iid, void **device)
+static HRESULT STDMETHODCALLTYPE d3d12_command_queue_GetDevice(ID3D12CommandQueue *iface, REFIID iid, void **device)
 {
     struct d3d12_command_queue *command_queue = impl_from_ID3D12CommandQueue(iface);
 
@@ -23349,7 +21570,7 @@ static unsigned int vkd3d_get_tile_index_from_region(const struct d3d12_sparse_i
     return tile_index < sparse->tile_count ? tile_index : VKD3D_INVALID_TILE_INDEX;
 }
 
-VKD3D_METHODENTRY(void) d3d12_command_queue_UpdateTileMappings(ID3D12CommandQueue *iface,
+static void STDMETHODCALLTYPE d3d12_command_queue_UpdateTileMappings(ID3D12CommandQueue *iface,
         ID3D12Resource *resource, UINT region_count, const D3D12_TILED_RESOURCE_COORDINATE *region_coords,
         const D3D12_TILE_REGION_SIZE *region_sizes, ID3D12Heap *heap, UINT range_count,
         const D3D12_TILE_RANGE_FLAGS *range_flags,
@@ -23438,7 +21659,7 @@ VKD3D_METHODENTRY(void) d3d12_command_queue_UpdateTileMappings(ID3D12CommandQueu
                 range_flag = range_flags[range_idx];
 
                 if (range_flag == D3D12_TILE_RANGE_FLAG_NULL &&
-                        VKD3D_CONFIG_FLAG_IS_SET(SKIP_NULL_SPARSE_TILES) &&
+                        (vkd3d_config_flags & VKD3D_CONFIG_FLAG_SKIP_NULL_SPARSE_TILES) &&
                         command_queue->device->workarounds.amdgpu_broken_null_tile_mapping)
                 {
                     range_flag = D3D12_TILE_RANGE_FLAG_SKIP;
@@ -23506,7 +21727,7 @@ VKD3D_METHODENTRY(void) d3d12_command_queue_UpdateTileMappings(ID3D12CommandQueu
                     }
 
                     bind->vk_memory = memory_heap->allocation.device_allocation.vk_memory;
-                    bind->vk_offset = memory_heap->allocation.offset + memory_heap->allocation.realignment_offset + heap_offset;
+                    bind->vk_offset = memory_heap->allocation.offset + heap_offset;
                 }
             }
             else
@@ -23544,7 +21765,7 @@ fail:
     vkd3d_free(sub.bind_sparse.bind_infos);
 }
 
-VKD3D_METHODENTRY(void) d3d12_command_queue_CopyTileMappings(ID3D12CommandQueue *iface,
+static void STDMETHODCALLTYPE d3d12_command_queue_CopyTileMappings(ID3D12CommandQueue *iface,
         ID3D12Resource *dst_resource, const D3D12_TILED_RESOURCE_COORDINATE *dst_region_start_coordinate,
         ID3D12Resource *src_resource, const D3D12_TILED_RESOURCE_COORDINATE *src_region_start_coordinate,
         const D3D12_TILE_REGION_SIZE *region_size, D3D12_TILE_MAPPING_FLAGS flags)
@@ -23676,55 +21897,7 @@ out:
     return ret;
 }
 
-/* Returns the low-latency frame id to attribute submissions on this queue to. */
-static uint64_t d3d12_command_queue_latency_frame_id(struct d3d12_command_queue *command_queue)
-{
-    struct vkd3d_device_frame_markers *markers;
-    UINT64 best, id;
-    unsigned int i;
-
-    if (command_queue->out_of_band_queue_type == VK_OUT_OF_BAND_QUEUE_TYPE_RENDER_NV)
-        return vkd3d_atomic_uint64_load_explicit(
-                &command_queue->device->frame_markers.out_of_band_render, vkd3d_memory_order_acquire);
-
-    if (command_queue->out_of_band_queue_type == VK_OUT_OF_BAND_QUEUE_TYPE_PRESENT_NV)
-        return 0;
-
-    markers = &command_queue->device->frame_markers;
-    spinlock_acquire(&command_queue->device->low_latency_swapchain_spinlock);
-    if (markers->new_frame)
-    {
-        /* This is the first submit in a new frame. The application chooses
-         * the ID of the new frame, and we unfortunately do not know what ID
-         * they will choose next at the PRESENT_END delimiter.
-         *
-         * We will look at SIMULATION_START marker IDs to make this decision, as
-         * they are expected to be sent at the beginning of each frame ahead of any
-         * rendering. We'll track a ringbuffer of the most recent SIMULATION_START
-         * IDs to handle edge cases such as frame N+1's simulation beginning before
-         * frame N's first submission.
-         *
-         * We'll choose the smallest SIMULATION_START marker ID greater than the
-         * previous PRESENT_END marker's ID.
-         *
-         * If unknown, we fallback to incrementing the ID by 1, which matches
-         * the behaviour of most applications. */
-        best = 0;
-        for (i = 0; i < VKD3D_RECENT_SIM_STARTS_COUNT; ++i)
-        {
-            id = markers->recent_sim_starts[i];
-            if (id > markers->present_end && (best == 0 || id < best))
-                best = id;
-        }
-        markers->submission = best ? best : markers->present_end + 1;
-        markers->new_frame = false;
-    }
-    id = markers->submission;
-    spinlock_release(&command_queue->device->low_latency_swapchain_spinlock);
-    return id;
-}
-
-VKD3D_METHODENTRY(void) d3d12_command_queue_ExecuteCommandLists(ID3D12CommandQueue *iface,
+static void STDMETHODCALLTYPE d3d12_command_queue_ExecuteCommandLists(ID3D12CommandQueue *iface,
         UINT command_list_count, ID3D12CommandList * const *command_lists)
 {
     struct d3d12_command_queue *command_queue = impl_from_ID3D12CommandQueue(iface);
@@ -23733,10 +21906,12 @@ VKD3D_METHODENTRY(void) d3d12_command_queue_ExecuteCommandLists(ID3D12CommandQue
     size_t num_transitions, num_command_buffers;
     VkCommandBufferSubmitInfo *buffers, *buffer;
     struct d3d12_command_allocator **allocators;
+    struct d3d12_resource **retained_resources;
     struct d3d12_command_queue_submission sub;
     unsigned int indirect_barrier_hoist_index;
     unsigned int fixup_sink_begin_index;
     struct d3d12_command_list *cmd_list;
+    size_t num_retained_resources = 0;
 #ifdef VKD3D_ENABLE_BREADCRUMBS
     unsigned int *breadcrumb_indices;
 #endif
@@ -23819,6 +21994,19 @@ VKD3D_METHODENTRY(void) d3d12_command_queue_ExecuteCommandLists(ID3D12CommandQue
                         cmd_list, d3d12_command_list_from_iface(command_lists[i + 1]), hazard_query_resets,
                         i >= indirect_barrier_hoist_index)))
             num_command_buffers++;
+
+        num_retained_resources += cmd_list->retained_resources_count;
+        for (iter = 0; iter < cmd_list->retained_resources_count; iter++)
+        {
+            if (vkd3d_atomic_uint32_load_explicit(
+                    &cmd_list->retained_resources[iter]->internal_refcount, vkd3d_memory_order_relaxed) == 0)
+            {
+                ERR("Trying to execute resource which has already been destroyed. This will likely hang GPU.\n");
+                /* TODO: We could mark device as lost, or just ignore this submit. Hard to tell
+                 * what the appropriate action is. Future workarounds may have to guide our decision here. */
+                return;
+            }
+        }
     }
 
     if (!(buffers = vkd3d_calloc(num_command_buffers, sizeof(*buffers))))
@@ -23841,11 +22029,17 @@ VKD3D_METHODENTRY(void) d3d12_command_queue_ExecuteCommandLists(ID3D12CommandQue
     }
 
 #ifdef VKD3D_ENABLE_BREADCRUMBS
-    if (VKD3D_CONFIG_FLAG_IS_SET(BREADCRUMBS_TRACE))
+    if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_BREADCRUMBS_TRACE)
         breadcrumb_indices = vkd3d_malloc(sizeof(unsigned int) * command_list_count);
     else
         breadcrumb_indices = NULL;
 #endif
+
+    if (num_retained_resources)
+        retained_resources = vkd3d_malloc(sizeof(*retained_resources) * num_retained_resources);
+    else
+        retained_resources = NULL;
+    num_retained_resources = 0;
 
     timeline_cookie = vkd3d_queue_timeline_trace_register_execute(
             &command_queue->device->queue_timeline_trace,
@@ -23917,6 +22111,7 @@ VKD3D_METHODENTRY(void) d3d12_command_queue_ExecuteCommandLists(ID3D12CommandQue
             vkd3d_free(allocators);
             vkd3d_free(buffers);
             vkd3d_free(cmd_cost);
+            vkd3d_free(retained_resources);
 #ifdef VKD3D_ENABLE_BREADCRUMBS
             vkd3d_free(breadcrumb_indices);
 #endif
@@ -24050,11 +22245,14 @@ VKD3D_METHODENTRY(void) d3d12_command_queue_ExecuteCommandLists(ID3D12CommandQue
 
         /* Submission logic for IB fallbacks seems to have exposed something ... very dodgy in RADV. */
         if (cmd_list->cmd.uses_dgc_compute_in_async_compute &&
-                !VKD3D_CONFIG_FLAG_IS_SET(SKIP_DRIVER_WORKAROUNDS) &&
+                !(vkd3d_config_flags & VKD3D_CONFIG_FLAG_SKIP_DRIVER_WORKAROUNDS) &&
                 command_queue->device->device_info.vulkan_1_2_properties.driverID == VK_DRIVER_ID_MESA_RADV)
         {
             sub.execute.split_submission = true;
         }
+
+        for (iter = 0; iter < cmd_list->retained_resources_count; iter++)
+            retained_resources[num_retained_resources++] = cmd_list->retained_resources[iter];
 
 #ifdef VKD3D_ENABLE_BREADCRUMBS
         if (breadcrumb_indices)
@@ -24063,7 +22261,7 @@ VKD3D_METHODENTRY(void) d3d12_command_queue_ExecuteCommandLists(ID3D12CommandQue
         /* For a grouped submission, it's useful to know about the full submission when reporting failures.
          * Synchronization issues can occur between command lists.
          * It's not allowed to submit the same command list concurrently, so this should be safe. */
-        if (VKD3D_CONFIG_FLAG_IS_SET(BREADCRUMBS))
+        if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_BREADCRUMBS)
         {
             vkd3d_breadcrumb_tracer_link_submission(cmd_list,
                     i ? unsafe_impl_from_ID3D12CommandList(command_lists[i - 1]) : NULL,
@@ -24121,9 +22319,13 @@ VKD3D_METHODENTRY(void) d3d12_command_queue_ExecuteCommandLists(ID3D12CommandQue
     sub.execute.cmd_count = cmd_submit_count;
     sub.execute.command_allocators = allocators;
     sub.execute.num_command_allocators = command_list_count;
+    sub.execute.retained_resources = retained_resources;
+    sub.execute.num_retained_resources = num_retained_resources;
     for (i = 0; i < command_list_count; i++)
         d3d12_command_allocator_inc_ref(allocators[i]);
-    sub.execute.low_latency_frame_id = d3d12_command_queue_latency_frame_id(command_queue);
+    for (i = 0; i < num_retained_resources; i++)
+        d3d12_resource_incref(retained_resources[i]);
+    sub.execute.low_latency_frame_id = command_queue->device->frame_markers.render;
 #ifdef VKD3D_ENABLE_BREADCRUMBS
     sub.execute.breadcrumb_indices = breadcrumb_indices;
     sub.execute.breadcrumb_indices_count = breadcrumb_indices ? command_list_count : 0;
@@ -24132,26 +22334,26 @@ VKD3D_METHODENTRY(void) d3d12_command_queue_ExecuteCommandLists(ID3D12CommandQue
     d3d12_command_queue_add_submission(command_queue, &sub);
 }
 
-VKD3D_METHODENTRY(void) d3d12_command_queue_SetMarker(ID3D12CommandQueue *iface,
+static void STDMETHODCALLTYPE d3d12_command_queue_SetMarker(ID3D12CommandQueue *iface,
         UINT metadata, const void *data, UINT size)
 {
     FIXME("iface %p, metadata %#x, data %p, size %u stub!\n",
             iface, metadata, data, size);
 }
 
-VKD3D_METHODENTRY(void) d3d12_command_queue_BeginEvent(ID3D12CommandQueue *iface,
+static void STDMETHODCALLTYPE d3d12_command_queue_BeginEvent(ID3D12CommandQueue *iface,
         UINT metadata, const void *data, UINT size)
 {
     FIXME("iface %p, metatdata %#x, data %p, size %u stub!\n",
             iface, metadata, data, size);
 }
 
-VKD3D_METHODENTRY(void) d3d12_command_queue_EndEvent(ID3D12CommandQueue *iface)
+static void STDMETHODCALLTYPE d3d12_command_queue_EndEvent(ID3D12CommandQueue *iface)
 {
     FIXME("iface %p stub!\n", iface);
 }
 
-VKD3D_METHODENTRY(HRESULT) d3d12_command_queue_Signal(ID3D12CommandQueue *iface,
+static HRESULT STDMETHODCALLTYPE d3d12_command_queue_Signal(ID3D12CommandQueue *iface,
         ID3D12Fence *fence_iface, UINT64 value)
 {
     struct d3d12_command_queue *command_queue = impl_from_ID3D12CommandQueue(iface);
@@ -24168,7 +22370,7 @@ VKD3D_METHODENTRY(HRESULT) d3d12_command_queue_Signal(ID3D12CommandQueue *iface,
     return S_OK;
 }
 
-VKD3D_METHODENTRY(HRESULT) d3d12_command_queue_Wait(ID3D12CommandQueue *iface,
+static HRESULT STDMETHODCALLTYPE d3d12_command_queue_Wait(ID3D12CommandQueue *iface,
         ID3D12Fence *fence_iface, UINT64 value)
 {
     struct d3d12_command_queue *command_queue = impl_from_ID3D12CommandQueue(iface);
@@ -24193,7 +22395,7 @@ VKD3D_METHODENTRY(HRESULT) d3d12_command_queue_Wait(ID3D12CommandQueue *iface,
     return S_OK;
 }
 
-VKD3D_METHODENTRY(HRESULT) d3d12_command_queue_GetTimestampFrequency(ID3D12CommandQueue *iface,
+static HRESULT STDMETHODCALLTYPE d3d12_command_queue_GetTimestampFrequency(ID3D12CommandQueue *iface,
         UINT64 *frequency)
 {
     struct d3d12_command_queue *command_queue = impl_from_ID3D12CommandQueue(iface);
@@ -24212,17 +22414,16 @@ VKD3D_METHODENTRY(HRESULT) d3d12_command_queue_GetTimestampFrequency(ID3D12Comma
     return S_OK;
 }
 
-VKD3D_METHODENTRY(HRESULT) d3d12_command_queue_GetClockCalibration(ID3D12CommandQueue *iface,
+static HRESULT STDMETHODCALLTYPE d3d12_command_queue_GetClockCalibration(ID3D12CommandQueue *iface,
         UINT64 *gpu_timestamp, UINT64 *cpu_timestamp)
 {
+#ifdef _WIN32
     struct d3d12_command_queue *command_queue = impl_from_ID3D12CommandQueue(iface);
     struct d3d12_device *device = command_queue->device;
     const struct vkd3d_vk_device_procs *vk_procs = &device->vk_procs;
     VkCalibratedTimestampInfoEXT timestamp_infos[2], *timestamp_info;
     uint64_t max_deviation, timestamps[2];
-#ifdef _WIN32
     LARGE_INTEGER qpc_begin, qpc_end;
-#endif
     uint32_t count = 0;
     VkResult vr;
 
@@ -24255,22 +22456,10 @@ VKD3D_METHODENTRY(HRESULT) d3d12_command_queue_GetClockCalibration(ID3D12Command
         timestamp_info->sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_KHR;
         timestamp_info->timeDomain = VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_KHR;
     }
-    else if (device->device_info.time_domains & VKD3D_TIME_DOMAIN_CLOCK_MONOTONIC)
-    {
-        timestamp_info = &timestamp_infos[count++];
-        timestamp_info->sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_KHR;
-        timestamp_info->timeDomain = VK_TIME_DOMAIN_CLOCK_MONOTONIC_KHR;
-    }
     else
     {
-#ifdef _WIN32
         FIXME_ONCE("QPC domain not supported by device, timestamp calibration may be inaccurate.\n");
         QueryPerformanceCounter(&qpc_begin);
-#else
-        /* This is mostly relevant for test code, so we can be a little loose. */
-        FIXME_ONCE("MONOTONIC domain not supported by device.\n");
-        return E_FAIL;
-#endif
     }
 
     if ((vr = VK_CALL(vkGetCalibratedTimestampsKHR(device->vk_device,
@@ -24280,20 +22469,24 @@ VKD3D_METHODENTRY(HRESULT) d3d12_command_queue_GetClockCalibration(ID3D12Command
         return hresult_from_vk_result(vr);
     }
 
-#ifdef _WIN32
     if (!(device->device_info.time_domains & VKD3D_TIME_DOMAIN_QPC))
     {
         QueryPerformanceCounter(&qpc_end);
         timestamps[1] = qpc_begin.QuadPart + (qpc_end.QuadPart - qpc_begin.QuadPart) / 2;
     }
-#endif
 
     *gpu_timestamp = timestamps[0];
     *cpu_timestamp = timestamps[1];
     return S_OK;
+#else
+    FIXME("Calibrated timestamps not supported.\n");
+    *gpu_timestamp = 0;
+    *cpu_timestamp = 0;
+    return S_OK;
+#endif
 }
 
-VKD3D_METHODENTRY(D3D12_COMMAND_QUEUE_DESC *) d3d12_command_queue_GetDesc(ID3D12CommandQueue *iface,
+static D3D12_COMMAND_QUEUE_DESC * STDMETHODCALLTYPE d3d12_command_queue_GetDesc(ID3D12CommandQueue *iface,
         D3D12_COMMAND_QUEUE_DESC *desc)
 {
     struct d3d12_command_queue *command_queue = impl_from_ID3D12CommandQueue(iface);
@@ -24333,19 +22526,16 @@ static CONST_VTBL struct ID3D12CommandQueueVtbl d3d12_command_queue_vtbl =
     d3d12_command_queue_GetDesc,
 };
 
-static bool d3d12_command_queue_needs_cpu_waits(struct d3d12_command_queue *command_queue)
+static bool d3d12_command_queue_needs_cpu_waits_locked(struct d3d12_command_queue *command_queue)
 {
     uint64_t current_time_ns, queue_submit_time_ns;
-    bool ret = false;
     unsigned int i;
 
-    if (VKD3D_CONFIG_FLAG_IS_SET(NO_STAGGERED_SUBMIT))
+    if (command_queue->vkd3d_queue->command_queue_count == 1)
         return false;
 
-    pthread_mutex_lock(&command_queue->vkd3d_queue->command_queue_mutex);
-
-    if (command_queue->vkd3d_queue->command_queue_count == 1)
-        goto unlock;
+    if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_NO_STAGGERED_SUBMIT)
+        return false;
 
     current_time_ns = vkd3d_get_current_time_ns();
 
@@ -24356,36 +22546,15 @@ static bool d3d12_command_queue_needs_cpu_waits(struct d3d12_command_queue *comm
         if (q == command_queue)
             continue;
 
-        /* If different queue families have to share the same VkQueue somehow,
-         * we're likely in a situation where we really cannot afford GPU bubbles.
-         * Mostly relevant on Turnip which only exposes one VkQueue
-         * that everyone have to share.
-         * Another scenario where this comes up is RADV where transfer queue are not exposed
-         * and we're oversubscribed for COMPUTE + COPY. Bubbles are not very serious on async queues,
-         * however, the graphics queue is generally the critical path for performance.
-         * Only consider CPU wait path on graphics queue if multiple graphics queues are fighting each other.
-         */
-        if ((q->desc.Type != D3D12_COMMAND_LIST_TYPE_DIRECT ||
-                command_queue->desc.Type != D3D12_COMMAND_LIST_TYPE_DIRECT) &&
-            (command_queue->vkd3d_queue->vk_queue_flags & VK_QUEUE_GRAPHICS_BIT))
-        {
-            continue;
-        }
-
         /* If any other virtual queue is actively doing submissions, resolve waits
          * on the CPU in order to avoid delays caused by false dependencies. */
         queue_submit_time_ns = vkd3d_atomic_uint64_load_explicit(&q->last_submission_time_ns, vkd3d_memory_order_relaxed);
 
         if (queue_submit_time_ns + VKD3D_QUEUE_INACTIVE_THRESHOLD_NS > current_time_ns)
-        {
-            ret = true;
-            goto unlock;
-        }
+            return true;
     }
 
-unlock:
-    pthread_mutex_unlock(&command_queue->vkd3d_queue->command_queue_mutex);
-    return ret;
+    return false;
 }
 
 static void d3d12_command_queue_destroy_serializing_semaphore(struct d3d12_command_queue *command_queue)
@@ -24421,7 +22590,7 @@ static void vkd3d_waiting_fence_ensure_signal_order(
     if (complete)
     {
         d3d12_fence_lock(fence);
-        d3d12_fence_wait_until_signal_is_complete_locked(fence, info->update_count);
+        d3d12_fence_wait_until_signal_count_reaches_locked(fence, info->update_count);
         d3d12_fence_unlock(fence);
     }
 
@@ -24468,7 +22637,7 @@ static void d3d12_command_queue_push_fence_waits_to_worker(struct d3d12_command_
         fence_wait->fence = NULL;
 
         if (FAILED(hr = vkd3d_enqueue_timeline_semaphore(worker, &fence_info, &cookie)))
-            ERR("Failed to enqueue timeline semaphore, hr %#x.\n", (int)hr);
+            ERR("Failed to enqueue timeline semaphore, hr %#x.\n", hr);
     }
 }
 
@@ -24646,7 +22815,8 @@ static void d3d12_command_queue_flush_waiters(struct d3d12_command_queue *comman
         submit_info.signalSemaphoreInfoCount = 1;
         submit_info.pSignalSemaphoreInfos = &signal_semaphore;
 
-        if ((vr = VK_CALL(vkQueueSubmit2(vk_queue, 1, &submit_info, VK_NULL_HANDLE))))
+        if ((vr = VK_CALL(vkQueueSubmit2(vk_queue, 1, &submit_info,
+            vkd3d_queue_get_signal_fence_proxy_locked(command_queue->vkd3d_queue)))))
             ERR("Failed to submit semaphore waits, vr %d.\n", vr);
 
         if (vr == VK_SUCCESS && (wait_flags & VKD3D_WAIT_SEMAPHORES_SERIALIZING))
@@ -24697,7 +22867,7 @@ static void d3d12_command_queue_ensure_fence_signal_order(
     d3d12_fence_inc_ref(fence);
 
     if (FAILED(hr = vkd3d_enqueue_timeline_semaphore(&command_queue->fence_worker, &fence_info, NULL)))
-        ERR("Failed to enqueue timeline semaphore, hr %#x.\n", (int)hr);
+        ERR("Failed to enqueue timeline semaphore, hr %#x.\n", hr);
 }
 
 static void d3d12_command_queue_wait(struct d3d12_command_queue *command_queue,
@@ -24707,8 +22877,11 @@ static void d3d12_command_queue_wait(struct d3d12_command_queue *command_queue,
     struct vkd3d_queue_timeline_trace_cookie cookie;
     struct d3d12_fence_value fence_value;
     VkSemaphoreWaitInfo wait_info;
+    struct vkd3d_queue *queue;
     bool has_wait;
     VkResult vr;
+
+    queue = command_queue->vkd3d_queue;
 
     assert(!fence->timeline_semaphore);
 
@@ -24736,8 +22909,12 @@ static void d3d12_command_queue_wait(struct d3d12_command_queue *command_queue,
     TRACE("queue %p, fence %p, value %#"PRIx64", vk_semaphore %p, vk_semaphore_value %#"PRIx64".\n", command_queue,
             fence, value, fence_value.vk_semaphore, fence_value.vk_semaphore_value);
 
-    if (d3d12_command_queue_needs_cpu_waits(command_queue))
+    pthread_mutex_lock(&queue->mutex);
+
+    if (d3d12_command_queue_needs_cpu_waits_locked(command_queue))
     {
+        pthread_mutex_unlock(&queue->mutex);
+
         d3d12_command_queue_ensure_fence_signal_order(command_queue, fence, fence_value.update_count);
 
         memset(&wait_info, 0, sizeof(wait_info));
@@ -24753,6 +22930,8 @@ static void d3d12_command_queue_wait(struct d3d12_command_queue *command_queue,
     }
     else
     {
+        pthread_mutex_unlock(&queue->mutex);
+
         /* Defer the wait to next submit.
          * This is also important, since we have to hold on to a private reference on the fence
          * until we have observed the wait to actually complete. */
@@ -24794,7 +22973,7 @@ static void d3d12_command_queue_signal(struct d3d12_command_queue *command_queue
     d3d12_fence_inc_ref(signal_info->fence);
 
     if (FAILED(hr = vkd3d_enqueue_timeline_semaphore(&command_queue->fence_worker, &fence_info, &cookie)))
-        ERR("Failed to enqueue timeline semaphore, hr #%x.\n", (int)hr);
+        ERR("Failed to enqueue timeline semaphore, hr #%x.\n", hr);
 
     d3d12_fence_update_pending_value_locked_and_broadcast(fence);
     d3d12_fence_unlock(fence);
@@ -24824,7 +23003,7 @@ static void d3d12_command_queue_wait_shared(struct d3d12_command_queue *command_
     wait_info.semaphoreCount = 1;
     wait_info.pValues = &value;
     vr = VK_CALL(vkWaitSemaphores(device->vk_device, &wait_info, UINT64_MAX));
-    VKD3D_DEVICE_REPORT_FAULT_AND_BREADCRUMB_IF(device, vr == VK_ERROR_DEVICE_LOST, vr);
+    VKD3D_DEVICE_REPORT_FAULT_AND_BREADCRUMB_IF(device, vr == VK_ERROR_DEVICE_LOST);
 }
 
 static void d3d12_command_queue_signal_shared(struct d3d12_command_queue *command_queue,
@@ -24874,7 +23053,8 @@ static void d3d12_command_queue_signal_shared(struct d3d12_command_queue *comman
         signal_semaphore_info.value = vkd3d_queue->submission_timeline_count;
         signal_semaphore_info.semaphore = vkd3d_queue->submission_timeline;
 
-        vr = VK_CALL(vkQueueSubmit2(vk_queue, 1, &submit_info, VK_NULL_HANDLE));
+        vr = VK_CALL(vkQueueSubmit2(vk_queue, 1, &submit_info,
+                vkd3d_queue_get_signal_fence_proxy_locked(vkd3d_queue)));
         command_queue->last_submission_timeline_value = vkd3d_queue->submission_timeline_count;
     }
 
@@ -24886,7 +23066,7 @@ static void d3d12_command_queue_signal_shared(struct d3d12_command_queue *comman
         return;
     }
 
-    VKD3D_DEVICE_REPORT_FAULT_AND_BREADCRUMB_IF(command_queue->device, vr == VK_ERROR_DEVICE_LOST, vr);
+    VKD3D_DEVICE_REPORT_FAULT_AND_BREADCRUMB_IF(command_queue->device, vr == VK_ERROR_DEVICE_LOST);
 
     memset(&fence_info, 0, sizeof(fence_info));
     fence_info.vk_semaphore = vkd3d_queue->submission_timeline;
@@ -24900,41 +23080,10 @@ static void d3d12_command_queue_signal_shared(struct d3d12_command_queue *comman
 
     if (FAILED(hr = vkd3d_enqueue_timeline_semaphore(&command_queue->fence_worker, &fence_info, NULL)))
     {
-        ERR("Failed to enqueue timeline semaphore, hr #%x.\n", (int)hr);
+        ERR("Failed to enqueue timeline semaphore, hr #%x.\n", hr);
     }
 
     /* We should probably trigger DEVICE_REMOVED if we hit any errors in the submission thread. */
-}
-
-struct vkd3d_waiting_fence_defer_release_resource_info
-{
-    struct d3d12_resource *resource;
-};
-
-static void vkd3d_waiting_fence_release_resource(struct vkd3d_fence_worker *worker,
-        void *userdata, bool complete)
-{
-    struct vkd3d_waiting_fence_defer_release_resource_info *info = userdata;
-    d3d12_resource_decref(info->resource);
-}
-
-static void d3d12_command_queue_defer_release_resource(struct d3d12_command_queue *command_queue,
-                                                       struct d3d12_resource *resource)
-{
-    struct vkd3d_waiting_fence_defer_release_resource_info *release_info;
-    struct vkd3d_fence_wait_info fence_info;
-    HRESULT hr;
-
-    memset(&fence_info, 0, sizeof(fence_info));
-    fence_info.vk_semaphore = command_queue->vkd3d_queue->submission_timeline;
-    fence_info.vk_semaphore_value = command_queue->last_submission_timeline_value;
-
-    release_info = vkd3d_waiting_fence_set_callback(&fence_info,
-            &vkd3d_waiting_fence_release_resource, sizeof(*release_info));
-    release_info->resource = resource;
-
-    if (FAILED(hr = vkd3d_enqueue_timeline_semaphore(&command_queue->fence_worker, &fence_info, NULL)))
-        ERR("Failed to enqueue timeline semaphore, hr #%x.\n", (int)hr);
 }
 
 #define VKD3D_COMMAND_QUEUE_NUM_TRANSITION_BUFFERS 16
@@ -25020,7 +23169,7 @@ static void d3d12_command_queue_transition_pool_wait(struct d3d12_command_queue_
     wait_info.semaphoreCount = 1;
     wait_info.pValues = &value;
     vr = VK_CALL(vkWaitSemaphores(device->vk_device, &wait_info, ~(uint64_t)0));
-    VKD3D_DEVICE_REPORT_FAULT_AND_BREADCRUMB_IF(device, vr == VK_ERROR_DEVICE_LOST, vr);
+    VKD3D_DEVICE_REPORT_FAULT_AND_BREADCRUMB_IF(device, vr == VK_ERROR_DEVICE_LOST);
 }
 
 static void d3d12_command_queue_transition_pool_deinit(struct d3d12_command_queue_transition_pool *pool,
@@ -25112,8 +23261,8 @@ static void d3d12_command_queue_transition_pool_build(struct d3d12_command_queue
     pool->barriers_count = 0;
     pool->query_heaps_count = 0;
 
-	qa_checks = VKD3D_CONFIG_FLAG_IS_SET(INSTRUCTION_QA_CHECKS) ||
-		VKD3D_CONFIG_FLAG_IS_SET(DESCRIPTOR_QA_CHECKS);
+    qa_checks = (vkd3d_config_flags & (VKD3D_CONFIG_FLAG_INSTRUCTION_QA_CHECKS |
+            VKD3D_CONFIG_FLAG_DESCRIPTOR_QA_CHECKS)) != 0;
 
     if (!qa_checks && !count)
     {
@@ -25173,20 +23322,20 @@ static void d3d12_command_queue_transition_pool_build(struct d3d12_command_queue
     dep_info.imageMemoryBarrierCount = pool->barriers_count;
     dep_info.pImageMemoryBarriers = pool->barriers;
 
-    if (VKD3D_CONFIG_FLAG_IS_SET(INSTRUCTION_QA_CHECKS))
+    if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_INSTRUCTION_QA_CHECKS)
     {
         /* Every ExecuteCommandLists is an implicit barrier, so flush the bloom filter automatically. */
         uint32_t value = vkd3d_descriptor_debug_clear_bloom_filter(
                 device->descriptor_qa_global_info, device, cmd);
-        if (VKD3D_CONFIG_FLAG_IS_SET(BREADCRUMBS_TRACE))
+        if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_BREADCRUMBS_TRACE)
             INFO("QA: Updating sync-val iteration to %u (#%x) between submission.\n", value, value);
     }
-    else if (VKD3D_CONFIG_FLAG_IS_SET(DESCRIPTOR_QA_CHECKS))
+    else if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_DESCRIPTOR_QA_CHECKS)
     {
         /* Every ExecuteCommandLists is an implicit barrier, so flush the bloom filter automatically. */
         uint32_t value = vkd3d_descriptor_debug_update_va_timestamp(
                 device->descriptor_qa_global_info, device, cmd);
-        if (VKD3D_CONFIG_FLAG_IS_SET(BREADCRUMBS_TRACE))
+        if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_BREADCRUMBS_TRACE)
             INFO("QA: Updating VA timestamp to %u (#%x) between submission.\n", value, value);
     }
 
@@ -25202,7 +23351,7 @@ static void d3d12_command_queue_transition_pool_build(struct d3d12_command_queue
 }
 
 static VkResult d3d12_command_queue_submit_split_locked(struct d3d12_device *device,
-        VkQueue vk_queue, uint32_t num_submits, const VkSubmitInfo2 *submits)
+        VkQueue vk_queue, uint32_t num_submits, const VkSubmitInfo2 *submits, VkFence vk_fence)
 {
     /* Ugly workaround when needed. Never submit more than one command buffer at a time. */
     const struct vkd3d_vk_device_procs *vk_procs = &device->vk_procs;
@@ -25211,6 +23360,7 @@ static VkResult d3d12_command_queue_submit_split_locked(struct d3d12_device *dev
     uint32_t submit_index;
     uint32_t cmd_index;
     uint32_t num_cmds;
+    bool signal_fence;
     VkResult vr;
 
     memset(&split_submission, 0, sizeof(split_submission));
@@ -25218,6 +23368,7 @@ static VkResult d3d12_command_queue_submit_split_locked(struct d3d12_device *dev
 
     for (submit_index = 0; submit_index < num_submits; submit_index++)
     {
+        signal_fence = submit_index + 1 == num_submits;
         input_submission = &submits[submit_index];
 
         if (input_submission->commandBufferInfoCount > 1)
@@ -25236,14 +23387,16 @@ static VkResult d3d12_command_queue_submit_split_locked(struct d3d12_device *dev
                 split_submission.waitSemaphoreInfoCount =
                         cmd_index == 0 ? input_submission->waitSemaphoreInfoCount : 0;
 
-                if ((vr = VK_CALL(vkQueueSubmit2(vk_queue, 1, &split_submission, VK_NULL_HANDLE))) < 0)
+                if ((vr = VK_CALL(vkQueueSubmit2(vk_queue, 1, &split_submission,
+                        signal_fence && cmd_index + 1 == num_cmds ? vk_fence : VK_NULL_HANDLE))) < 0)
                 {
                     ERR("Failed to submit queue(s), vr %d.\n", vr);
                     return vr;
                 }
             }
         }
-        else if ((vr = VK_CALL(vkQueueSubmit2(vk_queue, 1, input_submission, VK_NULL_HANDLE))) < 0)
+        else if ((vr = VK_CALL(vkQueueSubmit2(vk_queue, 1, input_submission,
+                signal_fence ? vk_fence : VK_NULL_HANDLE))) < 0)
         {
             ERR("Failed to submit queue(s), vr %d.\n", vr);
             return vr;
@@ -25269,24 +23422,21 @@ static void d3d12_command_queue_wait_staggered_submission(struct d3d12_command_q
         ERR("Failed to wait for semaphore, vr %d.\n", vr);
 }
 
-static bool d3d12_command_queue_needs_staggered_submissions(struct d3d12_command_queue *command_queue)
+static bool d3d12_command_queue_needs_staggered_submissions_locked(struct d3d12_command_queue *command_queue)
 {
     uint64_t current_time_ns, queue_submit_time_ns;
     int32_t max_priority;
-    bool ret = false;
     unsigned int i;
 
-    if (VKD3D_CONFIG_FLAG_IS_SET(NO_STAGGERED_SUBMIT))
+    if (command_queue->vkd3d_queue->command_queue_count == 1)
+        return false;
+
+    if (vkd3d_config_flags & VKD3D_CONFIG_FLAG_NO_STAGGERED_SUBMIT)
         return false;
 
     /* Cannot meaningfully stagger submits if we're doing suspend resume style render passes. */
     if (command_queue->device->workarounds.tiler_suspend_resume)
         return false;
-
-    pthread_mutex_lock(&command_queue->vkd3d_queue->command_queue_mutex);
-
-    if (command_queue->vkd3d_queue->command_queue_count == 1)
-        goto unlock;
 
     current_time_ns = vkd3d_get_current_time_ns();
 
@@ -25312,15 +23462,12 @@ static bool d3d12_command_queue_needs_staggered_submissions(struct d3d12_command
              * devices with one queue family, or when setting single_queue. */
             if (q->desc.Type != command_queue->desc.Type &&
                     (q->desc.Type == D3D12_COMMAND_LIST_TYPE_DIRECT || command_queue->desc.Type == D3D12_COMMAND_LIST_TYPE_DIRECT))
-            {
-                ret = true;
-                goto unlock;
-            }
+                return true;
         }
     }
 
     if (command_queue->desc.Priority == max_priority)
-        goto unlock;
+        return false;
 
     /* Otherwise, submit command buffers from this queue one by one in order
      * to allow work from an active high-priority queue to get scheduled sooner.
@@ -25328,11 +23475,7 @@ static bool d3d12_command_queue_needs_staggered_submissions(struct d3d12_command
      * one graphics queue, since UI composition and presentation are submitted
      * mid-frame without any explicit synchronization between the two graphics
      * queues. */
-    ret = true;
-
-unlock:
-    pthread_mutex_unlock(&command_queue->vkd3d_queue->command_queue_mutex);
-    return ret;
+    return true;
 }
 
 static void d3d12_command_queue_execute(struct d3d12_command_queue *command_queue,
@@ -25355,8 +23498,10 @@ static void d3d12_command_queue_execute(struct d3d12_command_queue *command_queu
     VkSubmitInfo2 submit_desc[2], *submit;
     bool need_fallback_wait_semaphore;
     VKD3D_UNUSED bool debug_capture;
+    uint64_t consumed_present_id;
     bool serialize_transition;
     uint32_t num_submits;
+    VkFence proxy_fence;
     VkQueue vk_queue;
     unsigned int i;
     bool fallback;
@@ -25366,14 +23511,15 @@ static void d3d12_command_queue_execute(struct d3d12_command_queue *command_queu
     TRACE("queue %p, command_list_count %u, command_lists %p.\n",
           command_queue, exec->cmd_count, exec->cmd);
 
-    stagger_submissions = d3d12_command_queue_needs_staggered_submissions(command_queue);
-
     if (!(vk_queue = vkd3d_queue_acquire(vkd3d_queue)))
     {
         ERR("Failed to acquire queue %p.\n", vkd3d_queue);
         for (i = 0; i < exec->num_command_allocators; i++)
             d3d12_command_allocator_dec_ref(exec->command_allocators[i]);
+        for (i = 0; i < exec->num_retained_resources; i++)
+            d3d12_resource_decref_retained(exec->retained_resources[i]);
         vkd3d_free(exec->command_allocators);
+        vkd3d_free(exec->retained_resources);
         vkd3d_queue_timeline_trace_complete_execute(&command_queue->device->queue_timeline_trace,
                 NULL, exec->timeline_cookie);
         return;
@@ -25390,6 +23536,8 @@ static void d3d12_command_queue_execute(struct d3d12_command_queue *command_queu
     else
         debug_capture = false;
 #endif
+
+    stagger_submissions = d3d12_command_queue_needs_staggered_submissions_locked(command_queue);
 
     if (command_queue->stagger_submissions != stagger_submissions)
     {
@@ -25534,9 +23682,15 @@ static void d3d12_command_queue_execute(struct d3d12_command_queue *command_queu
             spinlock_acquire(&command_queue->device->low_latency_swapchain_spinlock);
             if ((low_latency_swapchain = command_queue->device->swapchain_info.low_latency_swapchain))
                 dxgi_vk_swap_chain_incref(low_latency_swapchain);
+            consumed_present_id = command_queue->device->frame_markers.consumed_present_id;
             spinlock_release(&command_queue->device->low_latency_swapchain_spinlock);
 
-            if (low_latency_swapchain && exec->low_latency_frame_id)
+            /* If we have submitted a swapchain blit to Vulkan,
+             * it is not possible for a present ID to keep contributing to the frame's completion.
+             * The likely case here is that application just forgot to signal present ID.
+             * Don't bother trying to mark submission present ID if application isn't bothering to set markers properly. */
+            if (low_latency_swapchain && exec->low_latency_frame_id > consumed_present_id &&
+                    dxgi_vk_swap_chain_low_latency_enabled(low_latency_swapchain))
             {
                 latency_submit_present_info.sType = VK_STRUCTURE_TYPE_LATENCY_SUBMISSION_PRESENT_ID_NV;
                 latency_submit_present_info.pNext = NULL;
@@ -25572,6 +23726,8 @@ static void d3d12_command_queue_execute(struct d3d12_command_queue *command_queu
          * in a submit is not a fallback submit. */
         assert(!is_last || command_queue->serializing_semaphore || !fallback);
 
+        proxy_fence = vkd3d_queue_get_signal_fence_proxy_locked(vkd3d_queue);
+
         if (fallback)
         {
             VkQueue vk_fallback_queue;
@@ -25579,7 +23735,7 @@ static void d3d12_command_queue_execute(struct d3d12_command_queue *command_queu
             if ((vk_fallback_queue = vkd3d_queue_acquire(command_queue->device->memory_transfers.vkd3d_queue)))
             {
                 vr = d3d12_command_queue_submit_split_locked(command_queue->device, vk_fallback_queue,
-                        num_submits, submit_desc);
+                        num_submits, submit_desc, proxy_fence);
                 vkd3d_queue_release(command_queue->device->memory_transfers.vkd3d_queue);
                 WARN("Performing a fallback copy queue submit. Bad perf :(\n");
             }
@@ -25587,9 +23743,9 @@ static void d3d12_command_queue_execute(struct d3d12_command_queue *command_queu
         else if (exec->split_submission)
         {
             vr = d3d12_command_queue_submit_split_locked(command_queue->device, vk_queue,
-                    num_submits, submit_desc);
+                    num_submits, submit_desc, proxy_fence);
         }
-        else if ((vr = VK_CALL(vkQueueSubmit2(vk_queue, num_submits, submit_desc, VK_NULL_HANDLE))) < 0)
+        else if ((vr = VK_CALL(vkQueueSubmit2(vk_queue, num_submits, submit_desc, proxy_fence))) < 0)
         {
             ERR("Failed to submit queue(s), vr %d.\n", vr);
         }
@@ -25597,7 +23753,7 @@ static void d3d12_command_queue_execute(struct d3d12_command_queue *command_queu
         if (is_first)
             d3d12_command_queue_finalize_waits(command_queue, vr);
 
-        VKD3D_DEVICE_REPORT_FAULT_AND_BREADCRUMB_IF(command_queue->device, vr == VK_ERROR_DEVICE_LOST, vr);
+        VKD3D_DEVICE_REPORT_FAULT_AND_BREADCRUMB_IF(command_queue->device, vr == VK_ERROR_DEVICE_LOST);
 
         if (vr != VK_SUCCESS)
             break;
@@ -25659,6 +23815,8 @@ static void d3d12_command_queue_execute(struct d3d12_command_queue *command_queu
                 &vkd3d_waiting_fence_release_submission, sizeof(*submission_info));
         submission_info->command_allocators = exec->command_allocators;
         submission_info->num_command_allocators = exec->num_command_allocators;
+        submission_info->retained_resources = exec->retained_resources;
+        submission_info->num_retained_resources = exec->num_retained_resources;
 
         if (FAILED(hr = vkd3d_enqueue_timeline_semaphore(&command_queue->fence_worker, &fence_info, &exec->timeline_cookie)))
         {
@@ -26059,7 +24217,8 @@ static void d3d12_command_queue_flush_bind_sparse(struct d3d12_command_queue *co
     bind_sparse_info.pImageBinds = command_queue->sparse.image_binds;
     bind_sparse_info.pImageOpaqueBinds = command_queue->sparse.image_opaque_binds;
 
-    if ((vr = VK_CALL(vkQueueBindSparse(vk_queue_sparse, 1, &bind_sparse_info, VK_NULL_HANDLE))) < 0)
+    if ((vr = VK_CALL(vkQueueBindSparse(vk_queue_sparse, 1, &bind_sparse_info,
+        vkd3d_queue_get_signal_fence_proxy_locked(queue)))) < 0)
         ERR("Failed to perform sparse binding, vr %d.\n", vr);
 
     if (queue != queue_sparse)
@@ -26093,7 +24252,7 @@ static void d3d12_command_queue_flush_bind_sparse(struct d3d12_command_queue *co
     }
 
     vkd3d_queue_release(queue);
-    VKD3D_DEVICE_REPORT_FAULT_AND_BREADCRUMB_IF(command_queue->device, vr == VK_ERROR_DEVICE_LOST, vr);
+    VKD3D_DEVICE_REPORT_FAULT_AND_BREADCRUMB_IF(command_queue->device, vr == VK_ERROR_DEVICE_LOST);
 
     vkd3d_queue_timeline_trace_complete_execute(&command_queue->device->queue_timeline_trace, &command_queue->fence_worker, cookie);
 
@@ -26138,10 +24297,9 @@ void d3d12_command_queue_enqueue_callback(struct d3d12_command_queue *queue, voi
     d3d12_command_queue_add_submission(queue, &sub);
 }
 
-void d3d12_command_queue_add_submission_locked(struct d3d12_command_queue *queue,
-                                               const struct d3d12_command_queue_submission *sub)
+static void d3d12_command_queue_add_submission_locked(struct d3d12_command_queue *queue,
+                                                      const struct d3d12_command_queue_submission *sub)
 {
-    vkd3d_atomic_uint32_increment(&queue->inflight_submissions, vkd3d_memory_order_relaxed);
     vkd3d_array_reserve((void**)&queue->submissions, &queue->submissions_size,
                         queue->submissions_count + 1, sizeof(*queue->submissions));
     queue->submissions[queue->submissions_count++] = *sub;
@@ -26357,8 +24515,9 @@ static void *d3d12_command_queue_submission_worker_main(void *userdata)
             submission.callback.callback(submission.callback.userdata);
             break;
 
-        case VKD3D_SUBMISSION_RESOURCE_RETAIN:
-            d3d12_command_queue_defer_release_resource(queue, submission.resource);
+        case VKD3D_SUBMISSION_CPU_TIMELINE_CALLBACK:
+            cookie = vkd3d_queue_timeline_trace_register_generic_region(&queue->device->queue_timeline_trace, "CPU_CALLBACK");
+            submission.callback.callback(submission.callback.userdata);
             break;
 
         default:
@@ -26366,7 +24525,6 @@ static void *d3d12_command_queue_submission_worker_main(void *userdata)
             break;
         }
 
-        vkd3d_atomic_uint32_decrement(&queue->inflight_submissions, vkd3d_memory_order_release);
         vkd3d_queue_timeline_trace_complete_execute(&queue->device->queue_timeline_trace, &queue->fence_worker, cookie);
     }
 
@@ -26387,7 +24545,7 @@ static HRESULT d3d12_command_queue_init(struct d3d12_command_queue *queue,
     hr = d3d12_device_removed_reason(device);
     if (hr != S_OK)
     {
-        WARN("Device %p is removed (reason %#x).\n", device, (int)hr);
+        WARN("Device %p is removed (reason %#x).\n", device, hr);
         return DXGI_ERROR_DEVICE_REMOVED;
     }
 
@@ -26400,7 +24558,6 @@ static HRESULT d3d12_command_queue_init(struct d3d12_command_queue *queue,
         queue->desc.NodeMask = 0x1;
 
     queue->vkd3d_queue = d3d12_device_allocate_vkd3d_queue(family_info, queue);
-    queue->out_of_band_queue_type = VK_OUT_OF_BAND_QUEUE_TYPE_MAX_ENUM_NV;
     queue->submissions = NULL;
     queue->submissions_count = 0;
     queue->submissions_size = 0;
@@ -26572,8 +24729,9 @@ void vkd3d_release_vk_queue(ID3D12CommandQueue *queue)
     submit_info.signalSemaphoreInfoCount = 1;
     submit_info.pSignalSemaphoreInfos = &semaphore_info;
 
-    vr = VK_CALL(vkQueueSubmit2(d3d12_queue->vkd3d_queue->vk_queue, 1, &submit_info, VK_NULL_HANDLE));
-    VKD3D_DEVICE_REPORT_FAULT_AND_BREADCRUMB_IF(d3d12_queue->device, vr == VK_ERROR_DEVICE_LOST, vr);
+    vr = VK_CALL(vkQueueSubmit2(d3d12_queue->vkd3d_queue->vk_queue, 1, &submit_info,
+            vkd3d_queue_get_signal_fence_proxy_locked(d3d12_queue->vkd3d_queue)));
+    VKD3D_DEVICE_REPORT_FAULT_AND_BREADCRUMB_IF(d3d12_queue->device, vr == VK_ERROR_DEVICE_LOST);
 
     d3d12_queue->last_submission_timeline_value = semaphore_info.value;
 
@@ -26589,7 +24747,7 @@ void vkd3d_enqueue_initial_transition(ID3D12CommandQueue *queue, ID3D12Resource 
 
     memset(&sub, 0, sizeof(sub));
     sub.type = VKD3D_SUBMISSION_EXECUTE;
-    sub.execute.low_latency_frame_id = d3d12_command_queue_latency_frame_id(d3d12_queue);
+    sub.execute.low_latency_frame_id = d3d12_queue->device->frame_markers.render;
     sub.execute.transition_count = 1;
     sub.execute.transitions = vkd3d_malloc(sizeof(*sub.execute.transitions));
     sub.execute.transitions[0].type = VKD3D_INITIAL_TRANSITION_TYPE_RESOURCE;
@@ -26636,7 +24794,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_command_signature_QueryInterface(ID3D12Co
 static ULONG STDMETHODCALLTYPE d3d12_command_signature_AddRef(ID3D12CommandSignature *iface)
 {
     struct d3d12_command_signature *signature = impl_from_ID3D12CommandSignature(iface);
-    unsigned int refcount = InterlockedIncrement(&signature->refcount);
+    ULONG refcount = InterlockedIncrement(&signature->refcount);
 
     TRACE("%p increasing refcount to %u.\n", signature, refcount);
 
@@ -26670,7 +24828,7 @@ static void d3d12_command_signature_cleanup(struct d3d12_command_signature *sign
 static ULONG STDMETHODCALLTYPE d3d12_command_signature_Release(ID3D12CommandSignature *iface)
 {
     struct d3d12_command_signature *signature = impl_from_ID3D12CommandSignature(iface);
-    unsigned int refcount = InterlockedDecrement(&signature->refcount);
+    ULONG refcount = InterlockedDecrement(&signature->refcount);
 
     TRACE("%p decreasing refcount to %u.\n", signature, refcount);
 
@@ -26775,7 +24933,7 @@ static HRESULT d3d12_command_signature_init_patch_commands_buffer(struct d3d12_c
         return hr;
 
     if (FAILED(hr = vkd3d_allocate_internal_buffer_memory(device, signature->state_template.dgc.buffer,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
             &signature->state_template.dgc.memory)))
         return hr;
 
@@ -26934,7 +25092,6 @@ static HRESULT d3d12_command_signature_init_state_template_dgc(struct d3d12_comm
     struct vkd3d_patch_command *patch_commands = NULL;
     VkIndirectCommandsLayoutTokenEXT *tokens = NULL;
     VkIndirectCommandsIndexBufferTokenEXT ib_token;
-    VkIndirectCommandsTokenTypeEXT push_data_token;
     uint32_t required_stride_alignment = 0;
     VkIndirectCommandsLayoutTokenEXT token;
     uint32_t generic_u32_copy_count;
@@ -27000,9 +25157,6 @@ static HRESULT d3d12_command_signature_init_state_template_dgc(struct d3d12_comm
     };
 
     bind_point_layout = d3d12_root_signature_get_layout(root_signature, signature->pipeline_type);
-    push_data_token = d3d12_device_use_descriptor_heap(device) ?
-            VK_INDIRECT_COMMANDS_TOKEN_TYPE_PUSH_DATA_EXT :
-            VK_INDIRECT_COMMANDS_TOKEN_TYPE_PUSH_CONSTANT_EXT;
 
     for (i = 0; i < desc->NumArgumentDescs; i++)
     {
@@ -27040,7 +25194,7 @@ static HRESULT d3d12_command_signature_init_state_template_dgc(struct d3d12_comm
 
                 if (argument_desc->Type == D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT)
                 {
-                    token.type = push_data_token;
+                    token.type = VK_INDIRECT_COMMANDS_TOKEN_TYPE_PUSH_CONSTANT_EXT;
 
                     required_alignment = sizeof(uint32_t);
                     stream_stride = align(stream_stride, required_alignment);
@@ -27052,10 +25206,7 @@ static HRESULT d3d12_command_signature_init_state_template_dgc(struct d3d12_comm
                 }
                 else
                 {
-                    token.type = d3d12_device_use_descriptor_heap(device) ?
-                        VK_INDIRECT_COMMANDS_TOKEN_TYPE_PUSH_DATA_SEQUENCE_INDEX_EXT :
-                        VK_INDIRECT_COMMANDS_TOKEN_TYPE_SEQUENCE_INDEX_EXT;
-
+                    token.type = VK_INDIRECT_COMMANDS_TOKEN_TYPE_SEQUENCE_INDEX_EXT;
                     token.offset = 0; /* ignored */
                     pc_token->updateRange.size = sizeof(uint32_t);
 
@@ -27086,7 +25237,7 @@ static HRESULT d3d12_command_signature_init_state_template_dgc(struct d3d12_comm
                     goto end;
                 }
 
-                token.type = push_data_token;
+                token.type = VK_INDIRECT_COMMANDS_TOKEN_TYPE_PUSH_CONSTANT_EXT;
                 assert(pc_token_count < ARRAY_SIZE(pc_tokens));
                 pc_token = &pc_tokens[pc_token_count++];
                 token.data.pPushConstant = pc_token;
@@ -27411,11 +25562,6 @@ HRESULT d3d12_command_signature_create(struct d3d12_device *device, struct d3d12
         if (!device->device_info.device_generated_commands_features.deviceGeneratedCommands)
         {
             FIXME("Device generated commands is not supported by implementation.\n");
-            if (VKD3D_CONFIG_FLAG_IS_SET(FAIL_UNSUPPORTED_STATE_TEMPLATE))
-            {
-                hr = E_NOTIMPL;
-                goto err;
-            }
             object->requires_state_template = false;
             goto out;
         }
@@ -27424,11 +25570,6 @@ HRESULT d3d12_command_signature_create(struct d3d12_device *device, struct d3d12
         {
             /* Very similar idea as indirect compute would be. */
             FIXME("State template is required for indirect ray tracing, but it is unimplemented.\n");
-            if (VKD3D_CONFIG_FLAG_IS_SET(FAIL_UNSUPPORTED_STATE_TEMPLATE))
-            {
-                hr = E_NOTIMPL;
-                goto err;
-            }
             object->requires_state_template = false;
             goto out;
         }
