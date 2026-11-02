@@ -4614,12 +4614,14 @@ static bool d3d12_barrier_layout_is_supported(D3D12_COMMAND_LIST_TYPE type, D3D1
     return true;
 }
 
-static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_iface *iface,
+/* Diagnostic package: retain capability values in release builds without
+ * enabling high-volume API tracing or changing any reported capability. */
+static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport_impl(d3d12_device_iface *iface,
         D3D12_FEATURE feature, void *feature_data, UINT feature_data_size)
 {
     struct d3d12_device *device = impl_from_ID3D12Device(iface);
 
-    TRACE("iface %p, feature %#x, feature_data %p, feature_data_size %u.\n",
+    INFO("iface %p, feature %#x, feature_data %p, feature_data_size %u.\n",
             iface, feature, feature_data, feature_data_size);
 
     switch (feature)
@@ -4636,22 +4638,22 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
 
             *data = device->d3d12_caps.options;
 
-            TRACE("Double precision shader ops %#x.\n", data->DoublePrecisionFloatShaderOps);
-            TRACE("Output merger logic op %#x.\n", data->OutputMergerLogicOp);
-            TRACE("Shader min precision support %#x.\n", data->MinPrecisionSupport);
-            TRACE("Tiled resources tier %#x.\n", data->TiledResourcesTier);
-            TRACE("Resource binding tier %#x.\n", data->ResourceBindingTier);
-            TRACE("PS specified stencil ref %#x.\n", data->PSSpecifiedStencilRefSupported);
-            TRACE("Typed UAV load and additional formats %#x.\n", data->TypedUAVLoadAdditionalFormats);
-            TRACE("ROV %#x.\n", data->ROVsSupported);
-            TRACE("Conservative rasterization tier %#x.\n", data->ConservativeRasterizationTier);
-            TRACE("Max GPU virtual address bits per resource %u.\n", data->MaxGPUVirtualAddressBitsPerResource);
-            TRACE("Standard swizzle 64KB %#x.\n", data->StandardSwizzle64KBSupported);
-            TRACE("Cross-node sharing tier %#x.\n", data->CrossNodeSharingTier);
-            TRACE("Cross-adapter row-major texture %#x.\n", data->CrossAdapterRowMajorTextureSupported);
-            TRACE("VP and RT array index from any shader without GS emulation %#x.\n",
+            INFO("Double precision shader ops %#x.\n", data->DoublePrecisionFloatShaderOps);
+            INFO("Output merger logic op %#x.\n", data->OutputMergerLogicOp);
+            INFO("Shader min precision support %#x.\n", data->MinPrecisionSupport);
+            INFO("Tiled resources tier %#x.\n", data->TiledResourcesTier);
+            INFO("Resource binding tier %#x.\n", data->ResourceBindingTier);
+            INFO("PS specified stencil ref %#x.\n", data->PSSpecifiedStencilRefSupported);
+            INFO("Typed UAV load and additional formats %#x.\n", data->TypedUAVLoadAdditionalFormats);
+            INFO("ROV %#x.\n", data->ROVsSupported);
+            INFO("Conservative rasterization tier %#x.\n", data->ConservativeRasterizationTier);
+            INFO("Max GPU virtual address bits per resource %u.\n", data->MaxGPUVirtualAddressBitsPerResource);
+            INFO("Standard swizzle 64KB %#x.\n", data->StandardSwizzle64KBSupported);
+            INFO("Cross-node sharing tier %#x.\n", data->CrossNodeSharingTier);
+            INFO("Cross-adapter row-major texture %#x.\n", data->CrossAdapterRowMajorTextureSupported);
+            INFO("VP and RT array index from any shader without GS emulation %#x.\n",
                     data->VPAndRTArrayIndexFromAnyShaderFeedingRasterizerSupportedWithoutGSEmulation);
-            TRACE("Resource heap tier %#x.\n", data->ResourceHeapTier);
+            INFO("Resource heap tier %#x.\n", data->ResourceHeapTier);
             return S_OK;
         }
 
@@ -4678,7 +4680,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
             data->UMA = d3d12_device_is_uma(device, &coherent);
             data->CacheCoherentUMA = data->UMA ? coherent : FALSE;
 
-            TRACE("Tile based renderer %#x, UMA %#x, cache coherent UMA %#x.\n",
+            INFO("Tile based renderer %#x, UMA %#x, cache coherent UMA %#x.\n",
                     data->TileBasedRenderer, data->UMA, data->CacheCoherentUMA);
             return S_OK;
         }
@@ -4701,11 +4703,12 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
             for (i = 0; i < data->NumFeatureLevels; ++i)
             {
                 D3D_FEATURE_LEVEL fl = data->pFeatureLevelsRequested[i];
+                INFO("Requested feature level[%u] %#x.\n", i, fl);
                 if (data->MaxSupportedFeatureLevel < fl && fl <= caps->max_feature_level)
                     data->MaxSupportedFeatureLevel = fl;
             }
 
-            TRACE("Max supported feature level %#x.\n", data->MaxSupportedFeatureLevel);
+            INFO("Max supported feature level %#x.\n", data->MaxSupportedFeatureLevel);
             return S_OK;
         }
 
@@ -4725,7 +4728,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
 
             vkd3d_determine_format_support_for_feature_level(device, data);
 
-            TRACE("Format %#x, support1 %#x, support2 %#x.\n", data->Format, data->Support1, data->Support2);
+            INFO("Format %#x, support1 %#x, support2 %#x.\n", data->Format, data->Support1, data->Support2);
             return S_OK;
         }
 
@@ -4769,7 +4772,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
 
             data->PlaneCount = format->plane_count;
 
-            TRACE("Format %#x, plane count %"PRIu8".\n", data->Format, data->PlaneCount);
+            INFO("Format %#x, plane count %"PRIu8".\n", data->Format, data->PlaneCount);
             return S_OK;
         }
 
@@ -4787,7 +4790,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
             data->MaxGPUVirtualAddressBitsPerResource = options->MaxGPUVirtualAddressBitsPerResource;
             data->MaxGPUVirtualAddressBitsPerProcess = options->MaxGPUVirtualAddressBitsPerResource;
 
-            TRACE("Max GPU virtual address bits per resource %u, Max GPU virtual address bits per process %u.\n",
+            INFO("Max GPU virtual address bits per resource %u, Max GPU virtual address bits per process %u.\n",
                     data->MaxGPUVirtualAddressBitsPerResource, data->MaxGPUVirtualAddressBitsPerProcess);
             return S_OK;
         }
@@ -4802,9 +4805,9 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
                 return E_INVALIDARG;
             }
 
-            TRACE("Request shader model %#x.\n", data->HighestShaderModel);
+            INFO("Request shader model %#x.\n", data->HighestShaderModel);
             data->HighestShaderModel = min(data->HighestShaderModel, device->d3d12_caps.max_shader_model);
-            TRACE("Shader model %#x.\n", data->HighestShaderModel);
+            INFO("Shader model %#x.\n", data->HighestShaderModel);
             return S_OK;
         }
 
@@ -4820,12 +4823,12 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
 
             *data = device->d3d12_caps.options1;
 
-            TRACE("Wave ops %#x.\n", data->WaveOps);
-            TRACE("Min wave lane count %u.\n", data->WaveLaneCountMin);
-            TRACE("Max wave lane count %u.\n", data->WaveLaneCountMax);
-            TRACE("Total lane count %u.\n", data->TotalLaneCount);
-            TRACE("Expanded compute resource states %#x.\n", data->ExpandedComputeResourceStates);
-            TRACE("Int64 shader ops %#x.\n", data->Int64ShaderOps);
+            INFO("Wave ops %#x.\n", data->WaveOps);
+            INFO("Min wave lane count %u.\n", data->WaveLaneCountMin);
+            INFO("Max wave lane count %u.\n", data->WaveLaneCountMax);
+            INFO("Total lane count %u.\n", data->TotalLaneCount);
+            INFO("Expanded compute resource states %#x.\n", data->ExpandedComputeResourceStates);
+            INFO("Int64 shader ops %#x.\n", data->Int64ShaderOps);
             return S_OK;
         }
 
@@ -4846,7 +4849,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
             }
 
             data->Support = D3D12_PROTECTED_RESOURCE_SESSION_SUPPORT_FLAG_NONE;
-            TRACE("Protected resource session support %#x.\n", data->Support);
+            INFO("Protected resource session support %#x.\n", data->Support);
             return S_OK;
         }
 
@@ -4866,10 +4869,10 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
                 return E_INVALIDARG;
             }
 
-            TRACE("Root signature requested %#x.\n", data->HighestVersion);
+            INFO("Root signature requested %#x.\n", data->HighestVersion);
             data->HighestVersion = min(data->HighestVersion, D3D_ROOT_SIGNATURE_VERSION_1_2);
 
-            TRACE("Root signature version %#x.\n", data->HighestVersion);
+            INFO("Root signature version %#x.\n", data->HighestVersion);
             return S_OK;
         }
 
@@ -4897,7 +4900,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
             data->CacheCoherentUMA = data->UMA ? coherent : FALSE;
             data->IsolatedMMU = TRUE; /* Appears to be true Windows drivers */
 
-            TRACE("Tile based renderer %#x, UMA %#x, cache coherent UMA %#x, isolated MMU %#x.\n",
+            INFO("Tile based renderer %#x, UMA %#x, cache coherent UMA %#x, isolated MMU %#x.\n",
                     data->TileBasedRenderer, data->UMA, data->CacheCoherentUMA, data->IsolatedMMU);
             return S_OK;
         }
@@ -4914,8 +4917,8 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
 
             *data = device->d3d12_caps.options2;
 
-            TRACE("Depth bounds test %#x.\n", data->DepthBoundsTestSupported);
-            TRACE("Programmable sample positions tier %u.\n", data->ProgrammableSamplePositionsTier);
+            INFO("Depth bounds test %#x.\n", data->DepthBoundsTestSupported);
+            INFO("Programmable sample positions tier %u.\n", data->ProgrammableSamplePositionsTier);
             return S_OK;
         }
 
@@ -4937,7 +4940,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
                     D3D12_SHADER_CACHE_SUPPORT_AUTOMATIC_INPROC_CACHE |
                     D3D12_SHADER_CACHE_SUPPORT_AUTOMATIC_DISK_CACHE;
 
-            TRACE("Shader cache support flags %#x.\n", data->SupportFlags);
+            INFO("Shader cache support flags %#x.\n", data->SupportFlags);
             return S_OK;
         }
 
@@ -4954,7 +4957,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
             /* FIXME We ignore priorities since Vulkan queues are created up-front */
             data->PriorityForTypeIsSupported = data->Priority <= D3D12_COMMAND_QUEUE_PRIORITY_HIGH;
 
-            TRACE("Command list type %u supports priority %u: %#x.\n",
+            INFO("Command list type %u supports priority %u: %#x.\n",
                     data->CommandListType, data->Priority, data->PriorityForTypeIsSupported);
             return S_OK;
         }
@@ -4971,11 +4974,11 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
 
             *data = device->d3d12_caps.options3;
 
-            TRACE("Copy queue timestamp queries %#x.\n", data->CopyQueueTimestampQueriesSupported);
-            TRACE("Casting fully typed formats %#x.\n", data->CastingFullyTypedFormatSupported);
-            TRACE("Write buffer immediate support flags %#x.\n", data->WriteBufferImmediateSupportFlags);
-            TRACE("View instancing tier %u.\n", data->ViewInstancingTier);
-            TRACE("Barycentrics %#x.\n", data->BarycentricsSupported);
+            INFO("Copy queue timestamp queries %#x.\n", data->CopyQueueTimestampQueriesSupported);
+            INFO("Casting fully typed formats %#x.\n", data->CastingFullyTypedFormatSupported);
+            INFO("Write buffer immediate support flags %#x.\n", data->WriteBufferImmediateSupportFlags);
+            INFO("View instancing tier %u.\n", data->ViewInstancingTier);
+            INFO("Barycentrics %#x.\n", data->BarycentricsSupported);
             return S_OK;
         }
 
@@ -5002,7 +5005,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
             data->Supported = FALSE;
 #endif
 
-            TRACE("Existing heaps %#x.\n", data->Supported);
+            INFO("Existing heaps %#x.\n", data->Supported);
             return S_OK;
         }
 
@@ -5018,9 +5021,9 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
 
             *data = device->d3d12_caps.options4;
 
-            TRACE("64kB alignment for MSAA textures %#x.\n", data->MSAA64KBAlignedTextureSupported);
-            TRACE("Shared resource compatibility tier %u.\n", data->SharedResourceCompatibilityTier);
-            TRACE("Native 16-bit shader ops %#x.\n", data->Native16BitShaderOpsSupported);
+            INFO("64kB alignment for MSAA textures %#x.\n", data->MSAA64KBAlignedTextureSupported);
+            INFO("Shared resource compatibility tier %u.\n", data->SharedResourceCompatibilityTier);
+            INFO("Native 16-bit shader ops %#x.\n", data->Native16BitShaderOpsSupported);
             return S_OK;
         }
 
@@ -5042,7 +5045,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
 
             data->HeapSerializationTier = D3D12_HEAP_SERIALIZATION_TIER_0;
 
-            TRACE("Heap serialization tier %u.\n", data->HeapSerializationTier);
+            INFO("Heap serialization tier %u.\n", data->HeapSerializationTier);
             return S_OK;
         }
 
@@ -5059,8 +5062,8 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
             data->SharingTier = D3D12_CROSS_NODE_SHARING_TIER_NOT_SUPPORTED;
             data->AtomicShaderInstructions = FALSE;
 
-            TRACE("Cross-node sharing tier %u.\n", data->SharingTier);
-            TRACE("Cross-node atomic shader instructions %#x.\n", data->AtomicShaderInstructions);
+            INFO("Cross-node sharing tier %u.\n", data->SharingTier);
+            INFO("Cross-node atomic shader instructions %#x.\n", data->AtomicShaderInstructions);
             return S_OK;
         }
 
@@ -5076,9 +5079,9 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
 
             *data = device->d3d12_caps.options5;
 
-            TRACE("SRV-only Tiled Resources Tier 3 %#x.\n", data->SRVOnlyTiledResourceTier3);
-            TRACE("Render pass tier %u.\n", data->RenderPassesTier);
-            TRACE("Raytracing tier %u.\n", data->RaytracingTier);
+            INFO("SRV-only Tiled Resources Tier 3 %#x.\n", data->SRVOnlyTiledResourceTier3);
+            INFO("Render pass tier %u.\n", data->RenderPassesTier);
+            INFO("Raytracing tier %u.\n", data->RaytracingTier);
             return S_OK;
         }
 
@@ -5094,11 +5097,11 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
 
             *data = device->d3d12_caps.options6;
 
-            TRACE("Additional shading rates %#x.\n", data->AdditionalShadingRatesSupported);
-            TRACE("Per-primtive shading rate with viewport indexing %#x.\n", data->PerPrimitiveShadingRateSupportedWithViewportIndexing);
-            TRACE("Variable shading rate tier %u.\n", data->VariableShadingRateTier);
-            TRACE("Shading rate image tile size %u.\n", data->ShadingRateImageTileSize);
-            TRACE("Background processing %#x.\n", data->BackgroundProcessingSupported);
+            INFO("Additional shading rates %#x.\n", data->AdditionalShadingRatesSupported);
+            INFO("Per-primtive shading rate with viewport indexing %#x.\n", data->PerPrimitiveShadingRateSupportedWithViewportIndexing);
+            INFO("Variable shading rate tier %u.\n", data->VariableShadingRateTier);
+            INFO("Shading rate image tile size %u.\n", data->ShadingRateImageTileSize);
+            INFO("Background processing %#x.\n", data->BackgroundProcessingSupported);
             return S_OK;
         }
 
@@ -5114,8 +5117,8 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
 
             *data = device->d3d12_caps.options7;
 
-            TRACE("Mesh shading tier %#x.\n", data->MeshShaderTier);
-            TRACE("Sampler feedback tier %#x.\n", data->SamplerFeedbackTier);
+            INFO("Mesh shading tier %#x.\n", data->MeshShaderTier);
+            INFO("Sampler feedback tier %#x.\n", data->SamplerFeedbackTier);
             return S_OK;
         }
 
@@ -5131,7 +5134,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
 
             *data = device->d3d12_caps.options8;
 
-            TRACE("Unaligned block textures supported %u.\n", data->UnalignedBlockTexturesSupported);
+            INFO("Unaligned block textures supported %u.\n", data->UnalignedBlockTexturesSupported);
             return S_OK;
         }
 
@@ -5147,12 +5150,12 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
 
             *data = device->d3d12_caps.options9;
 
-            TRACE("AtomicInt64 on typed resource supported %u.\n", data->AtomicInt64OnTypedResourceSupported);
-            TRACE("AtomicInt64 on group shared supported %u.\n", data->AtomicInt64OnGroupSharedSupported);
-            TRACE("Mesh shader pipeline stats supported %u.\n", data->MeshShaderPipelineStatsSupported);
-            TRACE("Mesh shader supports full range render target array index %u.\n", data->MeshShaderSupportsFullRangeRenderTargetArrayIndex);
-            TRACE("Derivatives in mesh and amplification shaders supported %u.\n", data->DerivativesInMeshAndAmplificationShadersSupported);
-            TRACE("Wave MMA tier #%x.\n", data->WaveMMATier);
+            INFO("AtomicInt64 on typed resource supported %u.\n", data->AtomicInt64OnTypedResourceSupported);
+            INFO("AtomicInt64 on group shared supported %u.\n", data->AtomicInt64OnGroupSharedSupported);
+            INFO("Mesh shader pipeline stats supported %u.\n", data->MeshShaderPipelineStatsSupported);
+            INFO("Mesh shader supports full range render target array index %u.\n", data->MeshShaderSupportsFullRangeRenderTargetArrayIndex);
+            INFO("Derivatives in mesh and amplification shaders supported %u.\n", data->DerivativesInMeshAndAmplificationShadersSupported);
+            INFO("Wave MMA tier #%x.\n", data->WaveMMATier);
             return S_OK;
         }
 
@@ -5168,8 +5171,8 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
 
             *data = device->d3d12_caps.options10;
 
-            TRACE("Variable rate shading sum combiner supported %u.\n", data->VariableRateShadingSumCombinerSupported);
-            TRACE("Mesh shader per primitive shading rate supported %u.\n", data->MeshShaderPerPrimitiveShadingRateSupported);
+            INFO("Variable rate shading sum combiner supported %u.\n", data->VariableRateShadingSumCombinerSupported);
+            INFO("Mesh shader per primitive shading rate supported %u.\n", data->MeshShaderPerPrimitiveShadingRateSupported);
             return S_OK;
         }
 
@@ -5185,7 +5188,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
 
             *data = device->d3d12_caps.options11;
 
-            TRACE("AtomicInt64 on descriptor heap resource supported %u.\n", data->AtomicInt64OnDescriptorHeapResourceSupported);
+            INFO("AtomicInt64 on descriptor heap resource supported %u.\n", data->AtomicInt64OnDescriptorHeapResourceSupported);
             return S_OK;
         }
 
@@ -5200,9 +5203,9 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
             }
 
             *data = device->d3d12_caps.options12;
-            TRACE("RelaxedFormatCasting supported %u.\n", data->RelaxedFormatCastingSupported);
-            TRACE("EnhancedBarriers supported %u.\n", data->EnhancedBarriersSupported);
-            TRACE("MSPrimitivesPipelineStatisticIncludesCulledPrimitives %u.\n",
+            INFO("RelaxedFormatCasting supported %u.\n", data->RelaxedFormatCastingSupported);
+            INFO("EnhancedBarriers supported %u.\n", data->EnhancedBarriersSupported);
+            INFO("MSPrimitivesPipelineStatisticIncludesCulledPrimitives %u.\n",
                     data->MSPrimitivesPipelineStatisticIncludesCulledPrimitives);
             return S_OK;
         }
@@ -5219,8 +5222,8 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
 
             *data = device->d3d12_caps.options13;
 
-            TRACE("Inverted viewport height flips Y supported %u.\n", data->InvertedViewportHeightFlipsYSupported);
-            TRACE("Inverted viewport deps flips Z supported %u.\n", data->InvertedViewportDepthFlipsZSupported);
+            INFO("Inverted viewport height flips Y supported %u.\n", data->InvertedViewportHeightFlipsYSupported);
+            INFO("Inverted viewport deps flips Z supported %u.\n", data->InvertedViewportDepthFlipsZSupported);
             return S_OK;
         }
 
@@ -5236,9 +5239,9 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
 
             *data = device->d3d12_caps.options14;
 
-            TRACE("AdvancedTextureOpsSupported %u\n", data->AdvancedTextureOpsSupported);
-            TRACE("WriteableMSAATexturesSupported %u\n", data->WriteableMSAATexturesSupported);
-            TRACE("IndependentFrontAndBackStencilRefMaskSupported %u\n", data->IndependentFrontAndBackStencilRefMaskSupported);
+            INFO("AdvancedTextureOpsSupported %u\n", data->AdvancedTextureOpsSupported);
+            INFO("WriteableMSAATexturesSupported %u\n", data->WriteableMSAATexturesSupported);
+            INFO("IndependentFrontAndBackStencilRefMaskSupported %u\n", data->IndependentFrontAndBackStencilRefMaskSupported);
 
             return S_OK;
         }
@@ -5255,8 +5258,8 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
 
             *data = device->d3d12_caps.options15;
 
-            TRACE("TriangleFanSupported %u\n", data->TriangleFanSupported);
-            TRACE("DynamicIndexBufferStripCutSupported %u\n", data->DynamicIndexBufferStripCutSupported);
+            INFO("TriangleFanSupported %u\n", data->TriangleFanSupported);
+            INFO("DynamicIndexBufferStripCutSupported %u\n", data->DynamicIndexBufferStripCutSupported);
 
             return S_OK;
         }
@@ -5273,8 +5276,8 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
 
             *data = device->d3d12_caps.options16;
 
-            TRACE("DynamicDepthBiasSupported %u\n", data->DynamicDepthBiasSupported);
-            TRACE("GPUUploadHeapSupported %u\n", data->GPUUploadHeapSupported);
+            INFO("DynamicDepthBiasSupported %u\n", data->DynamicDepthBiasSupported);
+            INFO("GPUUploadHeapSupported %u\n", data->GPUUploadHeapSupported);
 
             return S_OK;
         }
@@ -5291,8 +5294,8 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
 
             *data = device->d3d12_caps.options17;
 
-            TRACE("NonNormalizedCoordinateSamplersSupported %u\n", data->NonNormalizedCoordinateSamplersSupported);
-            TRACE("ManualWriteTrackingResourceSupported %u\n", data->ManualWriteTrackingResourceSupported);
+            INFO("NonNormalizedCoordinateSamplersSupported %u\n", data->NonNormalizedCoordinateSamplersSupported);
+            INFO("ManualWriteTrackingResourceSupported %u\n", data->ManualWriteTrackingResourceSupported);
 
             return S_OK;
         }
@@ -5309,7 +5312,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
 
             *data = device->d3d12_caps.options18;
 
-            TRACE("RenderPassesValid %u\n", data->RenderPassesValid);
+            INFO("RenderPassesValid %u\n", data->RenderPassesValid);
 
             return S_OK;
         }
@@ -5326,16 +5329,16 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
 
             *data = device->d3d12_caps.options19;
 
-            TRACE("MismatchingOutputDimensionsSupported %u\n", data->MismatchingOutputDimensionsSupported);
-            TRACE("SupportedSampleCountsWithNoOutputs %#x\n", data->SupportedSampleCountsWithNoOutputs);
-            TRACE("PointSamplingAddressesNeverRoundUp %u\n", data->PointSamplingAddressesNeverRoundUp);
-            TRACE("RasterizerDesc2Supported %u\n", data->RasterizerDesc2Supported);
-            TRACE("NarrowQuadrilateralLinesSupported %u\n", data->NarrowQuadrilateralLinesSupported);
-            TRACE("AnisoFilterWithPointMipSupported %u\n", data->AnisoFilterWithPointMipSupported);
-            TRACE("MaxSamplerDescriptorHeapSize %u\n", data->MaxSamplerDescriptorHeapSize);
-            TRACE("MaxSamplerDescriptorHeapSizeWithStaticSamplers %u\n", data->MaxSamplerDescriptorHeapSizeWithStaticSamplers);
-            TRACE("MaxViewDescriptorHeapSize %u\n", data->MaxViewDescriptorHeapSize);
-            TRACE("ComputeOnlyCustomHeapSupported %u\n", data->ComputeOnlyCustomHeapSupported);
+            INFO("MismatchingOutputDimensionsSupported %u\n", data->MismatchingOutputDimensionsSupported);
+            INFO("SupportedSampleCountsWithNoOutputs %#x\n", data->SupportedSampleCountsWithNoOutputs);
+            INFO("PointSamplingAddressesNeverRoundUp %u\n", data->PointSamplingAddressesNeverRoundUp);
+            INFO("RasterizerDesc2Supported %u\n", data->RasterizerDesc2Supported);
+            INFO("NarrowQuadrilateralLinesSupported %u\n", data->NarrowQuadrilateralLinesSupported);
+            INFO("AnisoFilterWithPointMipSupported %u\n", data->AnisoFilterWithPointMipSupported);
+            INFO("MaxSamplerDescriptorHeapSize %u\n", data->MaxSamplerDescriptorHeapSize);
+            INFO("MaxSamplerDescriptorHeapSizeWithStaticSamplers %u\n", data->MaxSamplerDescriptorHeapSizeWithStaticSamplers);
+            INFO("MaxViewDescriptorHeapSize %u\n", data->MaxViewDescriptorHeapSize);
+            INFO("ComputeOnlyCustomHeapSupported %u\n", data->ComputeOnlyCustomHeapSupported);
 
             return S_OK;
         }
@@ -5352,8 +5355,8 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
 
             *data = device->d3d12_caps.options20;
 
-            TRACE("ComputeOnlyWriteWatchSupported %u\n", data->ComputeOnlyWriteWatchSupported);
-            TRACE("RecreateAtTier %#x\n", data->RecreateAtTier);
+            INFO("ComputeOnlyWriteWatchSupported %u\n", data->ComputeOnlyWriteWatchSupported);
+            INFO("RecreateAtTier %#x\n", data->RecreateAtTier);
 
             return S_OK;
         }
@@ -5370,10 +5373,10 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
 
             *data = device->d3d12_caps.options21;
 
-            TRACE("WorkGraphsTier %#x\n", data->WorkGraphsTier);
-            TRACE("ExecuteIndirectTier %u\n", data->ExecuteIndirectTier);
-            TRACE("SampleCmpGradientAndBiasSupported %u\n", data->SampleCmpGradientAndBiasSupported);
-            TRACE("ExtendedCommandInfoSupported %u\n", data->ExtendedCommandInfoSupported);
+            INFO("WorkGraphsTier %#x\n", data->WorkGraphsTier);
+            INFO("ExecuteIndirectTier %u\n", data->ExecuteIndirectTier);
+            INFO("SampleCmpGradientAndBiasSupported %u\n", data->SampleCmpGradientAndBiasSupported);
+            INFO("ExtendedCommandInfoSupported %u\n", data->ExtendedCommandInfoSupported);
 
             return S_OK;
         }
@@ -5390,10 +5393,10 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
 
             *data = device->d3d12_caps.options22;
 
-            TRACE("CreateByteOffsetViewsSupported %u\n", data->CreateByteOffsetViewsSupported);
-            TRACE("Max1DDispatchMeshSize %u\n", data->Max1DDispatchMeshSize);
-            TRACE("Max1DDispatchSize %u\n", data->Max1DDispatchSize);
-            TRACE("ShaderExecutionReorderingActuallyReorders %u\n", data->ShaderExecutionReorderingActuallyReorders);
+            INFO("CreateByteOffsetViewsSupported %u\n", data->CreateByteOffsetViewsSupported);
+            INFO("Max1DDispatchMeshSize %u\n", data->Max1DDispatchMeshSize);
+            INFO("Max1DDispatchSize %u\n", data->Max1DDispatchSize);
+            INFO("ShaderExecutionReorderingActuallyReorders %u\n", data->ShaderExecutionReorderingActuallyReorders);
 
             return S_OK;
         }
@@ -5410,7 +5413,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
 
             *data = device->d3d12_caps.tight_alignment;
 
-            TRACE("SupportTier %#x\n", data->SupportTier);
+            INFO("SupportTier %#x\n", data->SupportTier);
 
             return S_OK;
         }
@@ -5427,7 +5430,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
 
             data->Supported = FALSE;
 
-            TRACE("Supported %u\n", data->Supported);
+            INFO("Supported %u\n", data->Supported);
 
             return S_OK;
         }
@@ -5442,7 +5445,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
                 return E_INVALIDARG;
             }
 
-            TRACE("input_data_size = %zu, input_data = %p, output_data_size = %zu, output_data = %p.\n",
+            INFO("input_data_size = %zu, input_data = %p, output_data_size = %zu, output_data = %p.\n",
                     (size_t)data->QueryInputDataSizeInBytes, data->pQueryInputData,
                     (size_t)data->QueryOutputDataSizeInBytes, data->pQueryOutputData);
 
@@ -5567,6 +5570,17 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_i
             FIXME("Unhandled feature %#x.\n", feature);
             return E_NOTIMPL;
     }
+}
+
+static HRESULT STDMETHODCALLTYPE d3d12_device_CheckFeatureSupport(d3d12_device_iface *iface,
+        D3D12_FEATURE feature, void *feature_data, UINT feature_data_size)
+{
+    HRESULT hr;
+
+    hr = d3d12_device_CheckFeatureSupport_impl(iface, feature, feature_data, feature_data_size);
+    INFO("Capability result: iface %p, feature %#x, size %u, hr %#x.\n",
+            iface, feature, feature_data_size, (unsigned int)hr);
+    return hr;
 }
 
 static HRESULT STDMETHODCALLTYPE d3d12_device_CreateDescriptorHeap(d3d12_device_iface *iface,
