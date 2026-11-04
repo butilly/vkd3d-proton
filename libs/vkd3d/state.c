@@ -3508,6 +3508,36 @@ static void vkd3d_report_pipeline_creation_feedback_results(const VkPipelineCrea
     }
 }
 
+static pthread_once_t vkd3d_compute_diagnostic_once = PTHREAD_ONCE_INIT;
+static bool vkd3d_compute_diagnostic_enabled;
+
+static void vkd3d_compute_diagnostic_init(void)
+{
+    char app[VKD3D_PATH_MAX];
+
+    vkd3d_compute_diagnostic_enabled = vkd3d_get_program_name(app) && !strcmp(app, "PBZ.exe");
+}
+
+static void vkd3d_compute_diagnostic_begin(const struct d3d12_pipeline_state *state,
+        const VkComputePipelineCreateInfo *info, VkPipelineCreateFlags2 flags, const char *path)
+{
+    const struct vkd3d_shader_meta *meta = &state->compute.code.meta;
+
+    if (!vkd3d_compute_diagnostic_enabled)
+        return;
+
+    /* Log before entering Wine/driver code: an exception there never reaches the error handler.
+     * Pair by thread, state and path; group metadata can be zero when unavailable. */
+    INFO("[COMPUTE-DIAG] begin state %p path %s shader %016"PRIx64
+            " root %016"PRIx64" module %u flags %"PRIx64" stage_flags %#x"
+            " meta %#x group_meta %ux%ux%u wave %u/%u/%u.\n",
+            state, path, meta->hash, state->root_signature->pso_compatibility_hash,
+            info->stage.module != VK_NULL_HANDLE, (uint64_t)flags, info->stage.flags,
+            meta->flags, meta->cs_workgroup_size[0], meta->cs_workgroup_size[1], meta->cs_workgroup_size[2],
+            meta->cs_wave_size_min, meta->cs_wave_size_max, meta->cs_wave_size_preferred);
+    vkd3d_dbg_flush();
+}
+
 static HRESULT vkd3d_create_compute_pipeline(struct d3d12_pipeline_state *state,
         struct d3d12_device *device,
         const D3D12_SHADER_BYTECODE *code)
@@ -3529,6 +3559,8 @@ static HRESULT vkd3d_create_compute_pipeline(struct d3d12_pipeline_state *state,
 
     vk_cache = state->vk_pso_cache;
     spirv_code = &state->compute.code;
+
+    pthread_once(&vkd3d_compute_diagnostic_once, vkd3d_compute_diagnostic_init);
 
     if (VKD3D_CONFIG_FLAG_IS_SET(DEBUG_UTILS))
         spirv_code_debug = &state->compute.code_debug;
@@ -3603,8 +3635,15 @@ static HRESULT vkd3d_create_compute_pipeline(struct d3d12_pipeline_state *state,
     if (flags2.flags)
         vk_prepend_struct(&pipeline_info, &flags2);
 
+    vkd3d_compute_diagnostic_begin(state, &pipeline_info, flags2.flags, "initial");
     vr = VK_CALL(vkCreateComputePipelines(device->vk_device,
             vk_cache, 1, &pipeline_info, NULL, &state->compute.vk_pipeline));
+    if (vkd3d_compute_diagnostic_enabled)
+    {
+        INFO("[COMPUTE-DIAG] end state %p path initial shader %016"PRIx64" result %d.\n",
+                state, spirv_code->meta.hash, vr);
+        vkd3d_dbg_flush();
+    }
 
     if (vkd3d_queue_timeline_trace_cookie_is_valid(cookie))
     {
@@ -3661,8 +3700,15 @@ static HRESULT vkd3d_create_compute_pipeline(struct d3d12_pipeline_state *state,
 
         cookie = vkd3d_queue_timeline_trace_register_pso_compile(&device->queue_timeline_trace);
 
+        vkd3d_compute_diagnostic_begin(state, &pipeline_info, flags2.flags, "fallback");
         vr = VK_CALL(vkCreateComputePipelines(device->vk_device,
                 vk_cache, 1, &pipeline_info, NULL, &state->compute.vk_pipeline));
+        if (vkd3d_compute_diagnostic_enabled)
+        {
+            INFO("[COMPUTE-DIAG] end state %p path fallback shader %016"PRIx64" result %d.\n",
+                    state, spirv_code->meta.hash, vr);
+            vkd3d_dbg_flush();
+        }
 
         if (vkd3d_queue_timeline_trace_cookie_is_valid(cookie))
         {
