@@ -3317,7 +3317,6 @@ struct d3d12_command_list_sequence
     struct d3d12_command_list_iteration iterations[VKD3D_MAX_COMMAND_LIST_SEQUENCES];
     unsigned int iteration_count;
     unsigned int active_non_inline_running_queries;
-    bool uses_dgc_compute_in_async_compute;
     bool clear_uav_pending;
     bool observes_indirect_argument_barrier;
     bool has_post_indirect_barrier_work;
@@ -3779,7 +3778,6 @@ struct d3d12_command_queue_submission_execute
     struct vkd3d_queue_timeline_trace_cookie timeline_cookie;
 
     bool debug_capture;
-    bool split_submission;
 };
 
 struct d3d12_command_queue_submission_bind_sparse
@@ -7220,6 +7218,7 @@ bool d3d12_device_allow_emulated_vrs_tier_2(struct d3d12_device *device);
 bool d3d12_device_allow_emulated_barycentrics(struct d3d12_device *device);
 bool vkd3d_application_has_broken_wave128(void);
 bool vkd3d_application_requires_min16_denorms(void);
+bool vkd3d_application_attempts_complex_multiview(void);
 void d3d12_device_init_workarounds(struct d3d12_device *device);
 uint32_t vkd3d_get_instance_application_version(void);
 

@@ -195,7 +195,7 @@ static dxil_spv_bool dxil_remap_inner(
                     else if (descriptor_type == VKD3D_SHADER_DESCRIPTOR_TYPE_CBV)
                         vk_binding->descriptor_type = DXIL_SPV_VULKAN_DESCRIPTOR_TYPE_UBO;
                     else
-                        vk_binding->descriptor_type = DXIL_SPV_VULKAN_DESCRIPTOR_TYPE_SSBO;
+                        vk_binding->descriptor_type = DXIL_SPV_VULKAN_DESCRIPTOR_TYPE_SSBO_SCALAR_ALIGNED;
 
                     vk_binding->set = binding->binding.set;
                     vk_binding->binding = binding->binding.binding;
@@ -221,15 +221,22 @@ static dxil_spv_bool dxil_remap_inner(
                 }
                 else
                 {
+                    bool can_lower;
+
                     vk_binding->bindless.heap_root_offset = binding->descriptor_offset +
                             d3d_binding->register_index - binding->register_index;
                     vk_binding->root_constant_index = binding->descriptor_table + remap->descriptor_table_offset_words;
 
+                    /* Non-arrayed resources do not hit robustness paths and should use tables as much as possible.
+                     * SBT descriptors are always considered bindless despite them being plain descriptors.
+                     * When emitting RT exports, we fall back to SM 6.6 style lowering everywhere. */
+                    can_lower = !(remap->quirks & VKD3D_SHADER_QUIRK_DESCRIPTOR_HEAP_ROBUSTNESS) ||
+                            (d3d_binding->range_size == 1 && !remap->local_root_signature);
+
                     /* If we can, lower push address + offset into a plain binding to aid readability and
                      * potentially better optimization for drivers. */
                     if ((remap->shader_interface_flags & VKD3D_SHADER_INTERFACE_HEAP_LOWERING) &&
-                        !(remap->quirks & VKD3D_SHADER_QUIRK_DESCRIPTOR_HEAP_ROBUSTNESS) &&
-                        !remap->skip_heap_lowering &&
+                        can_lower && !remap->skip_heap_lowering &&
                         !(binding->flags & VKD3D_SHADER_BINDING_FLAG_RAW_VA))
                     {
                         vk_binding->bindless.use_heap = DXIL_SPV_FALSE;
@@ -366,8 +373,11 @@ static dxil_spv_bool dxil_srv_remap(void *userdata, const dxil_spv_d3d_binding *
             d3d_binding, &vk_binding->buffer_binding, resource_flags_ssbo))
     {
         /* For heap, we may turn a root SSBO into BDA if alignments don't work out. */
-        if (vk_binding->buffer_binding.descriptor_type != DXIL_SPV_VULKAN_DESCRIPTOR_TYPE_BUFFER_DEVICE_ADDRESS)
+        if (vk_binding->buffer_binding.descriptor_type != DXIL_SPV_VULKAN_DESCRIPTOR_TYPE_BUFFER_DEVICE_ADDRESS &&
+            vk_binding->buffer_binding.descriptor_type != DXIL_SPV_VULKAN_DESCRIPTOR_TYPE_SSBO_SCALAR_ALIGNED)
+        {
             vk_binding->buffer_binding.descriptor_type = DXIL_SPV_VULKAN_DESCRIPTOR_TYPE_SSBO;
+        }
 
         if (shader_interface_info->flags & VKD3D_SHADER_INTERFACE_SSBO_OFFSET_BUFFER)
         {
@@ -532,8 +542,11 @@ static dxil_spv_bool dxil_uav_remap(void *userdata, const dxil_spv_uav_d3d_bindi
                 &vk_binding->buffer_binding, resource_flags_ssbo))
         {
             /* For heap, we may turn a root SSBO into BDA if alignments don't work out. */
-            if (vk_binding->buffer_binding.descriptor_type != DXIL_SPV_VULKAN_DESCRIPTOR_TYPE_BUFFER_DEVICE_ADDRESS)
+            if (vk_binding->buffer_binding.descriptor_type != DXIL_SPV_VULKAN_DESCRIPTOR_TYPE_BUFFER_DEVICE_ADDRESS &&
+                vk_binding->buffer_binding.descriptor_type != DXIL_SPV_VULKAN_DESCRIPTOR_TYPE_SSBO_SCALAR_ALIGNED)
+            {
                 vk_binding->buffer_binding.descriptor_type = DXIL_SPV_VULKAN_DESCRIPTOR_TYPE_SSBO;
+            }
 
             if (shader_interface_info->flags & VKD3D_SHADER_INTERFACE_SSBO_OFFSET_BUFFER)
             {
@@ -767,6 +780,16 @@ static bool vkd3d_dxil_converter_set_quirks(dxil_spv_converter converter,
         if (dxil_spv_converter_add_option(converter, &helper.base) != DXIL_SPV_SUCCESS)
         {
             WARN("dxil-spirv does not support DESCRIPTOR_HEAP_ROBUSTNESS.\n");
+            return false;
+        }
+    }
+
+    if (quirks & VKD3D_SHADER_QUIRK_LEGACY_STRUCTURIZER)
+    {
+        dxil_spv_option_legacy_structurizer legacy = { { DXIL_SPV_OPTION_LEGACY_STRUCTURIZER }, DXIL_SPV_TRUE };
+        if (dxil_spv_converter_add_option(converter, &legacy.base) != DXIL_SPV_SUCCESS)
+        {
+            WARN("dxil-spirv does not support LEGACY_STRUCTURIZER.\n");
             return false;
         }
     }
@@ -1697,9 +1720,9 @@ int vkd3d_shader_compile_dxil(const struct vkd3d_shader_code *dxbc,
     if ((stage == DXIL_SPV_STAGE_COMPUTE || stage == DXIL_SPV_STAGE_MESH || stage == DXIL_SPV_STAGE_AMPLIFICATION) &&
         wave_size_max == 32 &&
         (quirks & VKD3D_SHADER_QUIRK_CLAMP_WAVE_SIZE_TO_THREAD_GROUP32) &&
-        spirv->meta.cs_workgroup_size[0] == 32 &&
-        spirv->meta.cs_workgroup_size[1] == 1 &&
-        spirv->meta.cs_workgroup_size[2] == 1)
+        spirv->meta.cs_workgroup_size[0] *
+        spirv->meta.cs_workgroup_size[1] *
+        spirv->meta.cs_workgroup_size[2] == 32)
     {
         spirv->meta.flags |= VKD3D_SHADER_META_FLAG_ALLOW_WAVE32;
     }

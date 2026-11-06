@@ -1416,7 +1416,6 @@ static HRESULT d3d12_fence_set_native_sync_handle_on_completion_explicit(struct 
         enum vkd3d_waiting_event_type wait_type, UINT64 value, vkd3d_native_sync_handle handle, uint32_t *payload)
 {
     struct vkd3d_waiting_event event;
-    unsigned int i;
     HRESULT hr;
     bool latch;
     int rc;
@@ -1445,21 +1444,9 @@ static HRESULT d3d12_fence_set_native_sync_handle_on_completion_explicit(struct 
     event.timeline_cookie = vkd3d_queue_timeline_trace_register_event_signal(&fence->device->queue_timeline_trace,
             handle, &fence->ID3D12Fence_iface, value);
 
-    if (wait_type == VKD3D_WAITING_EVENT_SINGLE && vkd3d_native_sync_handle_is_valid(handle))
-    {
-        for (i = 0; i < fence->event_count; ++i)
-        {
-            struct vkd3d_waiting_event *current = &fence->events[i];
-            if (current->wait_type == VKD3D_WAITING_EVENT_SINGLE && current->value == value &&
-                    vkd3d_native_sync_handle_eq(current->handle, handle))
-            {
-                WARN("Event completion for native sync handle is already in the list.\n");
-                pthread_mutex_unlock(&fence->mutex);
-                return S_OK;
-            }
-        }
-    }
-
+    /* Do not deduplicate identical (value, event) pairs. Every SetEventOnCompletion()
+     * must signal the event once. Multiple threads may wait on the same auto-reset event
+     * for the same value, and each of them needs its own SetEvent() to wake up. */
     if (!vkd3d_array_reserve((void **)&fence->events, &fence->events_size,
             fence->event_count + 1, sizeof(*fence->events)))
     {
@@ -3777,48 +3764,91 @@ static void d3d12_command_list_resolve_transfer_waw(struct d3d12_command_list *l
     }
 }
 
+static bool vkd3d_tracked_buffer_ranges_may_alias(VkBuffer a_buffer, VkDeviceSize a_begin,
+        VkDeviceSize a_size, VkBuffer b_buffer, VkDeviceSize b_begin, VkDeviceSize b_size)
+{
+    /* If either resource is sparse, check whether there can be overlap at a tile level.
+     * This is relevant for WBI use cases, because a single dword write to offset 0
+     * cannot overlap with another one to offset 12 under any circumstance. */
+    if (!a_buffer || !b_buffer)
+    {
+        /* Ranges as large as a tile cover every possible address within */
+        if (a_size >= VKD3D_TILE_SIZE || b_size >= VKD3D_TILE_SIZE)
+            return true;
+
+        /* If a range straddles two pages, subdivide and check individual sub-ranges */
+        a_begin %= VKD3D_TILE_SIZE;
+        b_begin %= VKD3D_TILE_SIZE;
+
+        if (a_begin + a_size > VKD3D_TILE_SIZE)
+        {
+            return vkd3d_tracked_buffer_ranges_may_alias(a_buffer, a_begin,
+                    VKD3D_TILE_SIZE - a_begin, b_buffer, b_begin, b_size) ||
+                vkd3d_tracked_buffer_ranges_may_alias(a_buffer, 0u,
+                    (a_begin + a_size) % VKD3D_TILE_SIZE, b_buffer, b_begin, b_size);
+        }
+
+        if (b_begin + b_size > VKD3D_TILE_SIZE)
+        {
+            return vkd3d_tracked_buffer_ranges_may_alias(a_buffer, a_begin,
+                        a_size, b_buffer, b_begin, VKD3D_TILE_SIZE - b_begin) ||
+                    vkd3d_tracked_buffer_ranges_may_alias(a_buffer, a_begin,
+                        a_size, b_buffer, 0u, (b_begin + b_size) % VKD3D_TILE_SIZE);
+        }
+    }
+    else if (a_buffer != b_buffer)
+        return false;
+
+    return a_begin < b_begin + b_size && b_begin < a_begin + a_size;
+}
+
 static void d3d12_command_list_mark_copy_buffer_write(struct d3d12_command_list *list, VkBuffer vk_buffer,
         VkDeviceSize offset, VkDeviceSize size, bool sparse)
 {
     struct d3d12_tracked_buffer_copy *tracked_buffer;
-    VkDeviceSize range_end;
+    bool has_existing_range = false;
+    bool has_hazard;
     unsigned int i;
 
     if (sparse)
     {
         vk_buffer = VK_NULL_HANDLE;
-        offset = 0;
-        size = VK_WHOLE_SIZE;
+        offset %= VKD3D_TILE_SIZE;
     }
-
-    range_end = offset + size;
 
     for (i = 0; i < list->transfer_batch.tracked_copy_buffer_count; i++)
     {
         tracked_buffer = &list->transfer_batch.tracked_copy_buffers[i];
 
         /* Any write to a sparse buffer will be considered to be aliasing with any other resource. */
-        if (tracked_buffer->vk_buffer == vk_buffer || tracked_buffer->vk_buffer == VK_NULL_HANDLE || sparse)
+        has_hazard = vkd3d_tracked_buffer_ranges_may_alias(vk_buffer, offset, size,
+                tracked_buffer->vk_buffer, tracked_buffer->hazard_begin,
+                tracked_buffer->hazard_end - tracked_buffer->hazard_begin);
+
+        if (has_hazard)
         {
-            if (range_end > tracked_buffer->hazard_begin && offset < tracked_buffer->hazard_end)
-            {
-                /* Hazard. Inject barrier. */
-                d3d12_command_list_resolve_transfer_waw(list);
-                tracked_buffer = &list->transfer_batch.tracked_copy_buffers[0];
-                tracked_buffer->vk_buffer = vk_buffer;
-                tracked_buffer->hazard_begin = offset;
-                tracked_buffer->hazard_end = range_end;
-                list->transfer_batch.tracked_copy_buffer_count = 1;
-                list->transfer_batch.vk_stages |= VK_PIPELINE_STAGE_2_COPY_BIT;
-            }
-            else
-            {
-                tracked_buffer->hazard_begin = min(offset, tracked_buffer->hazard_begin);
-                tracked_buffer->hazard_end = max(range_end, tracked_buffer->hazard_end);
-            }
+            /* Hazard. Inject barrier. */
+            d3d12_command_list_resolve_transfer_waw(list);
+            tracked_buffer = &list->transfer_batch.tracked_copy_buffers[0];
+            tracked_buffer->vk_buffer = vk_buffer;
+            tracked_buffer->hazard_begin = offset;
+            tracked_buffer->hazard_end = offset + size;
+            list->transfer_batch.tracked_copy_buffer_count = 1;
+            list->transfer_batch.vk_stages |= VK_PIPELINE_STAGE_2_COPY_BIT;
             return;
         }
+        else if (tracked_buffer->vk_buffer == vk_buffer)
+        {
+            /* Need to keep checking for possible sparse hazards after this... */
+            tracked_buffer->hazard_begin = min(offset, tracked_buffer->hazard_begin);
+            tracked_buffer->hazard_end = max(offset + size, tracked_buffer->hazard_end);
+
+            has_existing_range = true;
+        }
     }
+
+    if (has_existing_range)
+        return;
 
     /* Keep the tracking data structures lean and mean. If we have decent overlap, this isn't a real problem. */
     if (list->transfer_batch.tracked_copy_buffer_count == ARRAY_SIZE(list->transfer_batch.tracked_copy_buffers))
@@ -3827,7 +3857,7 @@ static void d3d12_command_list_mark_copy_buffer_write(struct d3d12_command_list 
     tracked_buffer = &list->transfer_batch.tracked_copy_buffers[list->transfer_batch.tracked_copy_buffer_count++];
     tracked_buffer->vk_buffer = vk_buffer;
     tracked_buffer->hazard_begin = offset;
-    tracked_buffer->hazard_end = range_end;
+    tracked_buffer->hazard_end = offset + size;
     list->transfer_batch.vk_stages |= VK_PIPELINE_STAGE_2_COPY_BIT;
 }
 
@@ -11612,6 +11642,10 @@ static void d3d12_command_list_end_wbi_batch(struct d3d12_command_list *list)
 
             if (flush)
             {
+                /* WBI only uses VAs, so need to assume sparse for sync purposes */
+                d3d12_command_list_mark_copy_buffer_write(list, list->wbi_batch.buffers[first],
+                    list->wbi_batch.offsets[first], (next - first) * sizeof(uint32_t), true);
+
                 /* Need to explicitly block resume here since WriteBufferImmediate() can
                  * normally be called inside a render pass and doesn't get the automatic
                  * validation that would flag this. AMD_buffer_marker should bypass
@@ -14342,6 +14376,26 @@ static void d3d12_command_list_set_descriptor_heaps(struct d3d12_command_list *l
     /* Immediately bind the heap. This allows e.g. metacommands to more aggressively use the heap as intended. */
     list->descriptor_heap.buffers.global_heap_dirty = true;
     d3d12_command_list_update_global_descriptor_heap(list);
+
+    if (VKD3D_CONFIG_FLAG_IS_SET(CLEAR_TABLE_OFFSETS_ON_REBIND))
+    {
+        /* If we're invalidating the heap, descriptor table VAs set in root signatures are no longer valid,
+         * since they will point to a completely different heap.
+         * Resonance of Fate remaster seems to rely on the fact that parameters get reset to 0 or something like that.
+         * Only clear if we're invalidating the heap.
+         * Technically, if we're only partially invalidating the offsets by only changing e.g. resource heap,
+         * this is a theoretical hazard.
+         * https://learn.microsoft.com/en-us/windows/win32/direct3d12/setting-descriptor-heaps says:
+         * "Descriptor table state is undefined at the beginning of a command list and after descriptor heaps are changed on a command list.
+         * Redundantly setting the same descriptor heap does not cause descriptor table settings to be undefined."
+         * It is slightly unclear if the undefined-ness is tracked per type since "heap" is lacking a plural,
+         * but we make that assumption.
+         *
+         * ... aaaaand of course Wow Forever Classic relies on UB here and we have to emulate NV behavior anyway, yippee ...
+         */
+        memset(list->graphics_bindings.descriptor_tables, 0, sizeof(list->graphics_bindings.descriptor_tables));
+        memset(list->compute_bindings.descriptor_tables, 0, sizeof(list->compute_bindings.descriptor_tables));
+    }
 }
 
 static void d3d12_command_list_set_descriptor_heaps_buffers(struct d3d12_command_list *list,
@@ -14399,6 +14453,12 @@ static void d3d12_command_list_set_descriptor_heaps_buffers(struct d3d12_command
      * We also need to invalidate any push descriptors. */
     d3d12_command_list_invalidate_root_parameters(list, &list->graphics_bindings, true, NULL);
     d3d12_command_list_invalidate_root_parameters(list, &list->compute_bindings, true, NULL);
+
+    if (VKD3D_CONFIG_FLAG_IS_SET(CLEAR_TABLE_OFFSETS_ON_REBIND))
+    {
+        memset(list->graphics_bindings.descriptor_tables, 0, sizeof(list->graphics_bindings.descriptor_tables));
+        memset(list->compute_bindings.descriptor_tables, 0, sizeof(list->compute_bindings.descriptor_tables));
+    }
 }
 
 static void d3d12_command_list_set_descriptor_heaps_sets(struct d3d12_command_list *list,
@@ -14436,6 +14496,12 @@ static void d3d12_command_list_set_descriptor_heaps_sets(struct d3d12_command_li
 
     vkd3d_pipeline_bindings_set_dirty_sets(&list->graphics_bindings, dirty_mask);
     vkd3d_pipeline_bindings_set_dirty_sets(&list->compute_bindings, dirty_mask);
+
+    if (dirty_mask && VKD3D_CONFIG_FLAG_IS_SET(CLEAR_TABLE_OFFSETS_ON_REBIND))
+    {
+        memset(list->graphics_bindings.descriptor_tables, 0, sizeof(list->graphics_bindings.descriptor_tables));
+        memset(list->compute_bindings.descriptor_tables, 0, sizeof(list->compute_bindings.descriptor_tables));
+    }
 }
 
 static void STDMETHODCALLTYPE d3d12_command_list_SetDescriptorHeaps(d3d12_command_list_iface *iface,
@@ -14454,6 +14520,10 @@ static void STDMETHODCALLTYPE d3d12_command_list_SetDescriptorHeaps(d3d12_comman
         struct d3d12_descriptor_heap *heap = impl_from_ID3D12DescriptorHeap(heaps[i]);
         if (heap)
             d3d12_command_allocator_retain_descriptor_heap(list->allocator, heap);
+
+        VKD3D_BREADCRUMB_AUX64(heap->descriptor_buffer.va);
+        VKD3D_BREADCRUMB_AUX64(heap->desc.NumDescriptors);
+        VKD3D_BREADCRUMB_TAG(heap->desc.Type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV ? "CBV_SRV_UAV heap" : "SAMPLER heap");
     }
 
     if (d3d12_device_use_descriptor_heap(list->device))
@@ -14643,6 +14713,7 @@ DECLARE_ROOT_TABLE_VARIANT(embedded_64_16, 6, 4)
 DECLARE_ROOT_TABLE_VARIANT(embedded_32_16, 5, 4)
 DECLARE_ROOT_TABLE_VARIANT(embedded_32_32, 5, 5)
 DECLARE_ROOT_TABLE_VARIANT(embedded_128_32, 7, 5)
+DECLARE_ROOT_TABLE_VARIANT(embedded_128_16, 7, 4)
 DECLARE_ROOT_TABLE_VARIANT(embedded_default,
     list->device->bindless_state.cbv_srv_uav_size_log2,
     list->device->bindless_state.sampler_size_log2)
@@ -18047,9 +18118,6 @@ static void d3d12_command_list_execute_indirect_state_template_dgc(
             fallback_predication = true;
         }
 
-        /* Predication works on NV driver here, so we assume it's intended by spec.
-         * It does not work on RADV yet, so we'll fold predication in with our optimization work which
-         * generates a predicate anyway. */
         if (fallback_predication)
         {
             union vkd3d_predicate_command_direct_args args;
@@ -18144,10 +18212,6 @@ static void d3d12_command_list_execute_indirect_state_template_dgc(
     {
         if (!d3d12_command_list_update_compute_pipeline(list))
             return;
-
-        /* Needed for workarounds later. */
-        if (!(list->vk_queue_flags & VK_QUEUE_GRAPHICS_BIT))
-            list->cmd.uses_dgc_compute_in_async_compute = true;
     }
     else
     {
@@ -20295,6 +20359,7 @@ static bool d3d12_command_list_deduce_attachment_resolve(struct d3d12_command_li
     VkImageSubresourceLayers src, dst, dst_base;
     struct d3d12_resource *resolve_dst;
     struct d3d12_resource *resolve_src;
+    VkExtent3D subresource_extent;
     unsigned int i;
 
     /* Resolving from NULL resource makes no sense. */
@@ -20408,12 +20473,13 @@ static bool d3d12_command_list_deduce_attachment_resolve(struct d3d12_command_li
         }
 
         /* Validate that we resolve the entire attachment as we would expect. */
-        if (subresource_args->DstX != 0 ||
-                subresource_args->DstY != 0 ||
-                subresource_args->SrcRect.left != 0 ||
-                subresource_args->SrcRect.top != 0 ||
-                subresource_args->SrcRect.right != (int)list->fb_width ||
-                subresource_args->SrcRect.bottom != (int)list->fb_height)
+        subresource_extent = d3d12_resource_desc_get_vk_subresource_extent(
+                &resolve_src->desc, resolve_src->format, &src);
+
+        if (subresource_args->DstX != 0 || subresource_args->DstY != 0 ||
+                subresource_args->SrcRect.left != 0 || subresource_args->SrcRect.top != 0 ||
+                (subresource_args->SrcRect.right != 0 ? subresource_args->SrcRect.right : (int)subresource_extent.width) != (int)list->fb_width ||
+                (subresource_args->SrcRect.bottom != 0 ? subresource_args->SrcRect.bottom : (int)subresource_extent.height) != (int)list->fb_height)
         {
             FIXME_ONCE("Need to resolve the entire subresource to be able to use attachment resolve.\n");
             return false;
@@ -20494,6 +20560,12 @@ static bool d3d12_command_list_add_render_pass_resolve(struct d3d12_command_list
         region.extent.width = (uint32_t)(subresource_args->SrcRect.right - subresource_args->SrcRect.left);
         region.extent.height = (uint32_t)(subresource_args->SrcRect.bottom - subresource_args->SrcRect.top);
         region.extent.depth = 1u;
+
+        if (!region.srcOffset.x && !region.srcOffset.y && !region.extent.width && !region.extent.height)
+        {
+            region.extent = d3d12_resource_desc_get_vk_subresource_extent(&resolve->src_resource->desc,
+                    resolve->src_resource->format, &region.srcSubresource);
+        }
 
         /* Merge with existing mip region if possible. To keep things simple, only consider
          * ordered subresource indices. */
@@ -22979,6 +23051,7 @@ VKD3D_DECLARE_D3D12_GRAPHICS_COMMAND_LIST_VARIANT(embedded_64_16, embedded_64_16
 VKD3D_DECLARE_D3D12_GRAPHICS_COMMAND_LIST_VARIANT(embedded_32_16, embedded_32_16);
 VKD3D_DECLARE_D3D12_GRAPHICS_COMMAND_LIST_VARIANT(embedded_32_32, embedded_32_32);
 VKD3D_DECLARE_D3D12_GRAPHICS_COMMAND_LIST_VARIANT(embedded_128_32, embedded_128_32);
+VKD3D_DECLARE_D3D12_GRAPHICS_COMMAND_LIST_VARIANT(embedded_128_16, embedded_128_16);
 VKD3D_DECLARE_D3D12_GRAPHICS_COMMAND_LIST_VARIANT(embedded_default, embedded_default);
 
 #ifdef VKD3D_ENABLE_PROFILING
@@ -23077,6 +23150,11 @@ static HRESULT d3d12_command_list_init(struct d3d12_command_list *list, struct d
             {
                 list->ID3D12GraphicsCommandList_iface.lpVtbl = &d3d12_command_list_vtbl_embedded_128_32;
             }
+            else if (device->bindless_state.cbv_srv_uav_size == 128 &&
+                    device->bindless_state.sampler_size == 16)
+            {
+                list->ID3D12GraphicsCommandList_iface.lpVtbl = &d3d12_command_list_vtbl_embedded_128_16;
+            }
             else
             {
                 list->ID3D12GraphicsCommandList_iface.lpVtbl = &d3d12_command_list_vtbl_embedded_default;
@@ -23149,6 +23227,7 @@ struct d3d12_command_list *d3d12_command_list_from_iface(ID3D12CommandList *ifac
             iface->lpVtbl == (struct ID3D12CommandListVtbl *)&d3d12_command_list_vtbl_embedded_32_32 ||
             iface->lpVtbl == (struct ID3D12CommandListVtbl *)&d3d12_command_list_vtbl_embedded_32_16 ||
             iface->lpVtbl == (struct ID3D12CommandListVtbl *)&d3d12_command_list_vtbl_embedded_128_32 ||
+            iface->lpVtbl == (struct ID3D12CommandListVtbl *)&d3d12_command_list_vtbl_embedded_128_16 ||
             iface->lpVtbl == (struct ID3D12CommandListVtbl *)&d3d12_command_list_vtbl_embedded_default;
 
     if (!is_valid)
@@ -24047,14 +24126,6 @@ VKD3D_METHODENTRY(void) d3d12_command_queue_ExecuteCommandLists(ID3D12CommandQue
 
         if (cmd_list->debug_capture)
             sub.execute.debug_capture = true;
-
-        /* Submission logic for IB fallbacks seems to have exposed something ... very dodgy in RADV. */
-        if (cmd_list->cmd.uses_dgc_compute_in_async_compute &&
-                !VKD3D_CONFIG_FLAG_IS_SET(SKIP_DRIVER_WORKAROUNDS) &&
-                command_queue->device->device_info.vulkan_1_2_properties.driverID == VK_DRIVER_ID_MESA_RADV)
-        {
-            sub.execute.split_submission = true;
-        }
 
 #ifdef VKD3D_ENABLE_BREADCRUMBS
         if (breadcrumb_indices)
@@ -25583,11 +25654,6 @@ static void d3d12_command_queue_execute(struct d3d12_command_queue *command_queu
                 vkd3d_queue_release(command_queue->device->memory_transfers.vkd3d_queue);
                 WARN("Performing a fallback copy queue submit. Bad perf :(\n");
             }
-        }
-        else if (exec->split_submission)
-        {
-            vr = d3d12_command_queue_submit_split_locked(command_queue->device, vk_queue,
-                    num_submits, submit_desc);
         }
         else if ((vr = VK_CALL(vkQueueSubmit2(vk_queue, num_submits, submit_desc, VK_NULL_HANDLE))) < 0)
         {

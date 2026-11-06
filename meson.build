@@ -1,5 +1,5 @@
 # For maintainers: remember to update vcs_tag(fallback) as well
-project('vkd3d-proton', ['c', 'cpp'], version : '3.1.0', meson_version : '>= 0.49', default_options : [
+project('vkd3d-proton', ['c', 'cpp'], version : '3.2.0', meson_version : '>= 0.49', default_options : [
   'warning_level=2', 'c_std=c11', 'cpp_std=c++17'
 ])
 
@@ -97,9 +97,7 @@ elif vkd3d_platform == 'windows'
   lib_gdi32        = vkd3d_compiler.find_library('gdi32')
   lib_version      = vkd3d_compiler.find_library('version')
   lib_pathcch      = vkd3d_compiler.find_library('pathcch')
-  lib_psapi        = vkd3d_compiler.find_library('psapi')
-  lib_ntdll        = vkd3d_compiler.find_library('ntdll')
-  vkd3d_extra_libs = [ threads_dep, lib_version, lib_pathcch, lib_psapi, lib_ntdll ]
+  vkd3d_extra_libs = [ threads_dep, lib_version, lib_pathcch ]
 else
   error('Unknown platform')
 endif
