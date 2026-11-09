@@ -8136,6 +8136,9 @@ static D3D12_RESOURCE_ALLOCATION_INFO* STDMETHODCALLTYPE d3d12_device_GetResourc
         resource_info.SizeInBytes = align(resource_info.SizeInBytes, resource_info.Alignment);
         resource_offset = align(info->SizeInBytes, resource_info.Alignment);
 
+        d3d12_resource_log_texture_diagnostic("allocation-ok", desc, S_OK,
+                resource_info.SizeInBytes, resource_info.Alignment, NULL, NULL, resource_offset, 0);
+
         if (resource_infos)
         {
             resource_infos[i].Offset = resource_offset;
@@ -8165,6 +8168,9 @@ invalid:
         info->Alignment = D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT;
     else
         info->Alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
+
+    d3d12_resource_log_texture_diagnostic("allocation-rejected", &resource_descs[i], E_INVALIDARG,
+            info->SizeInBytes, info->Alignment, NULL, NULL, 0, 0);
 
     return info;
 }
