@@ -46,7 +46,7 @@ static void d3d12_resource_init_texture_diagnostic(void)
 
     texture_diagnostic_enabled = vkd3d_get_program_name(app) && !strcmp(app, "sinking_star.exe");
     if (texture_diagnostic_enabled)
-        INFO("Texture diagnostic enabled: allocation and creation results, limit 8192 records.\n");
+        INFO("Texture diagnostic enabled: allocation and creation results, limit 128 records; use-state sampling follows.\n");
 }
 
 void d3d12_resource_log_texture_diagnostic(const char *event, const D3D12_RESOURCE_DESC1 *desc,
@@ -58,10 +58,10 @@ void d3d12_resource_log_texture_diagnostic(const char *event, const D3D12_RESOUR
     pthread_once(&texture_diagnostic_once, d3d12_resource_init_texture_diagnostic);
     if (!texture_diagnostic_enabled || !desc || desc->Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
         return;
-    if (vkd3d_atomic_uint32_load_explicit(&texture_diagnostic_count, vkd3d_memory_order_relaxed) >= 8192)
+    if (vkd3d_atomic_uint32_load_explicit(&texture_diagnostic_count, vkd3d_memory_order_relaxed) >= 128)
         return;
     serial = vkd3d_atomic_uint32_increment(&texture_diagnostic_count, vkd3d_memory_order_relaxed);
-    if (serial > 8192)
+    if (serial > 128)
         return;
 
     INFO("Texture diagnostic #%u %s: hr %#x, desc %"PRIu64"x%ux%u mips %u samples %u quality %u "
@@ -71,7 +71,7 @@ void d3d12_resource_log_texture_diagnostic(const char *event, const D3D12_RESOUR
             desc->MipLevels, desc->SampleDesc.Count, desc->SampleDesc.Quality, desc->Dimension,
             desc->Format, desc->Flags, desc->Layout, desc->Alignment, size, alignment,
             resource, heap, offset, state);
-    if (serial == 8192)
+    if (serial == 128)
         INFO("Texture diagnostic record limit reached; later results are not captured.\n");
 }
 

@@ -28,6 +28,68 @@
 #include "vkd3d_renderdoc.h"
 #endif
 
+/* Diagnostic round 2: preserve rendering behavior and reserve a fresh budget
+ * each second so loading cannot consume every record before gameplay starts.
+ * These are samples, not a complete resource-state validation stream. */
+static pthread_once_t texture_use_once = PTHREAD_ONCE_INIT;
+static bool texture_use_enabled;
+static uint64_t texture_use_start_ns;
+static uint32_t texture_use_counts[90][4];
+static uint32_t texture_use_finished;
+
+static void d3d12_init_texture_use_diagnostic(void)
+{
+    char app[VKD3D_PATH_MAX];
+
+    texture_use_enabled = vkd3d_get_program_name(app) && !strcmp(app, "sinking_star.exe");
+    texture_use_start_ns = vkd3d_get_current_time_ns();
+    if (texture_use_enabled)
+        INFO("Texture-use diagnostic: first 16 events per category per second for 90 seconds; "
+                "categories transition, copy, initial, alias; sampled, not state validation.\n");
+}
+
+static bool d3d12_texture_use_sample(unsigned int category)
+{
+    uint64_t second;
+    uint32_t *count;
+
+    pthread_once(&texture_use_once, d3d12_init_texture_use_diagnostic);
+    if (!texture_use_enabled || vkd3d_atomic_uint32_load_explicit(&texture_use_finished, vkd3d_memory_order_relaxed))
+        return false;
+    second = (vkd3d_get_current_time_ns() - texture_use_start_ns) / 1000000000;
+    if (second >= ARRAY_SIZE(texture_use_counts))
+    {
+        if (vkd3d_atomic_uint32_increment(&texture_use_finished, vkd3d_memory_order_relaxed) == 1)
+            INFO("Texture-use diagnostic capture ended.\n");
+        return false;
+    }
+    count = &texture_use_counts[second][category];
+    if (vkd3d_atomic_uint32_load_explicit(count, vkd3d_memory_order_relaxed) >= 16)
+        return false;
+    return vkd3d_atomic_uint32_increment(count, vkd3d_memory_order_relaxed) <= 16;
+}
+
+static void d3d12_log_texture_transition(const struct d3d12_command_list *list,
+        const struct d3d12_resource *resource, const VkImageMemoryBarrier2 *barrier,
+        D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after, unsigned int category)
+{
+    if (!d3d12_texture_use_sample(category))
+        return;
+    INFO("Texture-use %s: list %p queue-type %u resource %p cookie %u image %"PRIx64
+            " fmt %#x desc %"PRIu64"x%ux%u mips %u flags %#x initial %#x common %u; "
+            "state %#x -> %#x layout %u -> %u aspects %#x mip %u+%u layer %u+%u "
+            "stage %"PRIx64" -> %"PRIx64" access %"PRIx64" -> %"PRIx64".\n",
+            category == 2 ? "initial" : "transition", list, list ? list->type : ~0u,
+            resource, resource->res.cookie.index, (uint64_t)barrier->image, resource->desc.Format,
+            resource->desc.Width, resource->desc.Height, resource->desc.DepthOrArraySize,
+            resource->desc.MipLevels, resource->desc.Flags, resource->initial_state, resource->common_layout,
+            before, after, barrier->oldLayout, barrier->newLayout, barrier->subresourceRange.aspectMask,
+            barrier->subresourceRange.baseMipLevel, barrier->subresourceRange.levelCount,
+            barrier->subresourceRange.baseArrayLayer, barrier->subresourceRange.layerCount,
+            (uint64_t)barrier->srcStageMask, (uint64_t)barrier->dstStageMask,
+            (uint64_t)barrier->srcAccessMask, (uint64_t)barrier->dstAccessMask);
+}
+
 static HRESULT d3d12_fence_signal(struct d3d12_fence *fence, struct vkd3d_fence_worker *worker, uint64_t value);
 static void d3d12_command_queue_add_submission(struct d3d12_command_queue *queue,
         const struct d3d12_command_queue_submission *sub);
@@ -10920,6 +10982,19 @@ static void d3d12_command_list_copy_texture_region(struct d3d12_command_list *li
     dst_resource = impl_from_ID3D12Resource(info->dst.pResource);
     src_resource = impl_from_ID3D12Resource(info->src.pResource);
 
+    if (d3d12_texture_use_sample(1))
+    {
+        INFO("Texture-use copy: list %p queue-type %u batch %u unified %u convert %u full-resource %u "
+                "full-subresource %u; src %p cookie %u dim %u fmt %#x layout %u common %u "
+                "dst %p cookie %u dim %u fmt %#x layout %u common %u.\n",
+                list, list->type, info->batch_type, unified, info->needs_conversion,
+                info->writes_full_resource, info->writes_full_subresource,
+                src_resource, src_resource->res.cookie.index, src_resource->desc.Dimension,
+                src_resource->desc.Format, info->src_layout, src_resource->common_layout,
+                dst_resource, dst_resource->res.cookie.index, dst_resource->desc.Dimension,
+                dst_resource->desc.Format, info->dst_layout, dst_resource->common_layout);
+    }
+
     if (info->batch_type == VKD3D_BATCH_TYPE_COPY_IMAGE_TO_BUFFER)
     {
         VKD3D_BREADCRUMB_TAG(info->needs_conversion ? "Image -> Buffer (compute)" : "Image -> Buffer");
@@ -14130,6 +14205,8 @@ static void STDMETHODCALLTYPE d3d12_command_list_ResourceBarrier(d3d12_command_l
                             transition_src_stage_mask, transition_src_access,
                             transition_dst_stage_mask, transition_dst_access,
                             dsv_decay_mask);
+                    d3d12_log_texture_transition(list, preserve_resource, &vk_transition,
+                            transition->StateBefore, transition->StateAfter, 0);
                     d3d12_command_list_barrier_batch_add_layout_transition(list, &batch, &vk_transition);
                 }
                 else
@@ -14204,6 +14281,13 @@ static void STDMETHODCALLTYPE d3d12_command_list_ResourceBarrier(d3d12_command_l
                 TRACE("Aliasing barrier (before %p, after %p).\n", alias->pResourceBefore, alias->pResourceAfter);
                 before = impl_from_ID3D12Resource(alias->pResourceBefore);
                 after = impl_from_ID3D12Resource(alias->pResourceAfter);
+
+                if (d3d12_texture_use_sample(3))
+                    INFO("Texture-use alias: list %p queue-type %u before %p cookie %u after %p cookie %u "
+                            "may-alias %u/%u.\n", list, list->type, before,
+                            before ? before->res.cookie.index : 0, after, after ? after->res.cookie.index : 0,
+                            d3d12_resource_may_alias_other_resources(before),
+                            d3d12_resource_may_alias_other_resources(after));
 
                 VKD3D_BREADCRUMB_TAG("Aliasing Barrier");
 
@@ -27501,6 +27585,8 @@ bool vk_image_memory_barrier_for_initial_transition(const struct d3d12_resource 
 
     TRACE("Initial layout transition for resource %p (old layout %#x, new layout %#x).\n",
           resource, barrier->oldLayout, barrier->newLayout);
+
+    d3d12_log_texture_transition(NULL, resource, barrier, 0, resource->initial_state, 2);
 
     return true;
 }
