@@ -34,6 +34,47 @@
 static UINT global_cookie_counter;
 static UINT global_cookie_va_timestamp;
 
+/* Release builds omit TRACE, including allocation results. Keep this diagnostic
+ * executable-scoped and bounded; do not change validation or rendering behavior. */
+static pthread_once_t texture_diagnostic_once = PTHREAD_ONCE_INIT;
+static bool texture_diagnostic_enabled;
+static uint32_t texture_diagnostic_count;
+
+static void d3d12_resource_init_texture_diagnostic(void)
+{
+    char app[VKD3D_PATH_MAX];
+
+    texture_diagnostic_enabled = vkd3d_get_program_name(app) && !strcmp(app, "sinking_star.exe");
+    if (texture_diagnostic_enabled)
+        INFO("Texture diagnostic enabled: allocation and creation results, limit 8192 records.\n");
+}
+
+void d3d12_resource_log_texture_diagnostic(const char *event, const D3D12_RESOURCE_DESC1 *desc,
+        HRESULT hr, uint64_t size, uint64_t alignment, struct d3d12_resource *resource,
+        struct d3d12_heap *heap, uint64_t offset, D3D12_RESOURCE_STATES state)
+{
+    uint32_t serial;
+
+    pthread_once(&texture_diagnostic_once, d3d12_resource_init_texture_diagnostic);
+    if (!texture_diagnostic_enabled || !desc || desc->Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+        return;
+    if (vkd3d_atomic_uint32_load_explicit(&texture_diagnostic_count, vkd3d_memory_order_relaxed) >= 8192)
+        return;
+    serial = vkd3d_atomic_uint32_increment(&texture_diagnostic_count, vkd3d_memory_order_relaxed);
+    if (serial > 8192)
+        return;
+
+    INFO("Texture diagnostic #%u %s: hr %#x, desc %"PRIu64"x%ux%u mips %u samples %u quality %u "
+            "dim %u fmt %#x flags %#x layout %u requested-align %"PRIu64"; "
+            "size %"PRIu64" align %"PRIu64" resource %p heap %p offset %"PRIu64" state %#x.\n",
+            serial, event, (unsigned int)hr, desc->Width, desc->Height, desc->DepthOrArraySize,
+            desc->MipLevels, desc->SampleDesc.Count, desc->SampleDesc.Quality, desc->Dimension,
+            desc->Format, desc->Flags, desc->Layout, desc->Alignment, size, alignment,
+            resource, heap, offset, state);
+    if (serial == 8192)
+        INFO("Texture diagnostic record limit reached; later results are not captured.\n");
+}
+
 static bool d3d12_resource_supports_small_resource_alignment(const D3D12_RESOURCE_DESC1 *desc,
         const struct vkd3d_format *format);
 
@@ -4370,7 +4411,7 @@ HRESULT d3d12_resource_create_borrowed(struct d3d12_device *device, const D3D12_
     return hr;
 }
 
-HRESULT d3d12_resource_create_committed(struct d3d12_device *device, const D3D12_RESOURCE_DESC1 *desc,
+static HRESULT d3d12_resource_create_committed_impl(struct d3d12_device *device, const D3D12_RESOURCE_DESC1 *desc,
         const D3D12_HEAP_PROPERTIES *heap_properties, D3D12_HEAP_FLAGS heap_flags, D3D12_RESOURCE_STATES initial_state,
         const D3D12_CLEAR_VALUE *optimized_clear_value,
         UINT num_castable_formats, const DXGI_FORMAT *castable_formats,
@@ -4606,6 +4647,20 @@ fail:
     return hr;
 }
 
+HRESULT d3d12_resource_create_committed(struct d3d12_device *device, const D3D12_RESOURCE_DESC1 *desc,
+        const D3D12_HEAP_PROPERTIES *heap_properties, D3D12_HEAP_FLAGS heap_flags, D3D12_RESOURCE_STATES initial_state,
+        const D3D12_CLEAR_VALUE *optimized_clear_value,
+        UINT num_castable_formats, const DXGI_FORMAT *castable_formats,
+        HANDLE shared_handle, struct d3d12_resource **resource)
+{
+    HRESULT hr = d3d12_resource_create_committed_impl(device, desc, heap_properties, heap_flags,
+            initial_state, optimized_clear_value, num_castable_formats, castable_formats, shared_handle, resource);
+
+    d3d12_resource_log_texture_diagnostic("create-committed", desc, hr, 0, 0,
+            SUCCEEDED(hr) ? *resource : NULL, NULL, 0, initial_state);
+    return hr;
+}
+
 static HRESULT d3d12_resource_validate_heap(const D3D12_RESOURCE_DESC1 *resource_desc, struct d3d12_heap *heap)
 {
     D3D12_HEAP_FLAGS deny_flag;
@@ -4633,7 +4688,7 @@ static HRESULT d3d12_resource_validate_heap(const D3D12_RESOURCE_DESC1 *resource
     return S_OK;
 }
 
-HRESULT d3d12_resource_create_placed(struct d3d12_device *device, const D3D12_RESOURCE_DESC1 *desc,
+static HRESULT d3d12_resource_create_placed_impl(struct d3d12_device *device, const D3D12_RESOURCE_DESC1 *desc,
         struct d3d12_heap *heap, uint64_t heap_offset, D3D12_RESOURCE_STATES initial_state,
         const D3D12_CLEAR_VALUE *optimized_clear_value,
         UINT num_castable_formats, const DXGI_FORMAT *castable_formats,
@@ -4849,6 +4904,21 @@ HRESULT d3d12_resource_create_placed(struct d3d12_device *device, const D3D12_RE
 
 fail:
     d3d12_resource_destroy_and_release_device(object, device);
+    return hr;
+}
+
+HRESULT d3d12_resource_create_placed(struct d3d12_device *device, const D3D12_RESOURCE_DESC1 *desc,
+        struct d3d12_heap *heap, uint64_t heap_offset, D3D12_RESOURCE_STATES initial_state,
+        const D3D12_CLEAR_VALUE *optimized_clear_value,
+        UINT num_castable_formats, const DXGI_FORMAT *castable_formats,
+        struct d3d12_resource **resource)
+{
+    HRESULT hr = d3d12_resource_create_placed_impl(device, desc, heap, heap_offset,
+            initial_state, optimized_clear_value, num_castable_formats, castable_formats, resource);
+
+    d3d12_resource_log_texture_diagnostic("create-placed", desc, hr,
+            heap->desc.SizeInBytes, heap->desc.Alignment, SUCCEEDED(hr) ? *resource : NULL,
+            heap, heap_offset, initial_state);
     return hr;
 }
 

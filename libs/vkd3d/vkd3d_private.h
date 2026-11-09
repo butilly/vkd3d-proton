@@ -1276,6 +1276,9 @@ VkImageLayout vk_image_layout_from_d3d12_resource_state(
         struct d3d12_command_list *list, const struct d3d12_resource *resource, D3D12_RESOURCE_STATES state);
 UINT d3d12_plane_index_from_vk_aspect(VkImageAspectFlagBits aspect);
 
+void d3d12_resource_log_texture_diagnostic(const char *event, const D3D12_RESOURCE_DESC1 *desc,
+        HRESULT hr, uint64_t size, uint64_t alignment, struct d3d12_resource *resource,
+        struct d3d12_heap *heap, uint64_t offset, D3D12_RESOURCE_STATES state);
 HRESULT d3d12_resource_create_borrowed(struct d3d12_device *device, const D3D12_RESOURCE_DESC1 *desc,
         UINT64 vk_handle, struct d3d12_resource **resource);
 HRESULT d3d12_resource_create_committed(struct d3d12_device *device, const D3D12_RESOURCE_DESC1 *desc,
