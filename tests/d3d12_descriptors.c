@@ -7201,8 +7201,11 @@ void test_r16_texel_buffer_atomic(void)
     uav_desc.Buffer.FirstElement = 0;
     uav_desc.Buffer.NumElements = 64;
     ID3D12Device_CreateUnorderedAccessView(context.device, output, NULL, &uav_desc, get_cpu_descriptor_handle(&context, heap, 0));
+
+    vkd3d_mute_validation_message("12351", "Intentionally skirting spec.");
     uav_desc.Buffer.FirstElement = 15;
     ID3D12Device_CreateUnorderedAccessView(context.device, output, NULL, &uav_desc, get_cpu_descriptor_handle(&context, heap, 1));
+    vkd3d_unmute_validation_message("12351");
 
     ID3D12GraphicsCommandList_SetDescriptorHeaps(context.list, 1, &heap);
     ID3D12GraphicsCommandList_SetComputeRootSignature(context.list, context.root_signature);
@@ -7430,4 +7433,476 @@ void test_conservative_ssbo_vectorization_dxil_heap_desc(void)
 void test_conservative_ssbo_vectorization_dxil_root_desc(void)
 {
     test_conservative_ssbo_vectorization_inner(true, true);
+}
+
+static void test_misaligned_root_desc(bool use_dxil)
+{
+    D3D12_WRITEBUFFERIMMEDIATE_PARAMETER wbi_args[2];
+    uint32_t got_raw, got_structured, expected;
+    D3D12_GPU_VIRTUAL_ADDRESS src_va, dst_va;
+    ID3D12Resource *src_buffer, *dst_buffer;
+    D3D12_HEAP_PROPERTIES heap_properties;
+    unsigned int src_offset, dst_offset;
+    ID3D12GraphicsCommandList2 *list2;
+    D3D12_ROOT_SIGNATURE_DESC rs_desc;
+    D3D12_RESOURCE_DESC buffer_desc;
+    D3D12_ROOT_PARAMETER rs_args[5];
+    struct resource_readback rb;
+    struct test_context context;
+    unsigned int raw_uav_offset;
+    unsigned int i, j, k;
+    HRESULT hr;
+
+#include "shaders/descriptors/headers/misaligned_root_desc.h"
+
+    struct
+    {
+        uint32_t structured_offset;
+        uint32_t raw_offset;
+        uint32_t value;
+        bool maybe_aligned;
+    }
+    values[] =
+    {
+        /* cbv */
+        {    0,   0, 0xae000000, true },
+        {    4,   4, 0xae000001, true },
+        {    8,   8, 0xae000002, true },
+        {   12,  12, 0xae000003, true },
+
+        {   48,  16, 0xae000006, true },
+        {   52,  20, 0xae000007, true },
+
+        {   88,  32, 0xae000009, true },
+
+        /* srv structured */
+        {   96,  48, 0xae000000, false },
+        {  100,  52, 0xae000001, false },
+        {  104,  56, 0xae000002, false },
+        {  108,  60, 0xae000003, false },
+
+        {  144,  64, 0xae00000e, false },
+        {  148,  68, 0xae00000f, false },
+
+        {  184,  80, 0xae00000d, false },
+
+        /* srv raw */
+        {  192,  96, 0xae000000, false },
+        {  196, 100, 0xae000001, false },
+        {  200, 104, 0xae000002, false },
+        {  204, 108, 0xae000003, false },
+
+        {  240, 112, 0xae000004, false },
+        {  244, 116, 0xae000005, false },
+
+        {  280, 128, 0xae000008, false },
+    };
+
+    if (!init_compute_test_context(&context))
+        return;
+
+    if (use_warp_device)
+    {
+        /* WARP throws device removed errors, ignore */
+        skip("WARP does not provide meaningful results for this test.\n");
+        destroy_test_context(&context);
+        return;
+    }
+
+    hr = ID3D12GraphicsCommandList_QueryInterface(context.list, &IID_ID3D12GraphicsCommandList2, (void**)&list2);
+
+    if (FAILED(hr))
+    {
+        skip("ID3D12GraphicsCommandList2 not available.\n");
+        destroy_test_context(&context);
+        return;
+    }
+
+    memset(rs_args, 0, sizeof(rs_args));
+    rs_args[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    rs_args[0].Descriptor.ShaderRegister = 0;
+
+    rs_args[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+    rs_args[1].Descriptor.ShaderRegister = 0;
+    rs_args[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+    rs_args[2].Descriptor.ShaderRegister = 1;
+
+    rs_args[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+    rs_args[3].Descriptor.ShaderRegister = 0;
+    rs_args[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+    rs_args[4].Descriptor.ShaderRegister = 1;
+
+    memset(&rs_desc, 0, sizeof(rs_desc));
+    rs_desc.NumParameters = ARRAY_SIZE(rs_args);
+    rs_desc.pParameters = rs_args;
+    hr = create_root_signature(context.device, &rs_desc, &context.root_signature);
+    ok(hr == S_OK, "Failed to create root signature, hr %#x.\n", (int)hr);
+
+    context.pipeline_state = create_compute_pipeline_state(context.device,
+        context.root_signature, use_dxil ? misaligned_root_desc_dxil : misaligned_root_desc_dxbc);
+
+    memset(&heap_properties, 0, sizeof(heap_properties));
+    heap_properties.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    memset(&buffer_desc, 0, sizeof(buffer_desc));
+    buffer_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    buffer_desc.Width = 4096;
+    buffer_desc.Height = 1;
+    buffer_desc.DepthOrArraySize = 1;
+    buffer_desc.MipLevels = 1;
+    buffer_desc.SampleDesc.Count = 1;
+    buffer_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    hr = ID3D12Device_CreateCommittedResource(context.device, &heap_properties, D3D12_HEAP_FLAG_NONE,
+            &buffer_desc, D3D12_RESOURCE_STATE_COPY_DEST, NULL, &IID_ID3D12Resource, (void **)&src_buffer);
+    ok(hr == S_OK, "Failed to create committed resource, hr %#x.\n", (int)hr);
+
+    buffer_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+
+    hr = ID3D12Device_CreateCommittedResource(context.device, &heap_properties, D3D12_HEAP_FLAG_NONE,
+            &buffer_desc, D3D12_RESOURCE_STATE_COPY_DEST, NULL, &IID_ID3D12Resource, (void **)&dst_buffer);
+    ok(hr == S_OK, "Failed to create committed resource, hr %#x.\n", (int)hr);
+
+    src_va = ID3D12Resource_GetGPUVirtualAddress(src_buffer);
+    dst_va = ID3D12Resource_GetGPUVirtualAddress(dst_buffer);
+
+    raw_uav_offset = buffer_desc.Width / 2u;
+
+    for (i = 0; i < 16; i += sizeof(uint32_t))
+    {
+        for (j = 0; j < 2; j++)
+        {
+            vkd3d_test_set_context("Test %u, %u", i / sizeof(uint32_t), j);
+
+            src_offset = j ? 0 : i;
+            dst_offset = j ? i : 0;
+
+            for (k = 0; k < buffer_desc.Width; k += sizeof(uint32_t))
+            {
+                memset(wbi_args, 0, sizeof(wbi_args));
+                wbi_args[0].Dest =  src_va + k;
+                wbi_args[0].Value = 0xae000000 | (k / sizeof(UINT32));
+
+                wbi_args[1].Dest = dst_va + k;
+                wbi_args[1].Value = 0xdeadbeef;
+
+                ID3D12GraphicsCommandList2_WriteBufferImmediate(list2, ARRAY_SIZE(wbi_args), wbi_args, NULL);
+            }
+
+            transition_resource_state(context.list, src_buffer, D3D12_RESOURCE_STATE_COPY_DEST,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
+            transition_resource_state(context.list, dst_buffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+            ID3D12GraphicsCommandList_SetComputeRootSignature(context.list, context.root_signature);
+            ID3D12GraphicsCommandList_SetPipelineState(context.list, context.pipeline_state);
+            ID3D12GraphicsCommandList_SetComputeRootConstantBufferView(context.list, 0, src_va + src_offset);
+            ID3D12GraphicsCommandList_SetComputeRootShaderResourceView(context.list, 1, src_va + src_offset);
+            ID3D12GraphicsCommandList_SetComputeRootShaderResourceView(context.list, 2, src_va + src_offset);
+            ID3D12GraphicsCommandList_SetComputeRootUnorderedAccessView(context.list, 3, dst_va + dst_offset);
+            ID3D12GraphicsCommandList_SetComputeRootUnorderedAccessView(context.list, 4, dst_va + dst_offset + raw_uav_offset);
+            ID3D12GraphicsCommandList_Dispatch(context.list, 1, 1, 1);
+
+            transition_resource_state(context.list, dst_buffer, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+
+            get_buffer_readback_with_command_list(dst_buffer, DXGI_FORMAT_R32_UINT, &rb, context.queue, context.list);
+
+            for (k = 0; k < ARRAY_SIZE(values); k++)
+            {
+                got_structured = get_readback_uint(&rb, (values[k].structured_offset + dst_offset) / sizeof(uint32_t), 0, 0);
+                got_raw = get_readback_uint(&rb, (values[k].raw_offset + raw_uav_offset + dst_offset) / sizeof(uint32_t), 0, 0);
+
+                /* Root CBV rounds down on Nvidia, misaligned SRV and UAV both work fine */
+                expected = values[k].value + src_offset / sizeof(uint32_t);
+
+                if (got_structured != expected && values[k].maybe_aligned)
+                    expected = values[k].value;
+
+                ok(got_structured== expected, "Got %#x, expected %#x at %u.\n", got_structured, expected, k);
+                ok(got_raw == expected, "Got %#x, expected %#x at %u.\n", got_raw, expected, k);
+            }
+
+            release_resource_readback(&rb);
+            reset_command_list(context.list, context.allocator);
+
+            transition_resource_state(context.list, src_buffer,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,
+                    D3D12_RESOURCE_STATE_COPY_DEST);
+            transition_resource_state(context.list, dst_buffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
+        }
+    }
+    vkd3d_test_set_context(NULL);
+
+    ID3D12Resource_Release(src_buffer);
+    ID3D12Resource_Release(dst_buffer);
+
+    ID3D12GraphicsCommandList2_Release(list2);
+    destroy_test_context(&context);
+}
+
+void test_misaligned_root_desc_dxbc(void)
+{
+    test_misaligned_root_desc(false);
+}
+
+void test_misaligned_root_desc_dxil(void)
+{
+    test_misaligned_root_desc(true);
+}
+
+void test_descriptor_heap_rebind_invalidation(void)
+{
+    struct test_context_desc context_desc;
+    D3D12_DESCRIPTOR_RANGE rs_range[3];
+    D3D12_ROOT_SIGNATURE_DESC rs_desc;
+    D3D12_ROOT_PARAMETER rs_param[4];
+    ID3D12DescriptorHeap *sampler1;
+    ID3D12DescriptorHeap *sampler2;
+    struct test_context context;
+    struct resource_readback rb;
+    ID3D12DescriptorHeap *heap1;
+    ID3D12DescriptorHeap *heap2;
+    D3D12_SAMPLER_DESC samp;
+    ID3D12Resource *output;
+    ID3D12Resource *tex1;
+    ID3D12Resource *tex2;
+    ID3D12Resource *tex3;
+    bool is_amd_windows;
+    unsigned int x, y;
+
+#include "shaders/descriptors/headers/heap_rebind_invalidation.h"
+
+    memset(&context_desc, 0, sizeof(context_desc));
+    context_desc.no_pipeline = true;
+    context_desc.no_render_target = true;
+    context_desc.no_root_signature = true;
+
+    if (!init_test_context(&context, &context_desc))
+        return;
+
+    memset(&rs_desc, 0, sizeof(rs_desc));
+    memset(rs_range, 0, sizeof(rs_range));
+    memset(rs_param, 0, sizeof(rs_param));
+
+    rs_desc.NumParameters = ARRAY_SIZE(rs_param);
+    rs_desc.pParameters = rs_param;
+
+    rs_param[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rs_param[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    rs_param[0].DescriptorTable.NumDescriptorRanges = 1;
+    rs_param[0].DescriptorTable.pDescriptorRanges = &rs_range[0];
+    rs_param[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rs_param[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    rs_param[1].DescriptorTable.NumDescriptorRanges = 1;
+    rs_param[1].DescriptorTable.pDescriptorRanges = &rs_range[1];
+    rs_param[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rs_param[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    rs_param[2].DescriptorTable.NumDescriptorRanges = 1;
+    rs_param[2].DescriptorTable.pDescriptorRanges = &rs_range[2];
+    rs_param[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+    rs_param[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    rs_range[0].NumDescriptors = 1;
+    rs_range[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    rs_range[1].NumDescriptors = 1;
+    rs_range[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
+    rs_range[2].NumDescriptors = 15;
+    rs_range[2].BaseShaderRegister = 1;
+    rs_range[2].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+
+    create_root_signature(context.device, &rs_desc, &context.root_signature);
+    context.pipeline_state = create_compute_pipeline_state(context.device, context.root_signature, heap_rebind_invalidation_dxbc);
+
+    tex1 = create_default_texture2d(context.device, 2, 2, 1, 1, DXGI_FORMAT_R32_FLOAT, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COMMON);
+    tex2 = create_default_texture2d(context.device, 2, 2, 1, 1, DXGI_FORMAT_R32_FLOAT, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COMMON);
+    tex3 = create_default_texture2d(context.device, 2, 2, 1, 1, DXGI_FORMAT_R32_FLOAT, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COMMON);
+    output = create_default_buffer(context.device, 64 * 1024, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
+
+    is_amd_windows = is_amd_windows_device(context.device);
+
+    {
+        const float data1[2][2] = { { 1, 2 }, { 3, 4 } };
+        const float data2[2][2] = { { 5, 6 }, { 7, 8 } };
+        const float data3[2][2] = { { 9, 10 }, { 11, 12 } };
+        D3D12_SUBRESOURCE_DATA sub;
+        sub.RowPitch = 2 * sizeof(float);
+        sub.SlicePitch = sizeof(data1);
+
+        sub.pData = data1;
+        upload_texture_data(tex1, &sub, 1, context.queue, context.list);
+        reset_command_list(context.list, context.allocator);
+
+        sub.pData = data2;
+        upload_texture_data(tex2, &sub, 1, context.queue, context.list);
+        reset_command_list(context.list, context.allocator);
+
+        sub.pData = data3;
+        upload_texture_data(tex3, &sub, 1, context.queue, context.list);
+        reset_command_list(context.list, context.allocator);
+    }
+
+    /* This must be large to expose issues. NV Windows seems to do some kind of descriptor heap arena allocation if it's small
+     * and it's possible to deference multiple heaps somehow. */
+    heap1 = create_gpu_descriptor_heap(context.device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 512 * 1024);
+    heap2 = create_gpu_descriptor_heap(context.device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 512 * 1024);
+    sampler1 = create_gpu_descriptor_heap(context.device, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, 2048);
+    sampler2 = create_gpu_descriptor_heap(context.device, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, 2048);
+
+    ID3D12Device_CreateShaderResourceView(context.device, tex1, NULL, get_cpu_descriptor_handle(&context, heap1, 0));
+    ID3D12Device_CreateShaderResourceView(context.device, tex2, NULL, get_cpu_descriptor_handle(&context, heap1, 1));
+    ID3D12Device_CreateShaderResourceView(context.device, tex3, NULL, get_cpu_descriptor_handle(&context, heap2, 0));
+    ID3D12Device_CreateShaderResourceView(context.device, tex1, NULL, get_cpu_descriptor_handle(&context, heap2, 1));
+    ID3D12Device_CreateShaderResourceView(context.device, tex2, NULL, get_cpu_descriptor_handle(&context, heap2, 2));
+
+    memset(&samp, 0, sizeof(samp));
+    samp.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samp.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samp.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samp.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
+    ID3D12Device_CreateSampler(context.device, &samp, get_cpu_descriptor_handle(&context, sampler1, 0));
+    ID3D12Device_CreateSampler(context.device, &samp, get_cpu_descriptor_handle(&context, sampler2, 1));
+
+    samp.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    samp.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    samp.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    ID3D12Device_CreateSampler(context.device, &samp, get_cpu_descriptor_handle(&context, sampler1, 1));
+    ID3D12Device_CreateSampler(context.device, &samp, get_cpu_descriptor_handle(&context, sampler2, 0));
+
+    /* Base case */
+    {
+        ID3D12DescriptorHeap *heaps[2] = { heap1, sampler1 };
+        ID3D12GraphicsCommandList_SetDescriptorHeaps(context.list, 2, heaps);
+        ID3D12GraphicsCommandList_SetComputeRootSignature(context.list, context.root_signature);
+        ID3D12GraphicsCommandList_SetPipelineState(context.list, context.pipeline_state);
+        ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(context.list, 0,
+            get_gpu_descriptor_handle(&context, heap1, 1));
+        ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(context.list, 1,
+            get_gpu_descriptor_handle(&context, sampler1, 1));
+        ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(context.list, 2,
+            get_gpu_descriptor_handle(&context, heap1, 1));
+        ID3D12GraphicsCommandList_SetComputeRootUnorderedAccessView(context.list, 3,
+            ID3D12Resource_GetGPUVirtualAddress(output) + 0 * sizeof(float));
+        ID3D12GraphicsCommandList_Dispatch(context.list, 1, 1, 1);
+    }
+
+    /* Just replace the resource heap. Don't rebind anything. */
+    {
+        ID3D12DescriptorHeap *heaps[2] = { heap2, sampler1 };
+        ID3D12GraphicsCommandList_SetDescriptorHeaps(context.list, 2, heaps);
+        ID3D12GraphicsCommandList_SetComputeRootUnorderedAccessView(context.list, 3,
+        ID3D12Resource_GetGPUVirtualAddress(output) + 16 * sizeof(float));
+        /* NV windows driver doesn't seem to actually rebind the heap unless we set at least one root parameter. */
+        ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(context.list, 2,
+            get_gpu_descriptor_handle(&context, heap2, 1));
+        ID3D12GraphicsCommandList_Dispatch(context.list, 1, 1, 1);
+    }
+
+    /* Replace the sampler heap. Don't rebind anything. */
+    {
+        ID3D12DescriptorHeap *heaps[2] = { heap2, sampler2 };
+        ID3D12GraphicsCommandList_SetDescriptorHeaps(context.list, 2, heaps);
+        ID3D12GraphicsCommandList_SetComputeRootUnorderedAccessView(context.list, 3,
+            ID3D12Resource_GetGPUVirtualAddress(output) + 32 * sizeof(float));
+        ID3D12GraphicsCommandList_Dispatch(context.list, 1, 1, 1);
+    }
+
+    transition_resource_state(context.list, output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    get_buffer_readback_with_command_list(output, DXGI_FORMAT_UNKNOWN, &rb, context.queue, context.list);
+
+    /* tex2 is read with the WRAP sampler. Sanity check. */
+    for (y = 0; y < 4; y++)
+    {
+        for (x = 0; x < 4; x++)
+        {
+            float value = get_readback_float(&rb, y * 4 + x, 0);
+            int sampled_x, sampled_y;
+            float expected;
+
+            sampled_x = (int)x - 1;
+            sampled_y = (int)y - 1;
+            sampled_x &= 1;
+            sampled_y &= 1;
+
+            expected = 10.0f + 5.0f + (float)sampled_x + 2.0f * (float)sampled_y;
+
+            ok(value == expected, "coord %u, %u: expected %f, got %f\n", x, y, expected, value);
+        }
+    }
+
+    /* Assumption, the table offsets are kept. */
+    for (y = 0; y < 4; y++)
+    {
+        for (x = 0; x < 4; x++)
+        {
+            float value = get_readback_float(&rb, y * 4 + x + 16, 0);
+            int sampled_x, sampled_y;
+            float expected;
+
+            sampled_x = (int)x - 1;
+            sampled_y = (int)y - 1;
+
+            if (is_amd_windows)
+            {
+                /* The sampler heap binding is retained. The image heap binding is also retained, despite being in a different heap.
+                 * AMD descriptor heaps aren't really proper heaps. */
+                sampled_x &= 1;
+                sampled_y &= 1;
+                expected = 10.0f + 5.0f + (float)sampled_x + 2.0f * (float)sampled_y;
+            }
+            else
+            {
+                /* The sampler mapping is retained. */
+                sampled_x &= 1;
+                sampled_y &= 1;
+
+                /* Heap index seems to remain 1, except we now point into a new heap. */
+                expected = 10.0f + 1.0f + (float)sampled_x + 2.0f * (float)sampled_y;
+            }
+
+            ok(value == expected, "coord %u, %u: expected %f, got %f\n", x, y, expected, value);
+        }
+    }
+
+    for (y = 0; y < 4; y++)
+    {
+        for (x = 0; x < 4; x++)
+        {
+            float value = get_readback_float(&rb, y * 4 + x + 32, 0);
+            int sampled_x, sampled_y;
+            float expected;
+
+            sampled_x = (int)x - 1;
+            sampled_y = (int)y - 1;
+
+            if (is_amd_windows)
+            {
+                /* The sampler heap binding is retained. The image heap binding is also retained, despite being in a different heap.
+                 * AMD descriptor heaps aren't really proper heaps. */
+                sampled_x &= 1;
+                sampled_y &= 1;
+                expected = 10.0f + 5.0f + (float)sampled_x + 2.0f * (float)sampled_y;
+            }
+            else
+            {
+                /* The sampler mapping retains index 1, which is CLAMP in second heap. */
+                sampled_x = max(min(sampled_x, 1), 0);
+                sampled_y = max(min(sampled_y, 1), 0);
+
+                /* Heap index seems to remain 1, except we now point into a new heap. */
+                expected = 10.0f + 1.0f + (float)sampled_x + 2.0f * (float)sampled_y;
+            }
+
+            ok(value == expected, "coord %u, %u: expected %f, got %f\n", x, y, expected, value);
+        }
+    }
+
+    release_resource_readback(&rb);
+    ID3D12Resource_Release(tex1);
+    ID3D12Resource_Release(tex2);
+    ID3D12Resource_Release(tex3);
+    ID3D12Resource_Release(output);
+    ID3D12DescriptorHeap_Release(heap1);
+    ID3D12DescriptorHeap_Release(heap2);
+    ID3D12DescriptorHeap_Release(sampler1);
+    ID3D12DescriptorHeap_Release(sampler2);
+    destroy_test_context(&context);
 }

@@ -3158,15 +3158,16 @@ static void d3d12_pipeline_state_init_compile_arguments(struct d3d12_pipeline_st
         compile_arguments->output_swizzle_count = state->graphics.rt_count;
     }
 
+    if (stage != VK_SHADER_STAGE_COMPUTE_BIT)
+    {
+        const VkShaderStageFlags active_pre_raster = state->graphics.stage_flags & ~VK_SHADER_STAGE_FRAGMENT_BIT;
+        compile_arguments->last_pre_rasterization =
+                (active_pre_raster & ~(stage | (stage - 1))) == 0;
+    }
+
     if (stage != VK_SHADER_STAGE_COMPUTE_BIT && state->graphics.multiview.view_mask)
     {
-        VkShaderStageFlags active_pre_raster = state->graphics.stage_flags & ~VK_SHADER_STAGE_FRAGMENT_BIT;
         compile_arguments->multiview.enable = state->graphics.multiview.view_mask != 0;
-        /* Only last pre-raster stage needs to "support" multiview properly.
-         * Other stages can query ViewID. */
-        compile_arguments->multiview.last_pre_rasterization =
-                (active_pre_raster & ~(stage | (stage - 1))) == 0;
-
         /* Pass down concrete values via spec-constants later. */
     }
 }
@@ -3370,18 +3371,6 @@ static bool vkd3d_shader_stages_require_work_locked(struct d3d12_pipeline_state 
     return false;
 }
 
-static void vkd3d_shader_code_init_empty_fs(struct vkd3d_shader_code *code)
-{
-#include <fs_empty.h>
-    void *tmp;
-
-    memset(&code->meta, 0, sizeof(code->meta));
-    code->size = sizeof(fs_empty);
-    tmp = vkd3d_malloc(sizeof(fs_empty));
-    memcpy(tmp, fs_empty, sizeof(fs_empty));
-    code->code = tmp;
-}
-
 static HRESULT vkd3d_late_compile_shader_stages(struct d3d12_pipeline_state *state)
 {
     /* We are at risk of having to compile pipelines late if we return from CreatePipelineState without
@@ -3410,25 +3399,13 @@ static HRESULT vkd3d_late_compile_shader_stages(struct d3d12_pipeline_state *sta
 
     for (i = 0; i < graphics->stage_count; i++)
     {
-        if (graphics->stages[i].module == VK_NULL_HANDLE && !graphics->code[i].size)
+        if (graphics->stages[i].module == VK_NULL_HANDLE && !graphics->code[i].size &&
+                graphics->cached_desc.bytecode[i].BytecodeLength)
         {
-            if (graphics->cached_desc.bytecode[i].BytecodeLength)
-            {
-                /* If we're compiling late, we don't care about debug. Debug capturing disables module identifiers. */
-                if (FAILED(hr = vkd3d_compile_shader_stage(state, state->device,
-                        graphics->cached_desc.bytecode_stages[i],
-                        &graphics->cached_desc.bytecode[i], &graphics->code[i], NULL)))
-                    break;
-            }
-            else if (graphics->cached_desc.bytecode_stages[i] == VK_SHADER_STAGE_FRAGMENT_BIT)
-            {
-                vkd3d_shader_code_init_empty_fs(&graphics->code[i]);
-            }
-            else
-            {
-                hr = E_INVALIDARG;
+            /* If we're compiling late, we don't care about debug. Debug capturing disables module identifiers. */
+            if (FAILED(hr = vkd3d_compile_shader_stage(state, state->device, graphics->cached_desc.bytecode_stages[i],
+                    &graphics->cached_desc.bytecode[i], &graphics->code[i], NULL)))
                 break;
-            }
         }
 
         if (graphics->stages[i].module == VK_NULL_HANDLE)
@@ -4132,10 +4109,9 @@ static void blend_attachment_from_d3d12(struct d3d12_device *device, struct VkPi
             vk_desc->colorWriteMask |= VK_COLOR_COMPONENT_A_BIT;
 
         /* RGB9E5 is quirky with write masks, RGB must be either all set or unset. Drivers
-         * are supposed to ignore alpha, however this is currently broken on RADV. */
-        if (format && format->vk_format == VK_FORMAT_E5B9G9R9_UFLOAT_PACK32 &&
-                !VKD3D_CONFIG_FLAG_IS_SET(SKIP_DRIVER_WORKAROUNDS) &&
-                device->device_info.vulkan_1_2_properties.driverID == VK_DRIVER_ID_MESA_RADV)
+         * are supposed to ignore alpha, however this is currently broken on RADV.
+         * Vulkan specs recently changed the rules so we must do this fixup unconditionally. */
+        if (format && format->vk_format == VK_FORMAT_E5B9G9R9_UFLOAT_PACK32)
         {
             vk_desc->colorWriteMask &= ~VK_COLOR_COMPONENT_A_BIT;
 
@@ -4982,17 +4958,10 @@ static HRESULT d3d12_pipeline_state_graphics_create_shader_stages(
             else
                 debug_output = NULL;
 
-            if (graphics->cached_desc.bytecode_stages[i] == VK_SHADER_STAGE_FRAGMENT_BIT &&
-                    graphics->cached_desc.bytecode[i].BytecodeLength == 0)
-            {
-                vkd3d_shader_code_init_empty_fs(&graphics->code[i]);
-            }
-            else if (FAILED(hr = vkd3d_compile_shader_stage(state, device,
+            if (FAILED(hr = vkd3d_compile_shader_stage(state, device,
                     graphics->cached_desc.bytecode_stages[i],
                     &graphics->cached_desc.bytecode[i], &graphics->code[i], debug_output)))
-            {
                 return hr;
-            }
         }
 
         if (FAILED(hr = vkd3d_setup_shader_stage(state, device,
@@ -5059,12 +5028,6 @@ static HRESULT d3d12_pipeline_state_graphics_handle_meta(struct d3d12_pipeline_s
     {
         if (graphics->cached_desc.bytecode_stages[i] == VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT)
             graphics->patch_vertex_count = graphics->code[i].meta.patch_vertex_count;
-
-        if (graphics->code[i].meta.flags & VKD3D_SHADER_META_FLAG_USES_SAMPLE_RATE_SHADING)
-        {
-            graphics->ms_desc.sampleShadingEnable = VK_TRUE;
-            graphics->ms_desc.minSampleShading = 1.0f;
-        }
 
         if ((graphics->code[i].meta.flags & VKD3D_SHADER_META_FLAG_REPLACED) &&
                 device->debug_ring.active)
@@ -5337,16 +5300,6 @@ static bool vkd3d_validate_vertex_input_signature(const struct vkd3d_shader_sign
     return true;
 }
 
-static bool d3d12_graphics_pipeline_state_needs_noop_fs(
-        const struct d3d12_device *device,
-        const struct d3d12_graphics_pipeline_state *graphics)
-{
-    return (graphics->stage_flags & VK_SHADER_STAGE_MESH_BIT_EXT) &&
-            !(graphics->stage_flags & VK_SHADER_STAGE_FRAGMENT_BIT) &&
-            !VKD3D_CONFIG_FLAG_IS_SET(SKIP_DRIVER_WORKAROUNDS) &&
-            device->device_info.vulkan_1_2_properties.driverID == VK_DRIVER_ID_MESA_RADV;
-}
-
 static bool d3d12_pipeline_state_validate_view_instancing(struct d3d12_device *device,
         struct d3d12_graphics_pipeline_state *graphics, const struct d3d12_pipeline_state_desc *desc)
 {
@@ -5457,7 +5410,6 @@ static HRESULT d3d12_pipeline_state_init_graphics_create_info(struct d3d12_pipel
     };
 
     graphics->stage_flags = vkd3d_pipeline_state_desc_get_shader_stages(desc);
-
     /* Defer taking ref-count until completion. */
     state->device = device;
     graphics->stage_count = 0;
@@ -5502,13 +5454,6 @@ static HRESULT d3d12_pipeline_state_init_graphics_create_info(struct d3d12_pipel
          * We can just pretend we have no render targets in this case, which is fine. */
         rt_count = 0;
     }
-
-    /* RADV screws up a bit when faced with depth-only mesh shaders.
-     * - No cross-stage optimization ends up happening.
-     * - Rendering glitches are observed. It's unclear why.
-     * Adding a noop FS is trivial. */
-    if (d3d12_graphics_pipeline_state_needs_noop_fs(device, graphics))
-        graphics->stage_flags |= VK_SHADER_STAGE_FRAGMENT_BIT;
 
     if (desc->view_instancing_desc.ViewInstanceCount)
     {
@@ -5783,16 +5728,6 @@ static HRESULT d3d12_pipeline_state_init_graphics_create_info(struct d3d12_pipel
 
         if (!(graphics->stage_flags & shader_stages_lut[i].stage))
             continue;
-
-        /* Can happen for mesh -> fragment workaround. */
-        if (!b->BytecodeLength)
-        {
-            graphics->cached_desc.bytecode[graphics->stage_count].BytecodeLength = 0;
-            graphics->cached_desc.bytecode[graphics->stage_count].pShaderBytecode = NULL;
-            graphics->cached_desc.bytecode_stages[graphics->stage_count] = shader_stages_lut[i].stage;
-            ++graphics->stage_count;
-            continue;
-        }
 
         prev_stage = curr_stage;
         curr_stage = shader_stages_lut[i].stage;
@@ -6910,6 +6845,7 @@ VkPipeline d3d12_pipeline_state_create_pipeline_variant(struct d3d12_pipeline_st
     pipeline_desc.pViewportState = &vp_desc;
     pipeline_desc.pRasterizationState = &graphics->rs_desc;
     pipeline_desc.pDepthStencilState = &graphics->ds_desc;
+    pipeline_desc.pMultisampleState = &multisample_info;
     pipeline_desc.pDynamicState = &dynamic_create_info;
     pipeline_desc.layout = graphics->pipeline_layout;
     pipeline_desc.basePipelineIndex = -1;
@@ -6928,15 +6864,10 @@ VkPipeline d3d12_pipeline_state_create_pipeline_variant(struct d3d12_pipeline_st
         pipeline_desc.pInputAssemblyState = &vertex_input_desc.ia_info;
     }
 
-    if (has_fragment_output_state || graphics->ms_desc.sampleShadingEnable)
-    {
-        multisample_info = graphics->ms_desc;
+    multisample_info = graphics->ms_desc;
 
-        if (key && key->rasterization_samples)
-            multisample_info.rasterizationSamples = key->rasterization_samples;
-
-        pipeline_desc.pMultisampleState = &multisample_info;
-    }
+    if (key && key->rasterization_samples)
+        multisample_info.rasterizationSamples = key->rasterization_samples;
 
     if (has_fragment_output_state)
         pipeline_desc.pColorBlendState = &fragment_output_desc.cb_info;
@@ -8189,6 +8120,12 @@ static HRESULT vkd3d_bindless_state_init_heap(struct vkd3d_bindless_state *bindl
         bindless_state->cbv_srv_uav_size,
         bindless_state->sampler_size,
         (bindless_state->heap.uav_counter_embedded_offset ? "on" : "off"));
+
+    /* Too much content in the wild is just straight up broken.
+     * Apply heap robustness globally when using heap.
+     * We can get a very fast path for this using the inline redzone. */
+    if (!VKD3D_CONFIG_FLAG_IS_SET(NO_DEFAULT_HEAP_ROBUSTNESS))
+        device->workarounds.quirks.global_quirks |= VKD3D_SHADER_QUIRK_DESCRIPTOR_HEAP_ROBUSTNESS;
 
     return S_OK;
 }

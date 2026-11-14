@@ -141,7 +141,7 @@ static const struct vkd3d_optional_extension_info optional_device_extensions[] =
     VK_EXTENSION(EXT_DEPTH_BIAS_CONTROL, EXT_depth_bias_control),
     VK_EXTENSION(EXT_ZERO_INITIALIZE_DEVICE_MEMORY, EXT_zero_initialize_device_memory),
     VK_EXTENSION(EXT_SHADER_FLOAT8, EXT_shader_float8),
-    VK_EXTENSION_COND(EXT_DESCRIPTOR_HEAP, EXT_descriptor_heap, VKD3D_CONFIG_FLAG_STATIC(DESCRIPTOR_HEAP)),
+    VK_EXTENSION_DISABLE_COND(EXT_DESCRIPTOR_HEAP, EXT_descriptor_heap, VKD3D_CONFIG_FLAG_STATIC(NO_DESCRIPTOR_HEAP)),
     VK_EXTENSION_DISABLE_COND(EXT_RAY_TRACING_INVOCATION_REORDER, EXT_ray_tracing_invocation_reorder, VKD3D_CONFIG_FLAG_STATIC(NO_DXR)),
     VK_EXTENSION(EXT_SHADER_LONG_VECTOR, EXT_shader_long_vector),
     VK_EXTENSION(EXT_SHADER_ATOMIC_FLOAT, EXT_shader_atomic_float),
@@ -2614,20 +2614,6 @@ static HRESULT vkd3d_init_device_caps(struct d3d12_device *device,
             INFO("Not all relevant pipeline stages are supported by EXT_dgc. Skipping.\n");
             physical_device_info->device_generated_commands_features.deviceGeneratedCommands = VK_FALSE;
         }
-    }
-
-    if (!physical_device_info->vulkan_1_2_properties.robustBufferAccessUpdateAfterBind)
-    {
-        /* Generally, we cannot enable robustness if this is not supported,
-         * but this means we cannot support D3D12 at all, so just disabling robustBufferAccess is not a viable option.
-         * This can be observed on RADV, where this feature for some reason is not supported at all,
-         * but this apparently was just a missed feature bit.
-         * https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/9281.
-         *
-         * Another reason to not disable it, is that we will end up with two
-         * split application infos in Fossilize, which is annoying for pragmatic reasons.
-         * Validation does not appear to complain, so we just go ahead and enable robustness anyways. */
-        WARN("Device does not expose robust buffer access for the update after bind feature, enabling it anyways.\n");
     }
 
     if (!physical_device_info->vulkan_1_2_features.samplerMirrorClampToEdge)
@@ -6463,6 +6449,52 @@ static void STDMETHODCALLTYPE d3d12_device_CopyDescriptorsSimple_embedded_128_32
     }
 }
 
+static void STDMETHODCALLTYPE d3d12_device_CopyDescriptorsSimple_embedded_128_16_planar(d3d12_device_iface *iface,
+        UINT descriptor_count, const D3D12_CPU_DESCRIPTOR_HANDLE dst_descriptor_range_offset,
+        const D3D12_CPU_DESCRIPTOR_HANDLE src_descriptor_range_offset,
+        D3D12_DESCRIPTOR_HEAP_TYPE descriptor_heap_type)
+{
+    struct d3d12_device *device;
+    TRACE("iface %p, descriptor_count %u, dst_descriptor_range_offset %#zx, "
+          "src_descriptor_range_offset %#zx, descriptor_heap_type %#x.\n",
+            iface, descriptor_count, dst_descriptor_range_offset.ptr, src_descriptor_range_offset.ptr,
+            descriptor_heap_type);
+
+    if (VKD3D_EXPECT_TRUE(descriptor_heap_type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV))
+    {
+        d3d12_desc_copy_embedded_resource(
+                dst_descriptor_range_offset.ptr,
+                src_descriptor_range_offset.ptr,
+                128 * descriptor_count);
+    }
+    else if (descriptor_heap_type == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER)
+    {
+        if (VKD3D_EXPECT_TRUE(descriptor_count == 1))
+        {
+            /* Expected path. */
+            vkd3d_memcpy_aligned_16_cached(
+                    (void *)dst_descriptor_range_offset.ptr,
+                    (const void *)src_descriptor_range_offset.ptr);
+        }
+        else
+        {
+            /* Rare path. */
+            vkd3d_memcpy_aligned_cached(
+                    (void *)dst_descriptor_range_offset.ptr,
+                    (const void *)src_descriptor_range_offset.ptr,
+                    16 * descriptor_count);
+        }
+    }
+    else
+    {
+        device = unsafe_impl_from_ID3D12Device(iface);
+        d3d12_device_copy_descriptors(device,
+                1, &dst_descriptor_range_offset, &descriptor_count,
+                1, &src_descriptor_range_offset, &descriptor_count,
+                descriptor_heap_type);
+    }
+}
+
 static void STDMETHODCALLTYPE d3d12_device_CopyDescriptorsSimple_embedded_generic(d3d12_device_iface *iface,
         UINT descriptor_count, const D3D12_CPU_DESCRIPTOR_HANDLE dst_descriptor_range_offset,
         const D3D12_CPU_DESCRIPTOR_HANDLE src_descriptor_range_offset,
@@ -7521,8 +7553,11 @@ static HRESULT STDMETHODCALLTYPE d3d12_device_OpenExistingHeapFromAddress1(
 
     memset(&heap_desc, 0, sizeof(heap_desc));
     heap_desc.Alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
-    heap_desc.Flags = D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS |
-            (address ? (D3D12_HEAP_FLAG_SHARED | D3D12_HEAP_FLAG_SHARED_CROSS_ADAPTER) : 0);
+    heap_desc.Flags = D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS;
+    if (address && device->vk_info.EXT_external_memory_host)
+        heap_desc.Flags |= D3D12_HEAP_FLAG_SHARED | D3D12_HEAP_FLAG_SHARED_CROSS_ADAPTER;
+    else if (address)
+        FIXME("Attempting to import host memory, but VK_EXT_external_memory_host is not supported. Falling back.\n");
     heap_desc.Properties.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_WRITE_BACK;
     heap_desc.Properties.MemoryPoolPreference = D3D12_MEMORY_POOL_L0;
     heap_desc.Properties.Type = D3D12_HEAP_TYPE_CUSTOM;
@@ -8835,6 +8870,7 @@ VKD3D_DECLARE_D3D12_DEVICE_VARIANT(heap_64_16_packed, heap, embedded_64_16_packe
 VKD3D_DECLARE_D3D12_DEVICE_VARIANT(heap_32_16_planar, heap, embedded_32_16_planar); /* RDNA3+ */
 VKD3D_DECLARE_D3D12_DEVICE_VARIANT(heap_32_32_planar, heap, embedded_32_32_planar); /* NV */
 VKD3D_DECLARE_D3D12_DEVICE_VARIANT(heap_128_32_planar, heap, embedded_128_32_planar); /* Intel */
+VKD3D_DECLARE_D3D12_DEVICE_VARIANT(heap_128_16_planar, heap, embedded_128_16_planar); /* Turnip */
 VKD3D_DECLARE_D3D12_DEVICE_VARIANT(heap_generic, heap, embedded_generic);
 
 /* Descriptor buffer with embedded mutable */
@@ -9358,8 +9394,10 @@ static void d3d12_device_caps_init_feature_options3(struct d3d12_device *device)
      *
      * TIER_2 is most appropriate since it allows for fast path in certain situations and
      * fallback in some other cases.
-     * Turnip does not support multiviewGeom/Tess. This should not come up, so shove it under the rug for now. */
+     * Turnip does not support multiviewGeom/Tess. This should not come up, so shove it under the rug for now.
+     * At least one game requires the really awkward cases for multiview that we don't support yet. */
     options3->ViewInstancingTier =
+            !vkd3d_application_attempts_complex_multiview() &&
             device->device_info.vulkan_1_1_features.multiview &&
             device->device_info.vulkan_1_2_features.shaderOutputLayer &&
             device->device_info.vulkan_1_2_features.shaderOutputViewportIndex &&
@@ -10415,6 +10453,14 @@ static void d3d12_device_replace_vtable(struct d3d12_device *device)
              * somewhere, we can probably do 64_32. */
             device->ID3D12Device_iface.lpVtbl = &d3d12_device_vtbl_heap_128_32_planar;
         }
+        else if (!(device->bindless_state.flags & VKD3D_BINDLESS_MUTABLE_EMBEDDED_PACKED_METADATA) &&
+                device->bindless_state.cbv_srv_uav_size == 128 &&
+                device->bindless_state.sampler_size == 16)
+        {
+            /* Turnip. If we can find a way to properly alias SSBO + Texel buffer and stuff UAV counter
+             * somewhere, we can probably do 64_16. */
+            device->ID3D12Device_iface.lpVtbl = &d3d12_device_vtbl_heap_128_16_planar;
+        }
         else
         {
             device->ID3D12Device_iface.lpVtbl = &d3d12_device_vtbl_heap_generic;
@@ -10544,7 +10590,7 @@ static HRESULT d3d12_device_init(struct d3d12_device *device,
 
     device->adapter_luid = create_info->adapter_luid;
     device->removed_reason = S_OK;
-    vkd3d_atomic_uint32_store_explicit(
+    vkd3d_atomic_uint64_store_explicit(
             &device->vendor_hacks.global_ray_tracing_pipeline_create_flags, 0,
             vkd3d_memory_order_relaxed);
 

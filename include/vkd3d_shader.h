@@ -562,8 +562,7 @@ enum vkd3d_shader_target_extension
 
 #define VKD3D_SHADER_QUIRK_IGNORE_PRIMITIVE_SHADING_RATE (1ull << 32)
 
-/* Use precise fma instead of the spec correct mad. To workaround issues with invariance. */
-#define VKD3D_SHADER_QUIRK_PRECISE_FMA (1ull << 33)
+/* Bit 33 vacant */
 
 /* If the threadgroup size is 32, lower reported WaveSize to shader accordingly.
  * Some games assume they can get away with only <= wave32. */
@@ -591,6 +590,9 @@ enum vkd3d_shader_target_extension
  * Turnip on 7xx chips cannot, so we may need soft-float in some rare cases
  * where denorms really matter to visual output. */
 #define VKD3D_SHADER_QUIRK_FORCE_DENORM_LEGACY_FP16_CONVERSIONS (1ull << 40)
+
+/* For debugging. Will be removed eventually. */
+#define VKD3D_SHADER_QUIRK_LEGACY_STRUCTURIZER (1ull << 41)
 
 typedef uint64_t vkd3d_shader_quirks_t;
 
@@ -638,10 +640,11 @@ struct vkd3d_shader_compile_arguments
     uint32_t nv_shader_extn_uav_slot;
     uint32_t nv_shader_extn_uav_space;
 
+    bool last_pre_rasterization;
+
     struct
     {
         bool enable;
-        bool last_pre_rasterization;
     } multiview;
 };
 
