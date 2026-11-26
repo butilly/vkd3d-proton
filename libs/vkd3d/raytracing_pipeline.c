@@ -463,6 +463,10 @@ struct d3d12_rt_state_object_pipeline_data
     size_t stages_size;
     size_t stages_count;
 
+    void **scratch_allocs;
+    size_t scratch_allocs_size;
+    size_t scratch_allocs_count;
+
     struct d3d12_state_object_collection *collections;
     size_t collections_size;
     size_t collections_count;
@@ -485,6 +489,10 @@ static void d3d12_state_object_pipeline_data_cleanup_modules(struct d3d12_rt_sta
         VK_CALL(vkDestroyShaderModule(device->vk_device, data->stages[i].module, NULL));
     }
     data->stages_count = 0;
+
+    for (i = 0; i < data->scratch_allocs_count; i++)
+        vkd3d_free(data->scratch_allocs[i]);
+    data->scratch_allocs_count = 0;
 }
 
 static void d3d12_state_object_pipeline_data_cleanup_compile_temporaries(struct d3d12_rt_state_object_pipeline_data *data,
@@ -519,6 +527,10 @@ static void d3d12_state_object_pipeline_data_cleanup_compile_temporaries(struct 
     data->stages = 0;
     data->stages_count = 0;
     data->stages_size = 0;
+
+    vkd3d_free(data->scratch_allocs);
+    data->scratch_allocs = NULL;
+    data->scratch_allocs_size = 0;
 
     vkd3d_free(data->collections);
     data->collections = NULL;
@@ -1897,7 +1909,7 @@ static HRESULT d3d12_state_object_compile_pipeline_variant(struct d3d12_rt_state
     struct vkd3d_shader_library_entry_point *entry;
     struct d3d12_rt_state_object_variant *variant;
     const struct D3D12_HIT_GROUP_DESC *hit_group;
-    VkPipelineCreateFlags global_rt_create_flags;
+    VkPipelineCreateFlags2 global_rt_create_flags;
     VkPipelineLibraryCreateInfoKHR library_info;
     size_t local_static_sampler_bindings_count;
     size_t local_static_sampler_bindings_size;
@@ -1905,11 +1917,8 @@ static HRESULT d3d12_state_object_compile_pipeline_variant(struct d3d12_rt_state
     VkPipelineShaderStageCreateInfo *stage;
     uint32_t pgroup_offset, pstage_offset;
     unsigned int num_groups_to_export;
-    size_t scratch_allocs_count = 0;
-    size_t scratch_allocs_size = 0;
     struct vkd3d_shader_code spirv;
     struct vkd3d_shader_code dxil;
-    void **scratch_allocs = NULL;
     bool creating_library;
     bool rtpso_has_omm;
     size_t i, j;
@@ -1979,12 +1988,12 @@ static HRESULT d3d12_state_object_compile_pipeline_variant(struct d3d12_rt_state
     if (object->device->debug_ring.active)
         data->spec_info_buffer = vkd3d_calloc(data->entry_points_count, sizeof(*data->spec_info_buffer));
 
-    global_rt_create_flags = vkd3d_atomic_uint32_load_explicit(
+    global_rt_create_flags = vkd3d_atomic_uint64_load_explicit(
             &object->device->vendor_hacks.global_ray_tracing_pipeline_create_flags,
             vkd3d_memory_order_relaxed);
     rtpso_has_omm =
             (object->pipeline_config.Flags & D3D12_RAYTRACING_PIPELINE_FLAG_ALLOW_OPACITY_MICROMAPS) ||
-            (global_rt_create_flags & VK_PIPELINE_CREATE_RAY_TRACING_OPACITY_MICROMAP_BIT_KHR);
+            (global_rt_create_flags & VK_PIPELINE_CREATE_2_RAY_TRACING_OPACITY_MICROMAP_BIT_KHR);
 
     for (i = 0; i < data->entry_points_count; i++)
     {
@@ -2169,9 +2178,9 @@ static HRESULT d3d12_state_object_compile_pipeline_variant(struct d3d12_rt_state
                         d3d12_state_object_fuse_root_signature_mappings(
                             empty_rs ? empty_rs : per_entry_global_signature, local_signature);
                 vk_prepend_struct(stage, &fused->mapping_info);
-                vkd3d_array_reserve((void **)&scratch_allocs, &scratch_allocs_size,
-                    scratch_allocs_count + 1, sizeof(*scratch_allocs));
-                scratch_allocs[scratch_allocs_count++] = fused;
+                vkd3d_array_reserve((void **)&data->scratch_allocs, &data->scratch_allocs_size,
+                    data->scratch_allocs_count + 1, sizeof(*data->scratch_allocs));
+                data->scratch_allocs[data->scratch_allocs_count++] = fused;
             }
             else if (per_entry_global_signature)
             {
@@ -2551,7 +2560,7 @@ static HRESULT d3d12_state_object_compile_pipeline_variant(struct d3d12_rt_state
     if (object->pipeline_config.Flags & D3D12_RAYTRACING_PIPELINE_FLAG_ALLOW_OPACITY_MICROMAPS)
         flags2.flags |= VK_PIPELINE_CREATE_2_RAY_TRACING_OPACITY_MICROMAP_BIT_KHR;
 
-    pipeline_create_info.flags |= global_rt_create_flags;
+    flags2.flags |= global_rt_create_flags;
 
     library_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR;
     library_info.pNext = NULL;
@@ -2620,10 +2629,6 @@ static HRESULT d3d12_state_object_compile_pipeline_variant(struct d3d12_rt_state
         vr = VK_CALL(vkCreateRayTracingPipelinesKHR(object->device->vk_device, VK_NULL_HANDLE,
                 VK_NULL_HANDLE, 1, &pipeline_create_info, NULL, &variant->pipeline));
     }
-
-    for (i = 0; i < scratch_allocs_count; i++)
-        vkd3d_free(scratch_allocs[i]);
-    vkd3d_free(scratch_allocs);
 
     TRACE("Completed vkCreateRayTracingPipelinesKHR.\n");
 

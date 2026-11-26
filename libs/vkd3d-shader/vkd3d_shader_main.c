@@ -393,6 +393,7 @@ static const struct vkd3d_shader_quirk_mapping
     ENTRY(FORCE_NOCONTRACT_MATH),
     ENTRY(LIMIT_TESS_FACTORS_32),
     ENTRY(LIMIT_TESS_FACTORS_16),
+    ENTRY(LIMIT_TESS_FACTORS_12),
     ENTRY(LIMIT_TESS_FACTORS_8),
     ENTRY(LIMIT_TESS_FACTORS_4),
     ENTRY(FORCE_SUBGROUP_SIZE_1),
@@ -400,7 +401,11 @@ static const struct vkd3d_shader_quirk_mapping
     ENTRY(FORCE_MIN16_AS_32BIT),
     ENTRY(REWRITE_GRAD_TO_BIAS),
     ENTRY(FORCE_LOOP),
+    ENTRY(FORCE_COMPUTE_BARRIER),
+    ENTRY(FORCE_PRE_COMPUTE_BARRIER),
     ENTRY(DESCRIPTOR_HEAP_ROBUSTNESS),
+    ENTRY(FORCE_PRE_RASTERIZATION_BARRIER),
+    ENTRY(FORCE_GRAPHICS_BARRIER),
     ENTRY(DISABLE_OPTIMIZATIONS),
     ENTRY(FORCE_NOCONTRACT_MATH_VS),
     ENTRY(FORCE_DEVICE_MEMORY_BARRIER_THREAD_GROUP_COHERENCY),
@@ -408,20 +413,21 @@ static const struct vkd3d_shader_quirk_mapping
     ENTRY(FORCE_ROBUST_PHYSICAL_CBV_LOAD_FORWARDING),
     ENTRY(AGGRESSIVE_NONUNIFORM),
     ENTRY(HOIST_DERIVATIVES),
+    ENTRY(FIXUP_LOOP_HEADER_UNDEF_PHIS),
     ENTRY(FORCE_MIN_WAVE32),
     ENTRY(PROMOTE_GROUP_TO_DEVICE_MEMORY_BARRIER),
     ENTRY(FORCE_GRAPHICS_BARRIER_BEFORE_RENDER_PASS),
-    ENTRY(FIXUP_LOOP_HEADER_UNDEF_PHIS),
     ENTRY(FIXUP_RSQRT_INF_NAN),
     ENTRY(ROBUST_COMPUTE_QUAD_BROADCAST),
     ENTRY(IGNORE_PRIMITIVE_SHADING_RATE),
-    ENTRY(PRECISE_FMA),
     ENTRY(CLAMP_WAVE_SIZE_TO_THREAD_GROUP32),
     ENTRY(ENABLE_FAIR_SCHEDULING),
+    ENTRY(FORCE_NONUNIFORM_RT),
     ENTRY(FORCE_GRAPHICS_BARRIER_BEFORE_DRAW),
     ENTRY(FORCE_FEEDBACK_LOOP),
     ENTRY(DEBUG_FORCE_MIN_WAVE64),
     ENTRY(FORCE_DENORM_LEGACY_FP16_CONVERSIONS),
+    ENTRY(LEGACY_MEMORY_MODEL_COHERENT_IMAGES),
 };
 #undef ENTRY
 
@@ -755,6 +761,7 @@ void vkd3d_shader_extract_feature_meta(struct vkd3d_shader_code *code)
     SpvExecutionModel execution_model = SpvExecutionModelMax;
     size_t spirv_words = code->size / sizeof(uint32_t);
     unsigned int i, tracked_builtin_count = 0;
+    vkd3d_shader_meta_flags_t meta = 0;
     const uint32_t *spirv = code->code;
     SpvExecutionMode execution_mode;
     SpvStorageClass storage_class;
@@ -762,7 +769,6 @@ void vkd3d_shader_extract_feature_meta(struct vkd3d_shader_code *code)
     SpvDecoration decoration;
     SpvBuiltIn builtin;
     size_t offset = 5;
-    uint32_t meta = 0;
     uint32_t var_id;
 
     /* This array must be large enough to hold all variable IDs that may
@@ -772,7 +778,7 @@ void vkd3d_shader_extract_feature_meta(struct vkd3d_shader_code *code)
         uint32_t var_id;
         SpvBuiltIn builtin;
     }
-    tracked_builtins[2];
+    tracked_builtins[4];
 
     while (offset < spirv_words)
     {
@@ -861,6 +867,10 @@ void vkd3d_shader_extract_feature_meta(struct vkd3d_shader_code *code)
                     meta |= VKD3D_SHADER_META_FLAG_USES_COOPERATIVE_MATRIX_FP8;
                     break;
 
+                case SpvCapabilityRayQueryKHR:
+                    meta |= VKD3D_SHADER_META_FLAG_USES_RAY_QUERY;
+                    break;
+
                 default:
                     break;
             }
@@ -943,7 +953,7 @@ void vkd3d_shader_extract_feature_meta(struct vkd3d_shader_code *code)
             {
                 builtin = spirv[offset + delta + 3];
 
-                if (builtin == SpvBuiltInSampleMask)
+                if (builtin == SpvBuiltInSampleMask || builtin == SpvBuiltInViewportIndex)
                 {
                     if (tracked_builtin_count < ARRAY_SIZE(tracked_builtins))
                     {
@@ -984,6 +994,11 @@ void vkd3d_shader_extract_feature_meta(struct vkd3d_shader_code *code)
                         case SpvBuiltInSampleMask:
                             if (storage_class == SpvStorageClassOutput)
                                 meta |= VKD3D_SHADER_META_FLAG_EXPORTS_SAMPLE_MASK;
+                            break;
+
+                        case SpvBuiltInViewportIndex:
+                            if (storage_class == SpvStorageClassOutput)
+                                meta |= VKD3D_SHADER_META_FLAG_EXPORTS_VIEWPORT_INDEX;
                             break;
 
                         default:;

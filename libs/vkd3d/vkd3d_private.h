@@ -134,6 +134,7 @@ struct vkd3d_vulkan_info
     bool KHR_ray_query;
     bool KHR_fragment_shading_rate;
     bool KHR_ray_tracing_maintenance1;
+    bool KHR_ray_tracing_position_fetch;
     bool KHR_fragment_shader_barycentric;
     bool KHR_external_memory_win32;
     bool KHR_external_semaphore_win32;
@@ -223,6 +224,7 @@ struct vkd3d_vulkan_info
     bool NV_raw_access_chains;
     bool NV_cooperative_matrix2;
     bool NV_ray_tracing_invocation_reorder;
+    bool NV_ray_tracing_linear_swept_spheres;
     bool NV_shader_atomic_float16_vector;
     /* VALVE extensions */
     bool VALVE_mutable_descriptor_type;
@@ -2341,6 +2343,7 @@ struct d3d12_graphics_pipeline_state
     unsigned int null_attachment_mask;
     unsigned int rtv_active_mask;
     unsigned int patch_vertex_count;
+    bool multiple_viewports;
     const struct vkd3d_format *dsv_format;
     VkFormat rtv_formats[D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT];
     uint32_t dsv_plane_optimal_mask;
@@ -2887,10 +2890,12 @@ struct vkd3d_dynamic_state
     uint32_t dirty_vbos;
 
     uint32_t viewport_count;
+    uint32_t scissor_count;
     VkViewport viewports[D3D12_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
     VkRect2D scissors[D3D12_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
     VkSampleCountFlagBits rasterization_samples;
     uint32_t view_mask;
+    bool multiple_viewports;
 
     float blend_constants[4];
 
@@ -3169,6 +3174,13 @@ struct vk_acceleration_structure_postbuild_info
     enum vkd3d_rtas_kind rtas_kind; /* Only used for immediate BLAS or TLAS build. */
 };
 
+union vkd3d_acceleration_structure_geometry_data
+{
+    VkAccelerationStructureTrianglesOpacityMicromapKHR omm_triangles;
+    VkAccelerationStructureGeometrySpheresDataNV spheres;
+    VkAccelerationStructureGeometryLinearSweptSpheresDataNV lss;
+};
+
 struct d3d12_rtas_batch_state
 {
     D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE build_type;
@@ -3183,8 +3195,8 @@ struct d3d12_rtas_batch_state
     size_t geometry_info_count;
     size_t geometry_info_size;
 
-    VkAccelerationStructureTrianglesOpacityMicromapKHR *omm_triangles_infos;
-    size_t omm_triangles_info_size;
+    union vkd3d_acceleration_structure_geometry_data *geometry_data;
+    size_t geometry_data_size;
 
     VkAccelerationStructureBuildRangeInfoKHR *range_infos;
     size_t range_info_size;
@@ -3306,6 +3318,29 @@ struct d3d12_command_list_render_pass_suspend_resume
     bool block_resume;
 };
 
+#define VKD3D_CLEAR_UAV_TRACKING_MAX_CLEARS 8
+
+struct d3d12_command_list_clear_uav_tracking
+{
+    struct
+    {
+        /* There is no need to overcomplicate things.
+         * Just track which resources ever used clear. */
+        struct d3d12_resource *resource;
+        bool clear_command;
+        bool shader_command;
+    } pending_clears[VKD3D_CLEAR_UAV_TRACKING_MAX_CLEARS];
+
+    uint32_t num_pending_image_clears;
+    bool has_clear_command;
+    bool has_shader_command;
+    bool has_global_barrier;
+
+    /* Before doing a clear with CLEAR stage, need to do COMPUTE -> CLEAR barrier.
+     * We speculate that a normal UAV barrier will not imply a full CLEAR as well. */
+    bool has_visible_clear_stage;
+};
+
 struct d3d12_command_list_sequence
 {
     /* A command list can be split into multiple sequences of
@@ -3317,10 +3352,10 @@ struct d3d12_command_list_sequence
     struct d3d12_command_list_iteration iterations[VKD3D_MAX_COMMAND_LIST_SEQUENCES];
     unsigned int iteration_count;
     unsigned int active_non_inline_running_queries;
-    bool uses_dgc_compute_in_async_compute;
-    bool clear_uav_pending;
     bool observes_indirect_argument_barrier;
     bool has_post_indirect_barrier_work;
+
+    struct d3d12_command_list_clear_uav_tracking clear_uav;
 
     /* Number of draws, dispatches, copies etc. Used to fuse barrier-only
      * command buffers for staggered submissions. */
@@ -3586,6 +3621,26 @@ void d3d12_command_list_meta_push_data(struct d3d12_command_list *list,
 void d3d12_command_list_meta_push_descriptor_index(struct d3d12_command_list *list,
         VkCommandBuffer vk_command_buffer, uint32_t binding, uint32_t heap_index);
 
+void d3d12_command_list_consume_clear_uav_global_barrier(
+        struct d3d12_command_list_clear_uav_tracking *tracking, VkMemoryBarrier2 *vk_barrier,
+        VkPipelineStageFlags2 vk_dst_stages);
+
+struct d3d12_command_list_barrier_batch;
+
+/* A slightly more sophisticated version that allows per-image barriers.
+ * Especially for CLEAR stage barriers we may be able to avoid invalidating render target caches / DCC caches. */
+void d3d12_command_list_consume_clear_uav_barrier_batch(struct d3d12_command_list *list,
+        struct d3d12_command_list_barrier_batch *batch,
+        struct d3d12_resource *resource, VkImageMemoryBarrier2 *vk_resource_barrier);
+
+void d3d12_command_list_register_clear_uav_pending(
+        struct d3d12_command_list_clear_uav_tracking *tracking, struct d3d12_resource *resource, bool clear_command);
+
+static inline bool d3d12_command_list_clear_uav_pending(struct d3d12_command_list *list)
+{
+    return list->cmd.clear_uav.num_pending_image_clears != 0;
+}
+
 #define VKD3D_DESCRIPTOR_HEAP_META_PUSH_DATA_OFFSET 64
 
 union vkd3d_root_parameter_data
@@ -3779,7 +3834,6 @@ struct d3d12_command_queue_submission_execute
     struct vkd3d_queue_timeline_trace_cookie timeline_cookie;
 
     bool debug_capture;
-    bool split_submission;
 };
 
 struct d3d12_command_queue_submission_bind_sparse
@@ -5355,6 +5409,7 @@ struct vkd3d_physical_device_info
     VkPhysicalDeviceImageViewMinLodFeaturesEXT image_view_min_lod_features;
     VkPhysicalDeviceCoherentMemoryFeaturesAMD device_coherent_memory_features_amd;
     VkPhysicalDeviceRayTracingMaintenance1FeaturesKHR ray_tracing_maintenance1_features;
+    VkPhysicalDeviceRayTracingPositionFetchFeaturesKHR ray_tracing_position_fetch_features;
     VkPhysicalDeviceDeviceGeneratedCommandsFeaturesEXT device_generated_commands_features;
     VkPhysicalDeviceMeshShaderFeaturesEXT mesh_shader_features;
     VkPhysicalDeviceShaderModuleIdentifierFeaturesEXT shader_module_identifier_features;
@@ -5403,6 +5458,7 @@ struct vkd3d_physical_device_info
     VkPhysicalDevicePresentWait2FeaturesKHR present_wait2_features;
     VkPhysicalDevicePresentTimingFeaturesEXT present_timing_features;
     VkPhysicalDeviceRayTracingInvocationReorderFeaturesNV ray_tracing_invocation_reorder_features_nv;
+    VkPhysicalDeviceRayTracingLinearSweptSpheresFeaturesNV ray_tracing_linear_swept_spheres_features_nv;
     VkPhysicalDeviceDescriptorHeapFeaturesEXT descriptor_heap_features;
     VkPhysicalDeviceDeviceAddressCommandsFeaturesKHR device_address_commands_features;
     VkPhysicalDeviceShaderFloatControls2FeaturesKHR float_controls2_features;
@@ -5938,8 +5994,10 @@ struct d3d12_device
 
         /* Set by SetCreatePipelineStateOptions (NVAPI). NVAPI has no per-pipeline OMM opt-in
          * (unlike DXR 1.2's ALLOW_OPACITY_MICROMAPS flag), so this global is OR'd into every
-         * RT pipeline creation to implement the device-wide enable/disable semantic. */
-        VkPipelineCreateFlags global_ray_tracing_pipeline_create_flags;
+         * RT pipeline creation to implement the device-wide enable/disable semantic.
+         *
+         * The type is UINT64 to ensure atomic operations are correct on 32-bit platforms. */
+        UINT64 global_ray_tracing_pipeline_create_flags;
 
         /* Sticky one-way bit: set the first time NVAPI ENABLE_OMM_SUPPORT is observed on this
          * device and never cleared. Drives the dxil-spirv RayQuery legacy-SM execution-mode
@@ -7016,16 +7074,17 @@ static inline struct vkd3d_view *vkd3d_view_map_create_view(struct vkd3d_view_ma
 
 uint32_t vkd3d_acceleration_structure_get_geometry_count(
         const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS *desc);
+bool vkd3d_acceleration_structure_needs_geometry_data(const struct d3d12_device *device);
 bool vkd3d_acceleration_structure_convert_inputs(struct d3d12_device *device,
         const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS *desc,
         VkAccelerationStructureBuildGeometryInfoKHR *build_info,
         VkAccelerationStructureGeometryKHR *geometry_infos,
-        VkAccelerationStructureTrianglesOpacityMicromapKHR *omm_triangles_infos,
+        union vkd3d_acceleration_structure_geometry_data *geometry_data,
         VkAccelerationStructureBuildRangeInfoKHR *range_infos,
         uint32_t *primitive_counts);
 bool vkd3d_acceleration_structure_resolve_omm_va_maps(struct d3d12_device *device,
         const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS *desc,
-        VkAccelerationStructureTrianglesOpacityMicromapKHR *omm_triangles_infos);
+        union vkd3d_acceleration_structure_geometry_data *geometry_data);
 void vkd3d_acceleration_structure_flush_postbuild_batch(struct d3d12_command_list *list,
         const struct vk_acceleration_structure_postbuild_info *infos, size_t count);
 void vkd3d_acceleration_structure_write_postbuild_info(
@@ -7220,6 +7279,7 @@ bool d3d12_device_allow_emulated_vrs_tier_2(struct d3d12_device *device);
 bool d3d12_device_allow_emulated_barycentrics(struct d3d12_device *device);
 bool vkd3d_application_has_broken_wave128(void);
 bool vkd3d_application_requires_min16_denorms(void);
+bool vkd3d_application_attempts_complex_multiview(void);
 void d3d12_device_init_workarounds(struct d3d12_device *device);
 uint32_t vkd3d_get_instance_application_version(void);
 
